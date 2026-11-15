@@ -10,7 +10,9 @@ on the runtime as soon as it can be used.
 
 A startup that fails leaves the session marked: ``TERMINATED`` with its
 error, or ``READY`` carrying the action only the user can take
-(``startup_user_action``). A box it created is released, or recorded on the
+(``startup_user_action``). The error is the failure's message
+(``last_error``) and its registered code (``last_error_code``), which the
+messages waiting for that start are failed with too. A box it created is released, or recorded on the
 row's undestroyed ledger when its destruction is not confirmed.
 """
 
@@ -51,6 +53,9 @@ from astrabox.seams.runtime_preparation import (
 )
 
 logger = get_logger(__name__)
+
+#: The code a failed start records when the failure has no registered code of its own.
+RUNTIME_START_FAILED = "RUNTIME_START_FAILED"
 
 
 class SessionStartup:
@@ -104,12 +109,14 @@ class SessionStartup:
         except Exception as exc:
             return await self._fail_before_runtime(
                 ownership,
+                _failure_code(exc),
                 _failure_text(exc, "failed to load the session's configuration"),
                 replacing=replacing,
             )
         if template is None:
             return await self._fail_before_runtime(
                 ownership,
+                RUNTIME_START_FAILED,
                 "the session's Agent or Assistant configuration was not found",
                 replacing=replacing,
             )
@@ -168,11 +175,14 @@ class SessionStartup:
             failure_phase: str,
             created_sandbox_id: str | None = None,
             user_action: dict[str, Any] | None = None,
+            *,
+            error_code: str = RUNTIME_START_FAILED,
         ) -> dict[str, Any]:
             cleanup = await release(failure_phase, created_sandbox_id)
             latest = await self._mark_failed(
                 ownership,
                 replacing=replacing,
+                error_code=error_code,
                 error_text=error_text,
                 leaked_sandbox_id=cleanup.leaked_sandbox_id,
                 user_action=user_action,
@@ -278,7 +288,8 @@ class SessionStartup:
                 else None
             )
             return await fail(
-                exc.message, "runtime_start_failed", created_sandbox_id or None, user_action
+                exc.message, "runtime_start_failed", created_sandbox_id or None, user_action,
+                error_code=exc.code,
             )
         except asyncio.CancelledError:
             raise
@@ -289,6 +300,7 @@ class SessionStartup:
                 latest = await self._mark_failed(
                     ownership,
                     replacing=replacing,
+                    error_code=RUNTIME_START_FAILED,
                     error_text=error_text,
                     leaked_sandbox_id=cleanup.leaked_sandbox_id,
                     user_action=None,
@@ -405,7 +417,7 @@ class SessionStartup:
         return latest if isinstance(latest, dict) else {"session_id": ownership.session_id, **updates}
 
     async def _fail_before_runtime(
-        self, ownership: RecoveryOwnership, error_text: str, *, replacing: bool
+        self, ownership: RecoveryOwnership, error_code: str, error_text: str, *, replacing: bool
     ) -> dict[str, Any]:
         """End a startup that failed before it reached the sandbox provider."""
         current = await ownership.require_current()
@@ -418,7 +430,8 @@ class SessionStartup:
             )
         latest = await self._mark_failed(
             ownership,
-            replacing=replacing, error_text=error_text, leaked_sandbox_id=None, user_action=None
+            replacing=replacing, error_code=error_code, error_text=error_text,
+            leaked_sandbox_id=None, user_action=None,
         )
         if not isinstance(latest, dict):
             raise RuntimeError(error_text)
@@ -428,6 +441,7 @@ class SessionStartup:
         self,
         ownership: RecoveryOwnership,
         *,
+        error_code: str,
         error_text: str,
         leaked_sandbox_id: str | None,
         user_action: dict[str, Any] | None,
@@ -450,6 +464,7 @@ class SessionStartup:
             # A message sent while this is set is answered with the action.
             "startup_user_action": user_action,
             "last_error": error_text,
+            "last_error_code": error_code,
             "runtime_unavailable": True,
             "startup_progress": None,
         }
@@ -605,6 +620,11 @@ class _StartupProgress:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
             self._tasks.clear()
+
+
+def _failure_code(exc: Exception) -> str:
+    """The registered code a failed start records: the error's own, or the start's."""
+    return exc.code if isinstance(exc, APIError) else RUNTIME_START_FAILED
 
 
 def _failure_text(exc: Exception, fallback: str) -> str:

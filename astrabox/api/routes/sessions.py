@@ -152,6 +152,9 @@ class SessionRecord(BaseModel):
     runtime_unavailable: bool | None = None
     engine_available: bool | None = None
     last_error: str | None = None
+    #: The registered code of ``last_error``, such as the code a failed
+    #: start ended the conversation with; null when that error has none.
+    last_error_code: str | None = None
     startup_progress: str | None = None
     recovery_reason: str | None = None
     # Platform vocabulary, not the engine's: which workspace surfaces this

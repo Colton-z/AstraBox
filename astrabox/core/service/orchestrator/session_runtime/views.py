@@ -76,6 +76,7 @@ _SUMMARY_FIELDS = (
     "runtime_unavailable",
     "recovery_reason",
     "last_error",
+    "last_error_code",
     "startup_progress",
 )
 _DETAIL_FIELDS = ("model_name", "model_account_id", "terminal_cwd")

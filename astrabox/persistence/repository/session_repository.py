@@ -125,6 +125,10 @@ def _column_values(values: Mapping[str, Any]) -> dict[str, Any]:
         if key not in _COLUMNS:
             raise KeyError(f"sessions has no column {key!r}")
         stored[key] = from_iso(value) if key in _TIME_COLUMNS else value
+    # The code names the error the message describes, so a message written
+    # without its code must not keep the previous error's.
+    if "last_error" in stored and "last_error_code" not in stored:
+        stored["last_error_code"] = None
     return stored
 
 

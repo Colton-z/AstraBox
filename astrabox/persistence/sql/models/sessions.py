@@ -171,6 +171,10 @@ class Session(Base):
     runtime_unavailable: Mapped[bool] = mapped_column(server_default=text("false"))
     recovery_reason: Mapped[str | None] = mapped_column(payload_text())
     last_error: Mapped[str | None] = mapped_column(payload_text())
+    #: The registered error code of ``last_error``, when the failure had one
+    #: (a failed start always does). Written with it: the repository clears it
+    #: whenever ``last_error`` is written without one.
+    last_error_code: Mapped[str | None] = mapped_column(payload_text())
     startup_progress: Mapped[str | None] = mapped_column(payload_text())
     startup_user_action: Mapped[dict[str, Any] | None]
     runtime_recovery_owner: Mapped[str | None] = mapped_column(payload_text())

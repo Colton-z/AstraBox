@@ -203,6 +203,8 @@ commonly used fields are:
 | `background_tasks` | array | Work the Agent program keeps running in the sandbox: each `task_id`, the program's own `kind` (Claude Code: `local_bash`) and `description`. |
 | `output_seq` | integer | The output position to follow the Session's stream from. |
 | `runtime_unavailable` | boolean | Whether the Session's sandbox is gone or released. |
+| `last_error` | string/null | Why the Session last failed, such as a runtime that could not start. |
+| `last_error_code` | string/null | The error code of `last_error`, such as `SANDBOX_EXECD_ACCESS_UNVERIFIED` or `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` for a start that failed (`RUNTIME_START_FAILED` when the cause has no code of its own); null when that error has none. |
 | `created_at` | string/null | Creation time. |
 | `updated_at` | string/null | Last update time. |
 
@@ -295,6 +297,10 @@ ADMISSION_DENIED`.
 A message that the Agent program or the deployment's preparation refuses does
 not start a response: the stream reports it as a `data-input-failed` part with
 the reason, and the message keeps its `failure` in the Session history.
+
+A message waiting for a runtime whose start fails is refused with that
+start's `code` and `message`, the same as the Session's `last_error_code` and
+`last_error`. A Session whose first start fails ends `TERMINATED`.
 
 ## Read the Session Stream
 

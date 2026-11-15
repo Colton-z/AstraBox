@@ -421,8 +421,10 @@ for _code, _status, _category, _retryable, _owner in (
     # client_message_id answers this again; a new message starts a new turn.
     # Recorded on an input the platform still held when its conversation ended.
     ("CONVERSATION_ENDED", 409, "state", False, "session"),
-    # A message whose replacement runtime failed to start; sending it again
-    # starts another attempt.
+    # A conversation's runtime failed to start for a reason without a code of
+    # its own: the session records it as last_error_code, and the messages
+    # waiting for that start fail with it. Sending a message again starts
+    # another attempt.
     ("RUNTIME_START_FAILED", 502, "runtime", False, "runtime"),
     # Same class of 409 as the row above — the resource's current state refuses
     # the operation — so it carries the same category rather than an auth one:

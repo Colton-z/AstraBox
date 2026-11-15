@@ -72,7 +72,15 @@ class RuntimeGone(Exception):
 
 
 class RuntimeEnded(Exception):
-    """The conversation ended (terminated or deleted): its runtime is gone and will not be replaced."""
+    """The conversation ended (terminated or deleted): its runtime is gone and will not be replaced.
+
+    ``failure`` is the error it ended with, ``{code, message}``, when it ended
+    on one, such as a start that failed; it answers the inputs left waiting.
+    """
+
+    def __init__(self, session_id: str, *, failure: dict[str, Any] | None = None) -> None:
+        super().__init__(session_id)
+        self.failure = failure
 
 
 class RuntimeNotReady(Exception):
@@ -80,7 +88,14 @@ class RuntimeNotReady(Exception):
 
 
 class RuntimeStartFailed(Exception):
-    """A start for the waiting inputs already failed; they get no second attempt."""
+    """A start for the waiting inputs already failed; they get no second attempt.
+
+    ``failure`` is that start's error, ``{code, message}``, which they are failed with.
+    """
+
+    def __init__(self, session_id: str, *, failure: dict[str, Any]) -> None:
+        super().__init__(session_id)
+        self.failure = failure
 
 
 @dataclass(frozen=True, slots=True)
@@ -213,8 +228,10 @@ class ReaderHost:
                 except RuntimeGone as gone:
                     await self._runtime_gone(lease, reason=gone.reason)
                     return
-                except RuntimeEnded:
-                    await self._runtime_gone(lease, reason="conversation_ended")
+                except RuntimeEnded as ended:
+                    await self._runtime_gone(
+                        lease, reason="conversation_ended", ended_failure=ended.failure
+                    )
                     return
                 await pass_fault_barrier(
                     "reader_boundary", session_id=session_id, phase="connected", item_id=""
@@ -248,11 +265,14 @@ class ReaderHost:
             with contextlib.suppress(Exception):
                 await self._repo.release_reader(lease)
 
-    async def _runtime_gone(self, lease: ReaderLease, *, reason: str) -> None:
+    async def _runtime_gone(
+        self, lease: ReaderLease, *, reason: str, ended_failure: dict[str, Any] | None = None
+    ) -> None:
         """Record the responses the runtime took with it, and hand its inputs on.
 
         A lost box's inputs go to a replacement runtime; an ended
-        conversation's inputs fail, since nothing will answer them.
+        conversation's inputs fail, since nothing will answer them, with the
+        error it ended on (``ended_failure``) when it ended on one.
         """
         session_id = lease.session_id
         last_seq, _cursor = await self._repo.resume_point(session_id)
@@ -270,7 +290,8 @@ class ReaderHost:
         if reason == "conversation_ended":
             await self._fail_open_inputs(
                 lease,
-                {"code": "CONVERSATION_ENDED", "message": "the conversation ended before this message was answered"},
+                ended_failure
+                or {"code": "CONVERSATION_ENDED", "message": "the conversation ended before this message was answered"},
             )
             return
         await self._repo.reclaim_unadmitted(session_id)
@@ -278,16 +299,10 @@ class ReaderHost:
             logger.info("session %s runtime gone with inputs waiting; starting a replacement", session_id)
             try:
                 await self._connector.replace(session_id)
-            except RuntimeStartFailed:
+            except RuntimeStartFailed as failed:
                 # A later message gets a new attempt; these were waiting for
-                # the one that failed.
-                await self._fail_open_inputs(
-                    lease,
-                    {
-                        "code": "RUNTIME_START_FAILED",
-                        "message": "the conversation's runtime could not be started; send the message again to retry",
-                    },
-                )
+                # the one that failed, and fail with its error.
+                await self._fail_open_inputs(lease, failed.failure)
             except APIError as exc:
                 if exc.code != TURN_PREPARATION_USER_ACTION_REQUIRED:
                     raise

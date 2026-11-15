@@ -65,6 +65,23 @@ def _ended(session: dict[str, Any]) -> bool:
     )
 
 
+def recorded_failure(session: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The error the session last recorded, as ``{code, message}``, when it has a registered code."""
+    if session is None:
+        return None
+    code = str(session.get("last_error_code") or "").strip()
+    if not code:
+        return None
+    return {"code": code, "message": str(session.get("last_error") or "")}
+
+
+#: What the inputs of a failed start get when the session's last error has no code.
+_START_FAILED = {
+    "code": "RUNTIME_START_FAILED",
+    "message": "the conversation's runtime could not be started; send the message again to retry",
+}
+
+
 def _attach_is_current(session: dict[str, Any], sandbox_id: str) -> bool:
     """Whether an attach made outside the runtime lock still describes the conversation."""
     return (
@@ -122,7 +139,7 @@ class PlatformRuntimeConnector:
             if current is None or not _attach_is_current(current, attached):
                 await self._runtime_manager.evict_runtime_if_current(session_id, runtime)
                 if current is None or _ended(current):
-                    raise RuntimeEnded(session_id)
+                    raise RuntimeEnded(session_id, failure=recorded_failure(current))
                 raise RuntimeNotReady(session_id)
             initialization = await runtime_initialization_metadata(session_id, runtime)
             await check_lock()
@@ -143,7 +160,7 @@ class PlatformRuntimeConnector:
         """The session as its runtime may be attached now, after waking a parked box for an input."""
         session = await self._sessions.get_session(session_id)
         if session is None or _ended(session):
-            raise RuntimeEnded(session_id)
+            raise RuntimeEnded(session_id, failure=recorded_failure(session))
         if session.get("state") != SessionState.READY.value:
             raise RuntimeNotReady(session_id)
         if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
@@ -190,7 +207,9 @@ class PlatformRuntimeConnector:
                         message=action["message"],
                         evidence={"reason": "user_action_required", "user_action": action, "session_id": session_id},
                     )
-                raise RuntimeStartFailed(session_id)
+                raise RuntimeStartFailed(
+                    session_id, failure=recorded_failure(session) or dict(_START_FAILED)
+                )
         await self._replace(session_id)
 
     async def release(self, session_id: str) -> None:

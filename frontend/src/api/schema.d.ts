@@ -5954,6 +5954,8 @@ export interface components {
             held_inputs?: components["schemas"]["HeldInputView"][] | null;
             /** Last Error */
             last_error?: string | null;
+            /** Last Error Code */
+            last_error_code?: string | null;
             /** Last Output At */
             last_output_at?: string | null;
             last_response?: components["schemas"]["ResponseView"] | null;
@@ -12187,6 +12189,8 @@ export interface components {
             held_inputs?: components["schemas"]["HeldInputView"][] | null;
             /** Last Error */
             last_error?: string | null;
+            /** Last Error Code */
+            last_error_code?: string | null;
             /** Last Output At */
             last_output_at?: string | null;
             last_response?: components["schemas"]["ResponseView"] | null;
