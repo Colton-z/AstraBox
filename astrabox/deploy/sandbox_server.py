@@ -1618,6 +1618,8 @@ EXPIRE_SANDBOX_ATTR = "_expire_sandbox"
 GET_CONTAINER_ATTR = "_get_container_by_sandbox_id"
 REMOVE_EXPIRATION_ATTR = "_remove_expiration_tracking"
 CLEANUP_SIDECAR_ATTR = "_cleanup_egress_sidecar"
+CLEANUP_MANAGED_VOLUMES_ATTR = "_cleanup_managed_volumes"
+PREPARE_CREATION_CONTEXT_ATTR = "_prepare_creation_context"
 VOLUMES_MIXIN_ATTR = "DockerVolumesMixin"
 BUILD_VOLUME_BINDS_ATTR = "_build_volume_binds"
 EGRESS_SIDECAR_LABEL_ATTR = "EGRESS_SIDECAR_LABEL"
@@ -2885,10 +2887,91 @@ BATCHSANDBOX_PROVIDER_ATTR = "BatchSandboxProvider"
 MERGE_POD_SPEC_EXTRAS_ATTR = "_merge_pod_spec_extras"
 #: The sandbox container's name in the pinned server's Pod spec.
 SANDBOX_CONTAINER_NAME = "sandbox"
-#: Pod volumes :func:`grant_container_engine_pods` adds to a container-engine box.
+#: The engine's data volume: a Pod volume :func:`grant_container_engine_pods`
+#: adds on Kubernetes, and on Docker the claim the platform's create names,
+#: which :func:`name_container_engine_volumes` makes each box's own.
 CONTAINER_ENGINE_DATA_VOLUME = "astrabox-container-engine"
 CONTAINER_ENGINE_TUN_VOLUME = "astrabox-container-engine-tun"
 TUN_DEVICE_PATH = "/dev/net/tun"
+
+
+def container_engine_volume_name(sandbox_id: str) -> str:
+    """The Docker named volume one container-engine box keeps its images and build cache on."""
+    return f"{CONTAINER_ENGINE_DATA_VOLUME}-{sandbox_id}"
+
+
+def name_container_engine_volumes(service_module: ModuleType) -> None:
+    """Name a Docker container-engine box's engine volume after the box, and reclaim it by that name.
+
+    The platform's create asks for the engine's volume as the ``pvc`` claim
+    :data:`CONTAINER_ENGINE_DATA_VOLUME`, created with the sandbox and deleted
+    with it. Upstream records the volumes it creates for a sandbox only in a
+    label of the sandbox's container (``opensandbox.io/volume-managed-by``)
+    and removes them from that label when it deletes or expires the sandbox.
+    A container removed outside the lifecycle server takes the label with it,
+    so a volume named at random would be left with nothing naming its
+    sandbox.
+
+    ``_prepare_creation_context`` is where upstream generates the sandbox id,
+    before it creates the request's volumes; the hook renames the claim there
+    to :func:`container_engine_volume_name`. ``_cleanup_egress_sidecar`` is
+    upstream's cleanup by sandbox id alone: it runs when the sandbox is
+    deleted or expires, including after its container is gone, and when the
+    server starts and finds an egress sidecar without its sandbox; it removes
+    the sidecar and upstream's own ``opensandbox-runtime-<sandbox id>``
+    volume. The hook removes the engine volume there too, through upstream's
+    removal of the volumes it created, which skips a volume without upstream's
+    label. A container removed while the server is down, with its sidecar,
+    reaches neither path; ``docs/providers/opensandbox.md`` says how to find
+    such volumes.
+
+    It is installed before :func:`leave_other_installations_sandboxes_running`,
+    whose cleanup leaves another installation's sandbox alone and so wraps
+    this one.
+    """
+    _require_attributes(
+        service_module,
+        (SERVICE_CLS_ATTR,),
+        "name container-engine volumes after their sandboxes",
+    )
+    service_cls = getattr(service_module, SERVICE_CLS_ATTR)
+    for attribute in (PREPARE_CREATION_CONTEXT_ATTR, CLEANUP_SIDECAR_ATTR, CLEANUP_MANAGED_VOLUMES_ATTR):
+        if not hasattr(service_cls, attribute):
+            raise SandboxServerConfigError(
+                "the installed opensandbox-server no longer exposes "
+                f"{service_module.__name__}.{SERVICE_CLS_ATTR}.{attribute}, so "
+                "AstraBox cannot tie a container-engine box's volume to the box. "
+                "Pin opensandbox-server to the release in pyproject.toml, or update "
+                "astrabox/deploy/sandbox_server.py."
+            )
+    upstream_prepare = getattr(service_cls, PREPARE_CREATION_CONTEXT_ATTR)
+    upstream_cleanup_sidecar = getattr(service_cls, CLEANUP_SIDECAR_ATTR)
+
+    def _astrabox_prepare_creation_context(self: Any, request: Any) -> Any:
+        context = upstream_prepare(self, request)
+        sandbox_id = context[0]
+        for volume in getattr(request, "volumes", None) or []:
+            claim = getattr(volume, "pvc", None)
+            if claim is not None and claim.claim_name == CONTAINER_ENGINE_DATA_VOLUME:
+                claim.claim_name = container_engine_volume_name(sandbox_id)
+        return context
+
+    def _astrabox_cleanup_egress_sidecar(self: Any, sandbox_id: str) -> Any:
+        result = upstream_cleanup_sidecar(self, sandbox_id)
+        getattr(self, CLEANUP_MANAGED_VOLUMES_ATTR)(
+            sandbox_id, [container_engine_volume_name(sandbox_id)]
+        )
+        return result
+
+    for attribute, wrapper in (
+        (PREPARE_CREATION_CONTEXT_ATTR, _astrabox_prepare_creation_context),
+        (CLEANUP_SIDECAR_ATTR, _astrabox_cleanup_egress_sidecar),
+    ):
+        setattr(service_cls, attribute, wrapper)
+        if getattr(service_cls, attribute) is not wrapper:
+            raise SandboxServerConfigError(  # pragma: no cover - defends the assignment itself
+                f"setting {SERVICE_CLS_ATTR}.{attribute} did not take"
+            )
 
 
 def grant_container_engine_pods(provider_module: ModuleType, constants_module: ModuleType) -> None:
@@ -3852,6 +3935,7 @@ def prepare() -> dict[str, Any]:
         except Exception as exc:
             raise missing_extra_error(exc) from exc
         grant_container_engine_boxes(container_ops_module, constants_module)
+        name_container_engine_volumes(service_module)
         attach_allowlisted_networks(
             container_ops_module,
             networking_module,

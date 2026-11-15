@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-import uuid
 import weakref
 from datetime import timedelta
 from typing import Any, Protocol
@@ -20,6 +19,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.deploy.sandbox_server import (
+    CONTAINER_ENGINE_DATA_VOLUME,
     CONTAINER_ENGINE_METADATA_KEY,
     NETWORK_METADATA_PREFIX,
     network_metadata,
@@ -933,11 +933,12 @@ _CONTAINER_ENGINE_READY_TIMEOUT_SECONDS = 75.0
 def _container_engine_volume(container_engine: str) -> list[dict[str, Any]]:
     """The per-box volume the engine keeps its state on, created and deleted with the box.
 
-    On the bundled server's Docker runtime, a Docker volume with a fresh name
-    per create: the lifecycle server deletes a volume with its sandbox only
-    when that create made it, so a name another create could already hold
-    would outlive the box. On its Kubernetes runtime the create carries none:
-    the server's hook mounts an ``emptyDir`` there
+    On the bundled server's Docker runtime, a Docker volume the create asks
+    for as :data:`CONTAINER_ENGINE_DATA_VOLUME`; the server names it after the
+    sandbox it creates (``sandbox_server.name_container_engine_volumes``), so
+    each box gets its own and the server can still find it by the sandbox's id
+    after the sandbox's container is gone. On its Kubernetes runtime the
+    create carries none: the server's hook mounts an ``emptyDir`` there
     (``sandbox_server.grant_container_engine_pods``), where upstream would
     otherwise provision a PersistentVolumeClaim from the cluster's default
     StorageClass.
@@ -951,7 +952,7 @@ def _container_engine_volume(container_engine: str) -> list[dict[str, Any]]:
         {
             "name": "container-engine",
             "pvc": {
-                "claimName": f"astrabox-container-engine-{uuid.uuid4().hex}",
+                "claimName": CONTAINER_ENGINE_DATA_VOLUME,
                 "createIfNotExists": True,
                 "deleteOnSandboxTermination": True,
             },

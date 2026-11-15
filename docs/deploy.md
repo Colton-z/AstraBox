@@ -237,6 +237,11 @@ docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
 docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
 ```
 
+The volumes of sandboxes removed this way are reclaimed as their leases run
+out while the server keeps running; see
+[Container engine on Docker](providers/opensandbox.md#container-engine-docker)
+for removing them after a restart.
+
 ### Sandbox execd authentication {#sandbox-execd-authentication}
 
 With `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true`, every sandbox the bundled

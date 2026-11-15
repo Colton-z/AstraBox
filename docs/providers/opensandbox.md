@@ -346,7 +346,38 @@ nameservers.
 ### On Docker {#container-engine-docker}
 
 The create also carries a Docker volume of its own mounted at
-`/var/lib/astrabox/container-engine` with `deleteOnSandboxTermination`.
+`/var/lib/astrabox/container-engine` with `deleteOnSandboxTermination`, where
+the engine keeps its images, containers and build cache. A hook of the bundled
+server (`name_container_engine_volumes`) names it
+`astrabox-container-engine-<sandbox id>`. OpenSandbox deletes it with the
+sandbox, and it is reclaimed with OpenSandbox's own
+`opensandbox-runtime-<sandbox id>` volume when the sandbox's container was
+removed outside the lifecycle server, as by `docker rm -f`: when the sandbox
+expires, when it is deleted through the lifecycle API, or when the server
+starts and finds its egress sidecar without it.
+
+A sandbox whose container and egress sidecar were both removed while the
+lifecycle server was not running, or before a server restart, reaches none of
+those, and both volumes stay. List the volumes the server created whose
+sandbox no longer exists, check the list, then remove them:
+
+```bash
+for v in $(docker volume ls -q --filter label=opensandbox.io/volume-managed-by=server); do
+  case "$v" in
+    astrabox-container-engine-*) id=${v#astrabox-container-engine-} ;;
+    opensandbox-runtime-*) id=${v#opensandbox-runtime-} ;;
+    *) continue ;;
+  esac
+  [ -z "$(docker ps -aq --filter "label=opensandbox.io/id=$id")" ] && echo "$v"
+done
+# then: docker volume rm <volume> ...
+```
+
+A sandbox being created holds its volumes for a moment before its container
+exists, so remove only volumes still listed when you run the loop again a
+minute later. On a Docker daemon shared with another AstraBox installation the
+list includes that installation's volumes too, with the same rule.
+
 OpenSandbox's Docker runtime creates every sandbox that carries the
 execd-isolation extension with empty `MaskedPaths` and `ReadonlyPaths`, which
 the engine's inner containers need to mount their own `/proc`. It has no create
