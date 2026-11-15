@@ -184,9 +184,12 @@ def test_an_input_handed_over_again_after_its_reader_was_replaced_runs_once(
         assert "will not run it again" in json.dumps(lost["error"]), lost
 
         _in_box(box, f"touch {shlex.quote(release)}")
-        next_prompt = f"Reply with exactly {marker}_NEXT and nothing else. Do not use any tool."
+        # A token of its own: one built from the interrupted job's file names reads to
+        # the model as that job's completion signal, which it declines to send.
+        next_token = f"NEXT_{uuid.uuid4().hex[:12]}"
+        next_prompt = f"Reply with exactly {next_token} and nothing else. Do not use any tool."
         following = send_and_follow(e2e_client, sid, next_prompt, until="end")
-        assert following.error is None and f"{marker}_NEXT" in following.text, following.error or following.text
+        assert following.error is None and next_token in following.text, following.error or following.text
         wait_until_settled(e2e_client, sid)
 
         # The command ran once, Hermes' ledger holds one admission for the input,
