@@ -55,6 +55,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A2A `CancelTask` stops the work a task's message started. Previously every cancellation was refused. A message no runtime has taken yet is withdrawn, and the conversation shows it as cancelled by its sender. A response that answers only the caller's messages in that context is interrupted. Messages a runtime has queued are dropped with the response in progress, where the runtime can drop them (Codex, Pi). A cancellation that would stop another sender's message, or a message that Claude Code, the DeepSeek Harness or Hermes keeps queued, is refused with the reason.
 - A Hermes Assistant's workspace starts about a tenth sooner on a new box. The box has one CPU, and work beside the Hermes gateway's own start used it: the image shipped Hermes' source without compiled bytecode, which the Assistant's account cannot write, so every gateway, bridge and state-mirror start compiled each module it imported again; and the three gateway services started a Python check every second while waiting for the platform to initialize the box. The image now ships the bytecode, and the services test for the platform's files before starting Python.
 - Codex is told the client's name is `AstraBox` (was `astrabox`), the name a ChatGPT account is asked to authorize.
+- A conversation's sandbox no longer dies while starting on a busy host. The conversation's setup could run before the image's entrypoint had created the image's account and create that account itself; the entrypoint then failed on the duplicate and the container exited, so the conversation ended before it was ready. The setup now waits for the entrypoint's account.
 - Update the bundled Codex to 0.169.0.
 - Update AI SDK, Vite, Vitest, the React plugin for Vite, Tailwind CSS, OpenTelemetry, Ruff, axe-core and body-parser.
 
@@ -121,6 +122,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - A2A `CancelTask` 会停止任务消息所启动的工作。此前所有取消请求都被拒绝。尚未被运行时接收的消息会被撤回，会话中显示为已被发送方取消。只在回答调用方在该上下文中的消息的回复会被中断。运行时已排队的消息会随进行中的回复一起丢弃，前提是该运行时能丢弃它们（Codex、Pi）。会停止其他发送方消息的取消，或涉及 Claude Code、DeepSeek Harness 或 Hermes 仍在排队保留的消息的取消，会被拒绝并说明原因。
 - Hermes Assistant 的工作区在新沙箱上的启动快了约十分之一。沙箱只有一个 CPU，而 Hermes 网关自身启动之外的工作也在占用它：镜像中的 Hermes 源码没有附带编译好的字节码，而 Assistant 账号无法写入，因此网关、bridge 和状态镜像进程每次启动都要重新编译其导入的每个模块；三个网关服务在等待平台初始化沙箱期间还每秒启动一次 Python 检查。现在镜像附带字节码，各服务在启动 Python 之前先检查平台文件是否就绪。
 - 告诉 Codex 的客户端名称改为 `AstraBox`（原为 `astrabox`），即 ChatGPT 账号授权时看到的名称。
+- 主机繁忙时，会话的沙箱不再在启动过程中退出。此前会话的初始化可能先于镜像入口脚本创建镜像账号而运行，并自行创建了该账号；入口脚本随后因账号重复而失败，容器退出，会话在就绪前结束。现在初始化会等待入口脚本创建账号。
 - 内置 Codex 更新到 0.169.0。
 - 更新 AI SDK、Vite、Vitest、Vite 的 React 插件、Tailwind CSS、OpenTelemetry、Ruff、axe-core 和 body-parser。
 
