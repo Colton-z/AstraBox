@@ -190,6 +190,11 @@ What to expect:
   gateway: the sandbox's egress proxy decrypts those connections to deliver the
   credential, and a container must trust the proxy's certificate authority,
   `/opt/opensandbox/mitmproxy-ca-cert.pem` in the sandbox, to use them.
+- Containers resolve names as the sandbox does: the containers of the
+  RuntimeProfile's [host networks](#host-networks-and-storage) by name, and
+  every other name under its network access rules. This holds on Docker's
+  default bridge and on networks the Agent creates, such as a Compose
+  project's, without `--add-host`.
 - `docker run -p` publishes a port in the sandbox: the Agent reaches it at
   `127.0.0.1`. A port the sandbox already uses, such as 8080 or the egress
   proxy's 18080, cannot be published.
@@ -247,8 +252,10 @@ name only those, and is checked again each time a sandbox is created from it.
 cold or prepared, and a replacement sandbox joins them again. The Agent reaches the
 network's containers by their container names and their network aliases that
 have no dots, at the addresses they had when the sandbox was created, or by
-address. The whole network is reachable, every port, in both network access
-modes: joining a network is the RuntimeProfile's grant to reach it, and a
+address, and so do the containers it runs with the
+[container engine](#container-engine). The whole network is reachable,
+every port, in both network access modes: joining a network is the
+RuntimeProfile's grant to reach it, and a
 `Limited` allow list does not narrow it. Everything else still leaves under
 the RuntimeProfile's network access rules, names still resolve through the
 sandbox's egress proxy, and containers on the network cannot open connections

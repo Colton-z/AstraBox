@@ -203,7 +203,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends nginx-extras &&
 # ASTRABOX_CONTAINER_ENGINE=docker (containers/container-engine). Every package
 # is pinned to an exact version from Docker's apt repository, whose signing key
 # is checked by fingerprint; uidmap supplies the setuid newuidmap/newgidmap the
-# engine maps its id range with, slirp4netns its user-mode network.
+# engine maps its id range with, slirp4netns its user-mode network, and
+# dnsmasq-base the resolver its containers ask, which knows the box's
+# /etc/hosts names.
 ARG DOCKER_VERSION=29.9.3
 ARG CONTAINERD_VERSION=2.4.2-4
 ARG DOCKER_BUILDX_VERSION=0.39.0-1
@@ -212,7 +214,7 @@ RUN set -eux; \
     . /etc/os-release; \
     suffix="~ubuntu.${VERSION_ID}~${VERSION_CODENAME}"; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg uidmap slirp4netns iptables; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg uidmap slirp4netns iptables dnsmasq-base; \
     install -d -m 0755 /etc/apt/keyrings; \
     curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
     keyring="$(mktemp -d)"; \
@@ -234,7 +236,7 @@ RUN set -eux; \
     dockerd --version | grep -F " ${DOCKER_VERSION},"; \
     docker buildx version; \
     docker compose version; \
-    command -v dockerd-rootless.sh rootlesskit slirp4netns unshare mountpoint; \
+    for tool in dockerd-rootless.sh rootlesskit slirp4netns unshare mountpoint dnsmasq nsenter ss; do command -v "${tool}"; done; \
     test -u /usr/bin/newuidmap; \
     test -u /usr/bin/newgidmap; \
     ! getent passwd 1000; \

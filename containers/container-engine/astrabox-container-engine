@@ -8,6 +8,9 @@
 #   ready   Run by the platform through the command channel when it creates
 #           such a box. Waits until the engine answers the workload account on
 #           the default socket path, or prints why it cannot and exits 1.
+#   daemon  Run by dockerd-rootless.sh in place of dockerd (DOCKERD names this
+#           script). Starts the containers' resolver, then dockerd, and stops
+#           both when either ends.
 #
 # The engine is a system capability of the image: a prepared box is created
 # from the image before any conversation exists, so nothing here waits for, or
@@ -18,6 +21,18 @@
 # box was created under applies to inner containers unchanged. A rootful engine
 # would forward inner traffic through a kernel bridge the egress sidecar does
 # not filter, and would need NET_ADMIN over the sidecar's own rules.
+#
+# Inner containers resolve names as the box does. The box finds the containers
+# of the host networks it joined in its /etc/hosts, which the lifecycle server
+# writes when it creates the box; a container gets an /etc/hosts of its own
+# from dockerd and never sees those lines. So dockerd hands every container a
+# resolver of the engine's (dnsmasq) as its nameserver: on the default bridge
+# in resolv.conf, on a user-defined network as the upstream of Docker's
+# embedded server. It answers from the box's /etc/hosts and forwards every
+# other name to the box's nameservers, which the egress sidecar's DNS policy
+# answers as it answers the box. It listens in the containers' network
+# namespace: in the box's own, the sidecar redirects every packet to port 53,
+# whatever its address, to the egress DNS proxy, which serves no host records.
 set -euo pipefail
 
 ENGINE="${ASTRABOX_CONTAINER_ENGINE:-none}"
@@ -36,6 +51,9 @@ READY_SECONDS=60
 # supervisord program lists it as an expected exit, so a missing grant is
 # reported once (FAILURE_FILE) instead of being restarted in a loop.
 CANNOT_RUN=3
+# How long `daemon` waits for the containers' resolver to listen before it
+# starts dockerd; dnsmasq binds its socket as soon as it starts.
+RESOLVER_SECONDS=5
 
 fail() {
     mkdir -p "${STATE_DIR}"
@@ -155,6 +173,8 @@ serve() {
     [ -r "${SETUID_FILES}" ] \
         || fail "the image has no ${SETUID_FILES}; it was not built for the container engine"
     xargs -0 -r chmod ug-s < "${SETUID_FILES}"
+    command -v dnsmasq > /dev/null \
+        || fail "the image has no dnsmasq for the containers' names; it was not built for the container engine"
 
     local refusal
     if ! refusal="$(runuser -u "${USER}" -- unshare --user --map-root-user --pid --fork --mount-proc true 2>&1)"; then
@@ -165,6 +185,8 @@ serve() {
     # language SDKs) reach the rootless daemon without any environment.
     ln -sfn "${RUNTIME_DIR}/docker.sock" /run/docker.sock
 
+    # The detached network namespace is where `daemon` finds the containers'
+    # network: rootlesskit keeps it at ${ROOTLESSKIT_STATE_DIR}/netns.
     cd "${WORKLOAD_HOME}"
     exec runuser -u "${USER}" -- env -i \
         PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -176,7 +198,63 @@ serve() {
         DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=builtin \
         DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=true \
         DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=true \
-        dockerd-rootless.sh --data-root "${DATA_ROOT}"
+        DOCKERD=/usr/local/bin/astrabox-container-engine \
+        dockerd-rootless.sh daemon
+}
+
+# Runs as root of the engine's user namespace, in the box's network namespace,
+# with the containers' namespace detached at ${ROOTLESSKIT_STATE_DIR}/netns
+# (dockerd-rootless.sh's child stage, which execs DOCKERD with the arguments
+# `serve` gave it).
+daemon() {
+    local netns address resolver engine ended status deadline
+    [ -n "${ROOTLESSKIT_STATE_DIR:-}" ] \
+        || { echo "astrabox container engine: daemon runs only under dockerd-rootless.sh" >&2; exit 1; }
+    netns="${ROOTLESSKIT_STATE_DIR}/netns"
+    # The address of the containers' namespace on its user-mode link, which
+    # every inner container routes to through its own network's gateway.
+    address="$(nsenter -n"${netns}" ip -4 -o addr show dev tap0 \
+        | awk '{ sub("/.*", "", $4); print $4; exit }')"
+    [ -n "${address}" ] \
+        || { echo "astrabox container engine: the containers' network has no IPv4 address on tap0" >&2; exit 1; }
+
+    # No cache: each lookup reaches the egress DNS proxy, which admits the
+    # addresses it answers for as long as their records live, exactly as when
+    # a container asked the box's nameservers itself.
+    nsenter -n"${netns}" dnsmasq --keep-in-foreground --conf-file=/dev/null \
+        --user=nobody --group=nogroup --pid-file= --log-facility=- \
+        --listen-address="${address}" --bind-interfaces \
+        --resolv-file=/etc/resolv.conf --strict-order --cache-size=0 &
+    resolver=$!
+    deadline=$((SECONDS + RESOLVER_SECONDS))
+    until [ -n "$(nsenter -n"${netns}" ss -Hlnu "src ${address}:53")" ]; do
+        if ! kill -0 "${resolver}" 2> /dev/null; then
+            wait "${resolver}" && status=0 || status=$?
+            echo "astrabox container engine: the containers' resolver exited (${status}) before listening" >&2
+            exit 1
+        fi
+        if [ "${SECONDS}" -ge "${deadline}" ]; then
+            kill -TERM "${resolver}"
+            echo "astrabox container engine: the containers' resolver did not listen on ${address}:53 within ${RESOLVER_SECONDS}s" >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+
+    dockerd --data-root "${DATA_ROOT}" --dns "${address}" &
+    engine=$!
+    trap 'kill -TERM "${engine}" "${resolver}" 2> /dev/null' TERM INT
+    wait -n -p ended "${engine}" "${resolver}" && status=0 || status=$?
+    trap - TERM INT
+    kill -TERM "${engine}" "${resolver}" 2> /dev/null || true
+    wait "${engine}" "${resolver}" 2> /dev/null || true
+    # Without its resolver the engine's containers would lose every name: the
+    # daemon stops with it, and supervisord starts the engine again.
+    if [ "${ended:-}" = "${resolver}" ]; then
+        echo "astrabox container engine: the containers' resolver exited (${status}); stopping the engine" >&2
+        exit 1
+    fi
+    exit "${status}"
 }
 
 ready() {
@@ -218,5 +296,6 @@ ready() {
 case "${1:-}" in
     serve) serve ;;
     ready) ready ;;
-    *) echo "usage: astrabox-container-engine serve|ready" >&2; exit 2 ;;
+    daemon) daemon ;;
+    *) echo "usage: astrabox-container-engine serve|ready|daemon" >&2; exit 2 ;;
 esac

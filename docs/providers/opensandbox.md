@@ -324,6 +324,25 @@ only; every other sandbox is created as before. The sandbox is returned once
 the create fails with `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` and the sandbox's
 own diagnosis.
 
+The engine's containers resolve names through a resolver of the engine's
+own. `astrabox-container-engine` starts `dnsmasq` with the daemon, in the
+network namespace the containers share, and names it to `dockerd` as their
+DNS server: a container on the default bridge finds it in `resolv.conf`, and
+Docker's embedded server forwards to it for a container on a user-defined
+network. It answers from the sandbox's `/etc/hosts`, which holds the names of
+the [host networks](#join-docker-networks) the sandbox joined, and forwards
+every other name to the sandbox's nameservers. That query leaves through the
+sandbox's network namespace, where the egress sidecar redirects it to its DNS
+proxy as it redirects the sandbox's own, so the RuntimeProfile's network
+access rules still decide which names resolve. The resolver keeps no cache:
+every lookup reaches the proxy, which admits the addresses it answers for. It
+cannot run in the sandbox's own namespace, where the sidecar redirects every
+packet to port 53, whatever its address, to that proxy, which serves no host
+records. If the resolver stops, the engine stops with it and starts again.
+On Kubernetes, where a sandbox joins no host networks, its `/etc/hosts`
+holds the Pod's own entries and every other name goes to the Pod's
+nameservers.
+
 ### On Docker {#container-engine-docker}
 
 The create also carries a Docker volume of its own mounted at
@@ -547,7 +566,8 @@ redirect, so names would no longer pass the egress proxy. The hook therefore:
   new connections from the joined subnets, beside the egress sidecar's table,
   which a policy change replaces without touching this one;
 - writes the network's single-label container names and aliases to
-  `/etc/hosts`;
+  `/etc/hosts`, which the sandbox's processes read, and a container engine's
+  containers through the [engine's resolver](#container-engine);
 - adds an allow rule for each joined subnet through the sidecar's
   `PATCH /policy`, sent with the OpenSandbox SDK's egress client to the
   published egress-API port the lifecycle server's readiness wait uses.
