@@ -902,7 +902,9 @@ class ExpirationWatcher:
             with contextlib.suppress(Exception):
                 await runtime_manager.evict_runtime(session_id)
         if paused is False:
-            await self._clear_parked_mark(session_id, sandbox_id=sandbox_id, parked_at=parked_at)
+            await self._clear_parked_mark(
+                session_id, sandbox_id=sandbox_id, parked_at=parked_at, box_resumed=True
+            )
             logger.warning(
                 "expiration_watcher: the pause ended without pausing; the sandbox runs on "
                 "session=%s sandbox=%s",
@@ -994,19 +996,29 @@ class ExpirationWatcher:
             )
         return not occupied
 
-    async def _clear_parked_mark(self, session_id: str, *, sandbox_id: str, parked_at: str) -> None:
+    async def _clear_parked_mark(
+        self, session_id: str, *, sandbox_id: str, parked_at: str, box_resumed: bool = False
+    ) -> None:
         """Remove the mark this park wrote, and nobody else's.
 
         A wake may have resumed the box and cleared the mark meanwhile, or a
         later park written its own; the comparison leaves both alone. The write
         sends the session's ``reader`` notice, as a wake's does, because the box
         it leaves bound is running.
+
+        ``box_resumed`` is for a pause the control plane failed after freezing
+        the box: its compute comes back as after a resume, so the idle clock
+        (:meth:`_is_idle_past`) starts again instead of parking it once more on
+        the next tick.
         """
+        updates: dict[str, Any] = {"sandbox_parked_at": None}
+        if box_resumed:
+            updates["sandbox_resumed_at"] = utcnow_iso()
         try:
             await self._platform._sessions_repo.compare_and_update_session(
                 session_id,
                 expected={"sandbox_id": sandbox_id, "sandbox_parked_at": parked_at},
-                updates={"sandbox_parked_at": None},
+                updates=updates,
                 touch_updated_at=False,
                 notify="reader",
             )
