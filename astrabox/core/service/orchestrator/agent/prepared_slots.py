@@ -56,6 +56,7 @@ from astrabox.core.service.orchestrator.engine.runtime_profiles import (
 from astrabox.core.service.orchestrator.runtime.conversation_identity import (
     prepare_agent_runtime_skill_cache,
 )
+from astrabox.core.service.orchestrator.runtime.pty_terminal import resolve_sandbox_endpoint
 from astrabox.core.service.orchestrator.runtime.sandbox_client import (
     extract_sandbox_id,
     get_underlying_sandbox,
@@ -581,7 +582,7 @@ async def _prepare_seat(
                 engine_label=engine_kind,
             )
         )
-        runner_uri = await _runner_uri_for(handle, runner_port)
+        runner_endpoint = await resolve_sandbox_endpoint(handle, runner_port)
         if gateway_substitution:
             # The adapter reads this to spawn the child with the slot's own
             # placeholder; without it the child keeps the shared placeholder
@@ -604,7 +605,7 @@ async def _prepare_seat(
                 model_credential=model_credential,
                 runtime_env=runtime_env,
                 service_credential=engine_service_credential(request, identity),
-                runner_uri=runner_uri,
+                runner_endpoint=runner_endpoint,
                 preparation_fingerprint=generation,
                 deployment_settings=runtime_manager.deployment_settings,
                 workspace_id=None,
@@ -1597,33 +1598,6 @@ async def _bootstrap_slot_identity(
         skills=_template_skills(template),
         bootstrap_transport=transport,
     )
-
-
-async def _runner_uri_for(handle: Any, port: int) -> str:
-    """The runner's websocket URI, signed when the endpoint needs a header.
-
-    Mirrors the executor's endpoint handling: RunnerLink carries one URI and
-    no headers, so a Secure-Access endpoint is exchanged for its signed form.
-    """
-
-    endpoint = await handle.get_endpoint(port)
-    if endpoint.headers:
-        settings = load_astrabox_settings()
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=int(settings.sandbox_endpoint_url_ttl_seconds)
-        )
-        endpoint = await handle.get_signed_endpoint(port, expires_at=expires_at)
-        if endpoint.headers:
-            raise RuntimeError(
-                "signed runner endpoint still requires routing headers the "
-                f"runner link cannot carry (sandbox={handle.sandbox_id})"
-            )
-    base = endpoint.url
-    if base.startswith("https://"):
-        return "wss://" + base[len("https://") :]
-    if base.startswith("http://"):
-        return "ws://" + base[len("http://") :]
-    raise RuntimeError(f"runner endpoint has no http(s) scheme: {base!r}")
 
 
 class _suppress_and_log:

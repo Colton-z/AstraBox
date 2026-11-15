@@ -8,7 +8,7 @@ from urllib.parse import quote
 
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
-from astrabox.core.service.orchestrator.assistant_a2a_auth import mint_assistant_a2a_capability
+from astrabox.core.service.orchestrator.assistant_a2a_auth import assistant_a2a_targets
 from astrabox.persistence.repository.assistant_catalog_repository import AssistantCatalogRepository
 from astrabox.persistence.repository.platform_mcp_binding_repository import PlatformMCPBindingRepository
 
@@ -18,31 +18,17 @@ PEER_PREFIX = "astrabox/"
 async def assistant_a2a_peers(
     *, assistant_id: str, binding_id: str | None, proxy_base_url: str,
 ) -> dict[str, Any]:
-    """Resolve peers from the durable workspace owner, never model arguments."""
-    from astrabox.core.service.orchestrator.service_registry import get_agent_service
-
-    binding = await PlatformMCPBindingRepository().get_binding(binding_id or "")
-    assistant = await AssistantCatalogRepository().get_assistant(assistant_id)
-    if (
-        not binding or binding.get("scope_kind") != "assistant_workspace"
-        or binding.get("assistant_id") != assistant_id or not assistant
-        or not binding.get("user_id") or assistant.get("owner_id") != binding["user_id"]
-    ):
-        raise APIError(code="MCP_BINDING_NOT_FOUND", message="Assistant binding not found", status_code=404)
-    if not proxy_base_url.strip():
-        raise APIError(code="MCP_PROXY_NOT_CONFIGURED", message="Assistant A2A proxy is not configured", status_code=503)
-    user = UserContext(str(binding["user_id"]), org_id=assistant.get("org_id"))
-    agents = await get_agent_service().list_agents(user)
+    """The Assistant's A2A targets as Hermes' ``a2a_agents`` peers."""
     peers = {}
-    for agent in agents:
-        agent_id = str(agent["agent_id"])
-        peer_key = f"{PEER_PREFIX}{agent_id}"
+    for target in await assistant_a2a_targets(
+        assistant_id=assistant_id, binding_id=binding_id, proxy_base_url=proxy_base_url,
+    ):
+        peer_key = f"{PEER_PREFIX}{target['agent_id']}"
         peers[peer_key] = {
-            "url": f"{proxy_base_url.rstrip('/')}/api/v1/assistant-a2a/"
-            f"{quote(str(binding_id), safe='')}/agents/{quote(agent_id, safe='')}",
-            "auth": {"type": "bearer", "token": mint_assistant_a2a_capability(str(binding_id), agent_id)},
+            "url": target["url"],
+            "auth": {"type": "bearer", "token": target["token"]},
             "capabilities": [
-                f"{agent.get('name') or agent_id}; call exactly "
+                f"{target['name']}; call exactly "
                 f'a2a_call(agent="{peer_key}", message=...)',
             ],
         }

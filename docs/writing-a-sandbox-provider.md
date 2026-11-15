@@ -43,7 +43,7 @@ handle has one, releases local resources only and never destroys the sandbox.
 
 ## Reuse execd for files, commands, and processes
 
-Every bundled sandbox image carries OpenSandbox's execd `v1.1.0` at
+Every bundled sandbox image carries the execd of OpenSandbox release `1.2.1` at
 `/opt/astrabox/opensandbox/execd` (see the
 [Container Reference](container-reference.md)). When the provider's sandboxes
 run an execd on port `44772`, and `get_endpoint(44772)` returns a URL and

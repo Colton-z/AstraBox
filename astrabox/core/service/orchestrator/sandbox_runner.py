@@ -1487,11 +1487,12 @@ class RunnerSession:
         self._run_start_seq: int | None = None
         self._last_delivery_sequence = 0
         self._busy = False
-        #: Background tasks the engine started and has not ended or paused; the
-        #: runtime is working while any is open, whatever the inputs are doing.
-        self._open_tasks: set[str] = set()
-        #: The status last sent to the host, so a change is reported once.
-        self._reported_status: str | None = None
+        #: Background tasks the engine started and has not ended or paused, by
+        #: task id, with the SDK's own type and description of each. The runtime
+        #: keeps working in its box while any is open, whatever the inputs do.
+        self._open_tasks: dict[str, dict[str, str]] = {}
+        #: The status and tasks last sent to the host, so a change is reported once.
+        self._reported_status: tuple[str, tuple[tuple[str, str, str], ...]] | None = None
         if self._store is not None:
             self._store.set_drain_handler(self._compact_after_store_drain)
 
@@ -2037,29 +2038,45 @@ class RunnerSession:
             self.sender.note_response_start(sequence)
 
     async def _report_status(self) -> None:
-        """Send ``busy`` while an input or a background task runs, else ``idle``, on change."""
-        status = "busy" if self._busy or self._open_tasks else "idle"
-        if status != self._reported_status:
-            self._reported_status = status
-            await self.sender.send("status", state=status)
+        """Send the status and the open background tasks, on change.
 
-    def _track_task(self, message: Any, message_type: str) -> None:
-        """Keep the set of background tasks that are running, from the SDK's own task messages."""
+        ``busy`` while an input runs, ``background`` while only background tasks
+        do, else ``idle``.
+        """
+        status = "busy" if self._busy else "background" if self._open_tasks else "idle"
+        tasks = self.background_tasks()
+        reported = (status, tuple((task["task_id"], task["task_type"], task["description"]) for task in tasks))
+        if reported != self._reported_status:
+            self._reported_status = reported
+            await self.sender.send("status", state=status, tasks=tasks)
+
+    def background_tasks(self) -> list[dict[str, str]]:
+        """The open background tasks, oldest first."""
+        return list(self._open_tasks.values())
+
+    def _track_task(self, message: Any, message_type: str) -> bool:
+        """Keep the open background tasks from the SDK's own task messages; ``True`` when they changed."""
         task_id = str(getattr(message, "task_id", None) or "").strip()
         if not task_id:
-            return
+            return False
+        before = dict(self._open_tasks)
         if message_type == "TaskStartedMessage":
-            self._open_tasks.add(task_id)
+            self._open_tasks[task_id] = {
+                "task_id": task_id,
+                "task_type": str(getattr(message, "task_type", None) or ""),
+                "description": str(getattr(message, "description", None) or ""),
+            }
         elif message_type == "TaskNotificationMessage":
-            self._open_tasks.discard(task_id)
+            self._open_tasks.pop(task_id, None)
         elif message_type == "TaskUpdatedMessage":
             from claude_agent_sdk.types import TERMINAL_TASK_STATUSES
 
             status = str(getattr(message, "status", None) or "")
             if status in TERMINAL_TASK_STATUSES or status == "paused":
-                self._open_tasks.discard(task_id)
+                self._open_tasks.pop(task_id, None)
             elif status in ("pending", "running"):
-                self._open_tasks.add(task_id)
+                self._open_tasks.setdefault(task_id, {"task_id": task_id, "task_type": "", "description": ""})
+        return self._open_tasks != before
 
     def state(self) -> dict[str, Any]:
         """This session's own account of itself, consistent with the journal's last frame.
@@ -2073,7 +2090,8 @@ class RunnerSession:
         return {
             "boot_id": RUNNER_BOOT_ID,
             "last_seq": self.sender.last_seq,
-            "busy": self._busy or bool(self._open_tasks),
+            "busy": self._busy,
+            "background_tasks": self.background_tasks(),
             "last_delivery_sequence": self._last_delivery_sequence,
             "run_start_seq": self._run_start_seq,
             "first_unpersisted_event_seq": self.sender.first_unpersisted_event_seq,
@@ -2304,7 +2322,10 @@ class RunnerSession:
                 continue
             platform_input_id: str | None = None
             message_type = type(message).__name__
-            self._track_task(message, message_type)
+            if self._track_task(message, message_type):
+                # A task can end, or be stopped, while no response runs: its end
+                # is the only report of it the host will get.
+                await self._report_status()
             if message_type == "UserMessage":
                 content = getattr(message, "content", None)
                 parent_tool_use_id = getattr(message, "parent_tool_use_id", None)

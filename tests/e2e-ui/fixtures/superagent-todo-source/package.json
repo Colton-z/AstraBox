@@ -1,0 +1,28 @@
+{
+  "name": "astrabox-e2e-todo-source",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A dsh-superagent Source for the e2e to-do service (tests/e2e-ui/fixtures/todo_service.py), in its own package: a dsh plugin Bundle an owner installs, or a plugin an image inserts.",
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "peerDependencies": {
+    "dsh-superagent": "*"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml"
+  ],
+  "peerDependenciesMeta": {
+    "dsh-superagent": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "manifestVersion": 1
+  }
+}

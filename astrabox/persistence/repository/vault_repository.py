@@ -125,12 +125,21 @@ def _auth(row: Mapping[str, Any]) -> dict[str, Any]:
     if row["expires_at"] is not None:
         auth["expires_at"] = to_iso(row["expires_at"])
     if row["refresh_token_endpoint"] is not None:
-        auth["refresh"] = {
+        endpoint = {
             "token_endpoint": row["refresh_token_endpoint"],
             "client_id": row["refresh_client_id"],
             "auth_method": row["refresh_auth_method"],
             "scope": row["refresh_scope"],
         }
+        if row["auth_type"] == "environment_variable":
+            # The grant's user belongs to the grant, not to the credential.
+            auth["oauth"] = {
+                **endpoint,
+                "grant_type": row["token_grant_type"],
+                "username": auth.pop("username", None),
+            }
+        else:
+            auth["refresh"] = endpoint
     if row["network_access"] is not None:
         networking: dict[str, Any] = {"type": row["network_access"]}
         if row["allowed_hosts"] is not None:
@@ -152,7 +161,8 @@ def _auth(row: Mapping[str, Any]) -> dict[str, Any]:
 
 def _auth_columns(auth: Mapping[str, Any]) -> dict[str, Any]:
     """The columns that store ``auth``; a field it does not carry is stored as ``NULL``."""
-    refresh = auth.get("refresh") or {}
+    oauth = auth.get("oauth") or {}
+    refresh = auth.get("refresh") or oauth
     networking = auth.get("networking") or {}
     injection = auth.get("injection_location") or {}
     allowed_requests = auth.get("allowed_requests") or {}
@@ -161,13 +171,14 @@ def _auth_columns(auth: Mapping[str, Any]) -> dict[str, Any]:
         "mcp_server_url": auth.get("mcp_server_url"),
         "url": auth.get("url"),
         "secret_name": auth.get("secret_name"),
-        "username": auth.get("username"),
+        "username": auth.get("username") or oauth.get("username"),
         "header_name": auth.get("header_name"),
         "expires_at": from_iso(auth.get("expires_at")),
         "refresh_token_endpoint": refresh.get("token_endpoint"),
         "refresh_client_id": refresh.get("client_id"),
         "refresh_auth_method": refresh.get("auth_method"),
         "refresh_scope": refresh.get("scope"),
+        "token_grant_type": oauth.get("grant_type"),
         "network_access": networking.get("type"),
         "allowed_hosts": networking.get("allowed_hosts"),
         "inject_header": injection.get("header"),
@@ -534,13 +545,14 @@ class VaultRepository:
     # ── OAuth refresh claim ─────────────────────────────────────────────────
 
     async def claim_oauth_refresh(
-        self, credential_id: str, *, expires_at: str, lease_s: float
+        self, credential_id: str, *, expires_at: str | None, lease_s: float
     ) -> dict[str, Any] | None:
         """Take the right to refresh the credential's access token, by compare-and-set.
 
         The claim succeeds only while the credential is active, still expires
-        at ``expires_at`` (the expiry the caller judged expired) and holds no
-        unexpired claim. It lasts ``lease_s`` seconds by the database clock.
+        at ``expires_at`` (the expiry the caller judged expired; ``None`` for a
+        token not yet obtained) and holds no unexpired claim. It lasts
+        ``lease_s`` seconds by the database clock.
         Returns the claimed credential, whose ``refresh_claimed_until``
         identifies the claim, or ``None``.
         """
@@ -551,7 +563,9 @@ class VaultRepository:
                 .where(
                     _CREDENTIALS.c.credential_id == credential_id,
                     _CREDENTIALS.c.archived_at.is_(None),
-                    _CREDENTIALS.c.expires_at == from_iso(expires_at),
+                    _CREDENTIALS.c.expires_at.is_(None)
+                    if expires_at is None
+                    else _CREDENTIALS.c.expires_at == from_iso(expires_at),
                     or_(
                         _CREDENTIALS.c.refresh_claimed_until.is_(None),
                         _CREDENTIALS.c.refresh_claimed_until <= func.now(),

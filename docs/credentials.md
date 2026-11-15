@@ -226,9 +226,9 @@ curl -X PUT \
 New Sessions created from that Agent automatically gain access to every active
 Credential in the Vault. For MCP credentials, the first Vault with a matching
 MCP server URL wins. HTTP Basic credentials likewise use the first Vault with a
-matching destination URL. An Assistant can use MCP credentials, but it cannot
-be assigned a Vault containing `environment_variable` or `http_basic`
-credentials.
+matching destination URL. An Assistant takes every credential type; its
+outbound credentials are delivered to its one sandbox, shared by all its
+conversations ([how delivery keeps up with changes](egress-credential-injection.md#add-an-outbound-credential)).
 
 ## Parameters
 
@@ -246,7 +246,8 @@ credentials.
 | `auth.username` | string | Yes for `http_basic` | HTTP Basic username; no colon or control characters |
 | `auth.password` | string | Yes for `http_basic` | Password or access token; write-only |
 | `auth.secret_name` | string | Yes for `environment_variable` | Environment variable name |
-| `auth.secret_value` | string | Yes for `environment_variable` | Secret value; write-only |
+| `auth.secret_value` | string | Yes for `environment_variable` without `auth.oauth` | Secret value; write-only |
+| `auth.oauth` | object | No | `environment_variable` only, in place of `auth.secret_value`: the OAuth2 grant AstraBox obtains and renews the value by; see [Use a short-lived access token](egress-credential-injection.md#oauth-grant) |
 | `auth.delivery` | string | No | `environment_variable` only: `substitution` (default) or `header`; see [header delivery](egress-credential-injection.md#header-delivery) |
 | `auth.expires_at` | string | No | OAuth access-token expiration time in RFC 3339 format |
 | `auth.refresh` | object | No | OAuth refresh configuration |

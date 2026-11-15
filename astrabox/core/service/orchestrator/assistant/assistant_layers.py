@@ -59,6 +59,43 @@ LAYER_RUNTIME_FIELDS = (
 )
 
 
+#: What a layer authors for the Assistants' runtime, as distinct from the
+#: model and RuntimeProfile choice, which every Assistant reads.
+_RUNTIME_AUTHORED_FIELDS = (
+    "skills",
+    "mcp_servers",
+    "mcp_assignments",
+    "extension_catalog",
+    "packages",
+    "engine_options",
+    "credential_vault_ids",
+)
+
+
+async def layers_for_engine(
+    layers: list[tuple[str, dict[str, Any]]],
+    engine_kind: str,
+    runtime_profiles: list[dict[str, Any]],
+) -> list[tuple[str, dict[str, Any]]]:
+    """The layers as one Assistant runtime receives them.
+
+    A layer's Skills, MCP servers, packages, native options and Vaults are
+    written for the runtime of the RuntimeProfile the layers choose for new
+    Assistants: they are validated against its engine and nothing else. An
+    Assistant on another runtime does not inherit them; it still reads the
+    layers' model and instructions.
+    """
+
+    name = await default_runtime_profile_name(layers, runtime_profiles)
+    profile = next((item for item in runtime_profiles if item.get("name") == name), None)
+    if profile is not None and str(profile.get("engine_kind") or "").strip() == engine_kind:
+        return layers
+    return [
+        (label, {**layer, **{field: None for field in _RUNTIME_AUTHORED_FIELDS}})
+        for label, layer in layers
+    ]
+
+
 async def inherited_layers(
     *, repo: AssistantDefaultsRepository | None = None
 ) -> list[tuple[str, dict[str, Any]]]:

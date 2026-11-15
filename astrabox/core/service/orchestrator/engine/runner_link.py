@@ -28,6 +28,7 @@ from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 from websockets.frames import CloseCode
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.core.service.orchestrator.engine.base import EngineStreamDetached
 from astrabox.core.service.orchestrator.engine.runtime import (
     RuntimeControlRefused,
@@ -160,6 +161,10 @@ def _validate_runner_engine_contract(
 class RunnerLink:
     """One websocket to one box's runner. Use as an async context manager.
 
+    ``endpoint`` is the runner's address, and its headers go on every
+    connection: a route or admission header, such as the box's execd
+    credential when the runner is reached through execd's proxy.
+
     ``activation_token`` is the credential every opening frame carries:
     prepare installs it in the runner, and activate and attach must present
     it again. The caller derives it (:func:`runner_activation_token`), so a
@@ -169,14 +174,20 @@ class RunnerLink:
 
     def __init__(
         self,
-        uri: str,
+        endpoint: SandboxEndpoint,
         *,
         activation_token: str,
     ) -> None:
         token = str(activation_token or "").strip()
         if not token:
             raise RunnerLinkError("runner link requires an activation token")
-        self._uri = uri
+        origin = endpoint.url
+        self._uri = (
+            "wss://" + origin[len("https://"):]
+            if origin.startswith("https://")
+            else "ws://" + origin[len("http://"):]
+        )
+        self._headers = dict(endpoint.headers)
         self._activation_token = token
         self._ws: Any = None
         self._recv_task: asyncio.Task[None] | None = None
@@ -258,7 +269,11 @@ class RunnerLink:
 
     async def _connect(self) -> None:
         try:
-            self._ws = await websocket_connect(self._uri, max_size=RUNNER_MESSAGE_MAX_BYTES)
+            self._ws = await websocket_connect(
+                self._uri,
+                max_size=RUNNER_MESSAGE_MAX_BYTES,
+                additional_headers=self._headers or None,
+            )
         except Exception as exc:  # noqa: BLE001 - vendor transport boundary
             raise EngineStreamDetached(
                 f"runner transport could not connect to {self._uri!r}: {exc}"

@@ -21,6 +21,11 @@ import type {
   AdminProcessHealth,
   IssuedMcpClientToken,
   McpClientToken,
+  DeletedModelAccount,
+  ModelAccount,
+  ModelAccountModel,
+  ModelAccountTeamPool,
+  ModelAccountVendor,
   AdminSandboxDiagnostics,
   AdminSandboxSecurity,
   AdminSandboxDiagnosticScope,
@@ -1620,6 +1625,79 @@ export async function revokeMcpClientToken(tokenId: string): Promise<void> {
   }));
 }
 
+// ── The signed-in user's model accounts (ChatGPT plans, Anthropic API keys) ──
+/** The caller's model accounts of every vendor, oldest first. Never carries a token or key. */
+export async function listModelAccounts(): Promise<ModelAccount[]> {
+  return expectList<ModelAccount>(
+    await send((wire) => client.GET('/api/v1/me/model-accounts', wire)),
+    '/me/model-accounts',
+  );
+}
+
+/**
+ * Keep an Anthropic API key as one of the caller's accounts. The server checks
+ * it with Anthropic first and refuses a key Anthropic does not accept.
+ */
+export async function addAnthropicApiKey(body: { api_key: string; label?: string }): Promise<ModelAccount> {
+  return send((wire) => client.POST('/api/v1/me/model-accounts/anthropic', {
+    ...wire,
+    body,
+  }));
+}
+
+/**
+ * Rename an account, make it the caller's default of its vendor, share a
+ * ChatGPT account with the team pool (`shared`), or replace an Anthropic API
+ * key account's key; an absent field is left as it is.
+ */
+export async function updateModelAccount(
+  accountId: string,
+  body: { label?: string; is_default?: boolean; shared?: boolean; api_key?: string },
+): Promise<ModelAccount> {
+  return send((wire) => client.PATCH('/api/v1/me/model-accounts/{account_id}', {
+    ...wire,
+    params: { path: { account_id: accountId } },
+    body,
+  }));
+}
+
+/**
+ * Remove an account. For a ChatGPT account the server revokes its session at
+ * OpenAI first; `revocation_confirmed` is false when OpenAI did not confirm it,
+ * and null for an Anthropic API key, which AstraBox cannot revoke.
+ */
+export async function deleteModelAccount(accountId: string): Promise<DeletedModelAccount> {
+  return send((wire) => client.DELETE('/api/v1/me/model-accounts/{account_id}', {
+    ...wire,
+    params: { path: { account_id: accountId } },
+  }));
+}
+
+/** Whether this deployment's team pool is on, without which no account can be shared. */
+export async function getModelAccountTeamPool(): Promise<ModelAccountTeamPool> {
+  return send((wire) => client.GET('/api/v1/me/model-accounts/team-pool', wire));
+}
+
+/** The id that names the caller's default account to the model list. */
+export const DEFAULT_MODEL_ACCOUNT = 'default';
+
+/**
+ * The models an account can use, in its vendor's order. `default` is the
+ * caller's default account of `vendor`.
+ */
+export async function listModelAccountModels(
+  accountId: string,
+  vendor: ModelAccountVendor,
+): Promise<ModelAccountModel[]> {
+  return expectList<ModelAccountModel>(
+    await send((wire) => client.GET('/api/v1/me/model-accounts/{account_id}/models', {
+      ...wire,
+      params: { path: { account_id: accountId }, query: { vendor } },
+    })),
+    '/me/model-accounts/{account_id}/models',
+  );
+}
+
 export async function listAgentDeployments(agentId: string): Promise<AgentDeployment[]> {
   return expectList<AgentDeployment>(
     await send((wire) => client.GET('/api/v1/admin/agents/{agent_id}/deployments', {
@@ -2503,6 +2581,13 @@ export async function stopSessionChildRun(
   return send((wire) => client.POST('/api/v1/sessions/{session_id}/child-runs/{child_run_id}/stop', {
     ...wire,
     params: { path: { session_id: sessionId, child_run_id: childRunId } },
+  })) as Promise<{ status: string }>;
+}
+
+export async function stopSessionBackgroundTask(sessionId: string, taskId: string): Promise<{ status: string }> {
+  return send((wire) => client.POST('/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop', {
+    ...wire,
+    params: { path: { session_id: sessionId, task_id: taskId } },
   })) as Promise<{ status: string }>;
 }
 

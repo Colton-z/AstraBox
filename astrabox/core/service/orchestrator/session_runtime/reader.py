@@ -30,6 +30,7 @@ import json
 import contextlib
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
+import dataclasses
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -67,6 +68,7 @@ from astrabox.core.service.orchestrator.session_runtime.feed import (
 from astrabox.persistence.repository.session_runtime_repository import (
     FactBatch,
     InputsAdmitted,
+    InputsCancelled,
     InputsFailed,
     InteractionClose,
     InteractionOpen,
@@ -102,14 +104,20 @@ class ReaderHooks:
     written to the runtime and raises :class:`InputPreparationRefused` when the
     input must not be. ``committed`` receives each batch after it is durable,
     for consumers that act on recorded facts. ``status`` receives the
-    runtime's own status as it changes. ``permission_mode`` applies the
-    session's stored permission mode to the runtime.
+    runtime's own status as it changes, and again with every renewal of the
+    reader's lease while it holds: one response can run for hours without a
+    change of status. ``permission_mode`` applies the
+    session's stored permission mode to the runtime. ``usage_limited``
+    receives a response the runtime ended for a model usage limit
+    (:attr:`~astrabox.core.service.orchestrator.engine.runtime.ResponseEnded.usage_limited`)
+    before it is recorded, and returns the ending to record.
     """
 
     prepare: Callable[[RuntimeInput], Awaitable[None]]
     committed: Callable[[FactBatch], Awaitable[None]]
     status: Callable[[str], Awaitable[None]]
     permission_mode: Callable[[], Awaitable[None]]
+    usage_limited: Callable[[ResponseEnded], Awaitable[ResponseEnded]] | None = None
 
 
 ReaderExit = Literal["stream_ended", "lease_lost", "protocol_error"]
@@ -156,6 +164,68 @@ def input_failed_part(input_id: str, failure: dict[str, Any]) -> dict[str, Any]:
     return {"type": "data-input-failed", "data": {"input_id": input_id, **failure}}
 
 
+#: What a page shows for an input withdrawn before any response took it.
+INPUT_CANCELLED = {
+    "code": "INPUT_CANCELLED",
+    "message": "Cancelled by its sender before the Agent took it.",
+}
+
+
+def background_task_records(tasks: Any) -> list[dict[str, str]]:
+    """The runtime's background tasks as the session row keeps them."""
+    return [{"task_id": task.task_id, "kind": task.kind, "description": task.description} for task in tasks]
+
+
+class ControlRefused(Exception):
+    """A control the reader cannot apply as asked; the message says why."""
+
+
+def _storable_text(text: str) -> str:
+    if text.isascii():
+        return text.replace("\x00", "\ufffd") if "\x00" in text else text
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # An unpaired surrogate: a UTF-16 string cut inside a pair, relayed as an escape.
+        text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return text.replace("\x00", "\ufffd") if "\x00" in text else text
+
+
+def storable(value: Any) -> Any:
+    """``value`` with the characters PostgreSQL text cannot hold replaced by U+FFFD.
+
+    Those are NUL and unpaired surrogates. A runtime relays what its tools
+    print, and binary output decodes to text that can contain either. A part
+    the database refuses stops every reader generation at the same event, so
+    the conversation would never move again. The replacement is made where
+    runtime events and state enter the reader, so the live part and the record
+    carry the same text, as terminal output does. A value that holds neither is
+    returned as it is.
+    """
+
+    if isinstance(value, str):
+        return _storable_text(value)
+    if isinstance(value, dict):
+        pairs = [(storable(key), storable(item)) for key, item in value.items()]
+        if all(new[0] is old[0] and new[1] is old[1] for new, old in zip(pairs, value.items())):
+            return value
+        return dict(pairs)
+    if isinstance(value, (list, tuple)):
+        items = [storable(item) for item in value]
+        if all(new is old for new, old in zip(items, value)):
+            return value
+        return list(items) if isinstance(value, list) else tuple(items)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        changes = {}
+        for field in dataclasses.fields(value):
+            current = getattr(value, field.name)
+            cleaned = storable(current)
+            if cleaned is not current:
+                changes[field.name] = cleaned
+        return dataclasses.replace(value, **changes) if changes else value
+    return value
+
+
 class SessionReader:
     def __init__(
         self,
@@ -180,6 +250,9 @@ class SessionReader:
         self._commit_lock = asyncio.Lock()
         self._closing = False
         self._protocol_error = False
+        #: The runtime status last committed, and when it was last reported.
+        self._status: str | None = None
+        self._status_reported = 0.0
         #: Responses whose first text this reader has read (for the delay stamp).
         self._texted: set[str] = set()
         self._positioned_responses: set[str] = set()
@@ -229,7 +302,8 @@ class SessionReader:
 
     async def _read_events(self, cursor: RuntimeCursor | None) -> None:
         events = await self._open_events(cursor)
-        async for event in events:
+        async for raw in events:
+            event = storable(raw)
             if isinstance(event, InputAdmitted):
                 await pass_fault_barrier(
                     "reader_boundary", session_id=self._sid, phase="admission", item_id=event.input_id
@@ -245,6 +319,8 @@ class SessionReader:
                 )
                 # Resolve cards before the source cursor can enter a commit.
                 cards = await card_parts(self._sid, event.frame)
+            if isinstance(event, ResponseEnded) and event.usage_limited and self._hooks.usage_limited:
+                event = await self._hooks.usage_limited(event)
             self._take(event)
             if not isinstance(event, ResponseOutput):
                 continue
@@ -323,6 +399,7 @@ class SessionReader:
             self._take(ResponseOutput(event.cursor, None, input_failed_part(event.input_id, event.failure)))
         elif isinstance(event, StatusChanged):
             batch.status = event.status
+            batch.background_tasks = background_task_records(event.background_tasks)
         elif isinstance(event, RuntimeDiagnostic):
             logger.info(
                 "runtime diagnostic session=%s type=%s raw=%s",
@@ -351,6 +428,7 @@ class SessionReader:
 
     async def _reconcile(self, state: RuntimeState) -> None:
         """Align the recorded facts with the runtime's own account of itself."""
+        state = storable(state)
         recorded_open = set(await self._repo.open_response_ids(self._sid))
         runtime_open = {response.response_id: response for response in state.open_responses}
         recorded_interactions = set(await self._repo.open_interaction_ids(self._sid))
@@ -381,6 +459,7 @@ class SessionReader:
             batch.facts.append(InputsFailed((refused.input_id,), refused.failure))
         batch.output.extend(lost_parts)
         batch.status = state.status
+        batch.background_tasks = background_task_records(state.background_tasks)
         batch.cursor = state.cursor.as_json() if state.cursor is not None else None
         await self._commit()
         for lost in lost_parts:
@@ -396,13 +475,16 @@ class SessionReader:
             except TimeoutError:
                 if not await self._repo.renew_reader(self._lease, ttl_s=LEASE_TTL_S):
                     raise _LeaseLost() from None
-                continue
-            if not self._closing:
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(self._urgent.wait(), timeout=COMMIT_INTERVAL_S)
-            await self._commit()
-            if self._closing:
-                return
+            else:
+                if not self._closing:
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(self._urgent.wait(), timeout=COMMIT_INTERVAL_S)
+                await self._commit()
+                if self._closing:
+                    return
+            if self._status is not None and time.monotonic() - self._status_reported >= renew_every:
+                self._status_reported = time.monotonic()
+                await self._hooks.status(self._status)
 
     async def _commit(self) -> None:
         """Commit the pending batch and run its hooks.
@@ -425,6 +507,8 @@ class SessionReader:
             if cursor is not None:
                 await self._client.committed(cursor)
             if batch.status is not None:
+                self._status = batch.status
+                self._status_reported = time.monotonic()
                 await self._hooks.status(batch.status)
         await self._hooks.committed(batch)
 
@@ -481,10 +565,17 @@ class SessionReader:
             try:
                 if row["kind"] == "interrupt":
                     await self._client.interrupt()
+                elif row["kind"] == "cancel_input":
+                    await self._cancel_input(json.loads(str(row["target"])))
                 elif row["kind"] == "stop_child":
                     stop = getattr(self._client, "stop_child_run", None)
                     if not callable(stop):
                         raise RuntimeError(f"the {self._client.engine_kind} runtime cannot stop a sub-agent")
+                    await stop(str(row["target"]))
+                elif row["kind"] == "stop_background":
+                    stop = getattr(self._client, "stop_background_task", None)
+                    if not callable(stop):
+                        raise RuntimeError(f"the {self._client.engine_kind} runtime cannot stop a background task")
                     await stop(str(row["target"]))
                 else:
                     raise RuntimeError(f"unknown control {row['kind']!r}")
@@ -532,6 +623,61 @@ class SessionReader:
                 self._close_interaction(interaction_id, "answered")
             # Runtime acceptance receipts distinguish redelivery after a lost commit.
             await self._commit()
+
+    async def _cancel_input(self, request: dict[str, Any]) -> None:
+        """Stop the work one input started, touching no input outside ``allowed``.
+
+        An input no runtime has received is withdrawn here. One a running
+        response answers stops with that response, unless the response also
+        answers an input outside ``allowed``. One the runtime holds behind
+        other work goes with everything it queued and the response in
+        progress, which the runtime drops only as a whole, and only a runtime
+        that can drop queued inputs does so. A finished input has nothing left
+        to stop.
+        """
+        input_id = str(request["input_id"])
+        allowed = {str(item) for item in request["allowed"]}
+        row = await self._repo.get_input(self._sid, input_id)
+        if row is None:
+            raise ControlRefused("the message is not in this conversation")
+        if row["state"] not in ("pending", "delivered", "admitted"):
+            return
+        if row.get("response_id"):
+            response_id = str(row["response_id"])
+            response = await self._repo.get_response(self._sid, response_id)
+            if response is None or response["status"] == "ended":
+                return
+            answered = {str(item["input_id"]) for item in await self._repo.inputs_for_response(self._sid, response_id)}
+            if answered - allowed:
+                raise ControlRefused(
+                    "the response answering it also answers a message another sender or conversation sent"
+                )
+            await self._client.interrupt()
+            return
+        if row["state"] == "pending":
+            self._batch.facts.append(InputsCancelled((input_id,), INPUT_CANCELLED))
+            await self._publish_platform(None, [input_failed_part(input_id, INPUT_CANCELLED)])
+            return
+        queued = await self._repo.queued_input_ids(self._sid)
+        running: set[str] = set()
+        for response_id in await self._repo.open_response_ids(self._sid):
+            running |= {
+                str(item["input_id"]) for item in await self._repo.inputs_for_response(self._sid, response_id)
+            }
+        if (set(queued) | running) - allowed:
+            raise ControlRefused(
+                "the runtime drops queued messages only all together, and some came from another "
+                "sender or conversation"
+            )
+        try:
+            await self._client.interrupt(cancel_queued=True)
+        except NotImplementedError as exc:
+            raise ControlRefused(
+                f"the {self._client.engine_kind} runtime keeps a message it queued until it runs it"
+            ) from exc
+        if queued:
+            self._batch.facts.append(InputsCancelled(tuple(queued), INPUT_CANCELLED))
+            await self._publish_platform(None, [input_failed_part(item, INPUT_CANCELLED) for item in queued])
 
     async def _refuse(self, input_id: str, failure: dict[str, Any]) -> None:
         logger.info("session %s input %s refused: %s", self._sid, input_id, failure.get("code"))

@@ -46,6 +46,14 @@ from astrabox.providers.execd import EXECD_PORT, ExecdCommands, ExecdFiles, Exec
 from astrabox.providers.execd.commands import ReportedExitStatus, join_execd_lines
 from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import AIO_HTTP_PORT
+from astrabox.providers.open_sandbox.execd_access import (
+    ENDPOINTS_OUTSIDE_EXECD,
+    EXECD_ACCESS_NOT_ENFORCED,
+    EXECD_ACCESS_TOKEN_HEADER,
+    execd_access_headers,
+    execd_access_required,
+    with_execd_access,
+)
 from astrabox.providers.open_sandbox._metadata import (
     assignment_metadata_value,
     is_client_pool_identity,
@@ -71,6 +79,8 @@ from astrabox.providers.sandbox_image import (
 from astrabox.seams.egress_credentials import SandboxEgressCredentialPlan
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+    SANDBOX_CONTAINER_ENGINE_DOCKER,
+    SANDBOX_CONTAINER_ENGINE_NONE,
     SANDBOX_DIAGNOSTIC_SCOPES,
     SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_DATA_PLANE_ALIVE,
@@ -140,15 +150,24 @@ OPEN_SANDBOX_BACKEND_NAME = "open_sandbox"
 _TRAILING_INT_RE = re.compile(r"(-?\d+)\s*$")
 
 # Pause and resume are asynchronous on this control plane: the call returns
-# while a commit Job still runs. These bound the wait for the state to settle.
-# The timeout is generous because the commit is an image push whose duration is
-# the box's filesystem, not a fixed cost — and the caller's fallback for "not
-# settled" is simply to leave the sandbox alone, which is cheap.
-_PAUSE_SETTLE_TIMEOUT_SECONDS = 300.0
-_PAUSE_SETTLE_POLL_SECONDS = 3.0
-# Upstream's phase vocabulary, upper-cased at the comparison. `Succeed` is what
-# a box that finished pausing reports once its snapshot Job completed.
-_PAUSED_STATES = frozenset({"PAUSED", "SUCCEED"})
+# while the controller still works, so both poll the lifecycle state.
+_SETTLE_POLL_SECONDS = 3.0
+# A resume recreates the box's Pod from its snapshot image, whose parent layers
+# the node already holds; this bounds the wait for that Pod to report Running.
+_RESUME_SETTLE_TIMEOUT_SECONDS = 300.0
+# OpenSandbox ends every pause itself: the controller gives its commit Job
+# ``--commit-job-timeout`` (ten minutes by default), and a commit that fails or
+# runs out of time returns the sandbox to Running with its Pod kept (see
+# https://github.com/opensandbox-group/OpenSandbox/blob/main/docs/guides/pause-resume.md).
+# The commit reads the box's whole root filesystem, so its duration follows the
+# image size and the node's disk. This bound is twice the default deadline, so a
+# controller that is running answers first; a box still Pausing here stays
+# parked, and only a later read of its state decides it.
+_PAUSE_VERDICT_SECONDS = 20 * 60.0
+# The lifecycle API's public states, lower-cased as :meth:`probe` reports them.
+_PAUSE_DONE_STATES = frozenset({"paused", "resuming"})
+_PAUSE_PENDING_STATES = frozenset({"pausing"})
+_HELD_BY_PAUSE_STATES = _PAUSE_PENDING_STATES | _PAUSE_DONE_STATES
 _RUNNING_STATES = frozenset({"RUNNING", "READY"})
 _SETTLE_LOST_STATES = frozenset({"FAILED", "ERROR", "TERMINATED"})
 """States a pause or a resume can never leave for the one it was aiming at.
@@ -475,6 +494,22 @@ class OpenSandboxHandle:
         return str(self._sdk.id)
 
     @property
+    def execd_access(self) -> dict[str, str]:
+        """The header this box's execd requires; empty for a box created without one.
+
+        It rides the SDK object's connection config
+        (:func:`.execd_access.with_execd_access`), so every request the SDK
+        makes carries it; :meth:`get_endpoint` adds it for the transports this
+        module and the engines open themselves.
+        """
+        headers = dict(self._sdk.connection_config.headers or {})
+        return {
+            name: value
+            for name, value in headers.items()
+            if name == EXECD_ACCESS_TOKEN_HEADER
+        }
+
+    @property
     def id(self) -> str:
         """Alias of :attr:`sandbox_id` for the extractor's ``id`` probe."""
         return str(self._sdk.id)
@@ -544,7 +579,9 @@ class OpenSandboxHandle:
 
         The SDK returns a bare ``host:port``; the scheme comes from the
         deployment's lifecycle base URL (``_config.endpoint_url``). Required
-        routing headers are preserved on the returned value.
+        routing headers are preserved on the returned value, and so is this
+        box's execd credential for every port the Docker runtime reaches
+        through execd's ``/proxy/<port>``.
         """
         key = int(port)
         cached = self._endpoints.get(key)
@@ -562,7 +599,10 @@ class OpenSandboxHandle:
             ) from None
         resolved = SandboxEndpoint(
             url=_config.endpoint_url(raw.endpoint, settings=settings),
-            headers=_endpoint_headers(raw.headers),
+            headers={
+                **({} if key in ENDPOINTS_OUTSIDE_EXECD else self.execd_access),
+                **_endpoint_headers(raw.headers),
+            },
         )
         self._endpoints[key] = resolved
         return resolved
@@ -823,6 +863,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     sandbox_is_profile_exclusive = True
     supports_create_network_policy = True
     supports_pause = True
+    pause_verdict_seconds = _PAUSE_VERDICT_SECONDS
     supports_client_pool = True
     # The lifecycle API pages its sandbox list and describes one by id
     # (:meth:`list_sandboxes`, :meth:`describe_sandbox`).
@@ -855,6 +896,19 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         SANDBOX_PERMISSION_LEVEL_DEFAULT,
         SANDBOX_PERMISSION_LEVEL_ADVANCED,
     )
+    # The grants the engine needs (no masked /proc, no no_new_privileges, on
+    # Kubernetes also a user namespace and a tun device) have no create field;
+    # the bundled server's hooks apply them on either runtime. Every other
+    # deployment of this backend is refused per RuntimeProfile
+    # (validate_runtime_profile_configuration).
+    supported_container_engines = (SANDBOX_CONTAINER_ENGINE_DOCKER,)
+    # Joining a host network goes through the bundled server's Docker hook
+    # (``attach_allowlisted_networks``) and is refused on its Kubernetes
+    # runtime; host paths and volumes go through the create's ``volumes`` on
+    # both of its runtimes. An existing OpenSandbox service is refused both
+    # (validate_runtime_profile_configuration).
+    supports_network_attachment = True
+    supports_shared_mounts = True
     # The unfenced pair (registration validates them together). Hard product
     # decision: this backend never adopts the generation fence.
 
@@ -959,6 +1013,46 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 str(metadata.get(SANDBOX_ASSIGNMENT_ID_METADATA_KEY) or ""),
             )
         )
+
+    async def unclaimed_sandbox_refusal(self, descriptor: SandboxDescriptor) -> str | None:
+        """Why an unclaimed client-pool box must never be handed out, or None.
+
+        A box created with network wiring other than the deployment's is
+        refused by every connect (:meth:`_require_current_network_wiring`), so
+        it is never handed out.
+
+        With ``ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN`` on, a box whose execd does
+        not hold it to its own credential is refused at create and at hand-out
+        (:func:`~.executor.require_open_sandbox_execd_access`). One whose create
+        check never finished, because the process died or its destruction was
+        not confirmed, stays outside the pool's inventory until its lease ends.
+        The same check answers for it here; only its verdict that execd does
+        not enforce the credential refuses, and a box that cannot be reached
+        or connected to is kept.
+        """
+        if not self.created_with_current_network_wiring(descriptor):
+            return (
+                "its recorded network wiring differs from this deployment's, "
+                "so every connect refuses it"
+            )
+        if not execd_access_required(self._settings()):
+            return None
+        from astrabox.providers.open_sandbox.executor import require_open_sandbox_execd_access
+
+        try:
+            handle = await self.connect(descriptor.sandbox_id)
+        except Exception:  # noqa: BLE001 - a box that cannot be connected to gives no verdict
+            return None
+        try:
+            await require_open_sandbox_execd_access(self, handle)
+        except APIError as exc:
+            if (exc.evidence or {}).get("reason") == EXECD_ACCESS_NOT_ENFORCED:
+                return exc.message
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await handle.close()
+        return None
 
     # --- SDK plumbing (one object per op, closed in finally) ---------------
     def _sdk_connection_config(
@@ -1088,6 +1182,18 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     def _require_running(info: Any, *, sandbox_id: str, operation: str) -> None:
         state = str(getattr(info.status, "state", "") or "").strip()
         if state.lower() != "running":
+            if state.lower() in _HELD_BY_PAUSE_STATES:
+                # The control plane holds this box in a pause or a resume: its
+                # files are kept and its id comes back Running, so it is neither
+                # gone nor reachable now.
+                raise APIError(
+                    code="SANDBOX_UNREACHABLE",
+                    message=(
+                        f"open_sandbox {operation}: sandbox {sandbox_id!r} is "
+                        f"{state}; it is retained and answers again once resumed"
+                    ),
+                    status_code=503,
+                )
             if operation == "connect":
                 # Not running is gone, for a per-session box: identity IS
                 # addressing, so nothing restarts this instance in place. A
@@ -1226,6 +1332,9 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             transport=self._transport,
             network_policy=translated_network,
             permission_level=spec.permission_level,
+            container_engine=spec.container_engine,
+            networks=tuple(spec.networks),
+            shared_mounts=tuple(spec.shared_mounts),
             credential_proxy_enabled=bool(spec.credential_proxy_enabled),
             vault_write=translated_vault,
             volumes=volume_specs_from_planned_mounts(
@@ -1365,10 +1474,14 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         live = await sandbox.sidecar_faces.get_egress_policy()
         if live.default_action == "allow":
             return
+        # The wanted rules allow a target on every port, so a live allow that
+        # names only some ports, or ports without a target, does not cover one.
         allowed = {
-            rule.target.strip() for rule in (live.egress or []) if rule.action == "allow"
+            rule.target
+            for rule in (live.egress or [])
+            if rule.action == "allow" and rule.target and not rule.ports
         }
-        missing = [rule for rule in wanted if rule.target.strip() not in allowed]
+        missing = [rule for rule in wanted if rule.target not in allowed]
         if missing:
             await sandbox.sidecar_faces.patch_egress_rules(missing)
             logger.info(
@@ -1487,9 +1600,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     def per_box_overhead(self) -> tuple[float, int]:
         """The egress sidecar's ceiling beside each box the bundled server runs.
 
-        On Docker the bundled server applies it to the sidecar. On Kubernetes
-        OpenSandbox 0.2.3 gives the sidecar no resources, and the sandbox
-        namespace's LimitRange applies the same ceiling (docs/deploy.md).
+        The bundled server applies it to the sidecar on Docker and Kubernetes.
         An existing service's sidecar is that service's.
         """
         from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
@@ -1528,6 +1639,130 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             return None
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
 
+    def validate_runtime_profile_configuration(self, payload: Mapping[str, Any]) -> None:
+        """Refuse host networks anywhere but the bundled server on Docker, and a
+        container engine and host mounts anywhere but the bundled server.
+
+        A box's network attachment is applied by the bundled lifecycle server's
+        Docker hook (``astrabox.deploy.sandbox_server.attach_allowlisted_networks``);
+        its Kubernetes runtime has no networks to join
+        (:meth:`_host_network_refusal` says what to use instead). The engine's
+        grants are applied by the bundled server's hooks on both runtimes, and
+        on Kubernetes need a setting of their own
+        (:meth:`_container_engine_refusal`); there such a box cannot be paused,
+        so ``idle_action: pause`` is refused with it. Mounts travel as the
+        create's own ``volumes`` on both of the bundled server's runtimes,
+        which render the host-path allowlist into
+        the server's configuration (:meth:`_shared_mount_refusal`). On the
+        bundled server, host networks also need a Docker Engine that can join a
+        network below the box's own gateway (``network_attachment_refusal``);
+        the server asks the daemon again at each create.
+        """
+        if payload.get("sandbox_networks"):
+            refusal = self._host_network_refusal()
+            if refusal is None:
+                from astrabox.deploy.sandbox_server import (
+                    docker_engine_version,
+                    network_attachment_refusal,
+                )
+
+                engine_refusal = network_attachment_refusal(docker_engine_version())
+                refusal = f"sandbox_networks: {engine_refusal}" if engine_refusal else None
+            if refusal:
+                raise APIError(
+                    code="SANDBOX_NETWORK_NOT_ALLOWED",
+                    message=f"environment payload: {refusal}",
+                    status_code=409,
+                )
+        if payload.get("sandbox_mounts"):
+            refusal = self._shared_mount_refusal()
+            if refusal:
+                raise APIError(
+                    code="SANDBOX_MOUNT_NOT_ALLOWED",
+                    message=f"environment payload: {refusal}",
+                    status_code=409,
+                )
+        engine = str(
+            payload.get("sandbox_container_engine") or SANDBOX_CONTAINER_ENGINE_NONE
+        ).strip().lower()
+        if engine == SANDBOX_CONTAINER_ENGINE_NONE:
+            return
+        refusal = self._container_engine_refusal()
+        if (
+            not refusal
+            and not self._bundled_docker()
+            and str(payload.get("idle_action") or "").strip().lower() == "pause"
+        ):
+            # A Kubernetes pause commits the box's writable layer as its files
+            # are on the node: owned by ids of the Pod's user namespace. The
+            # resumed Pod gets another range, so those files come back owned
+            # by an unmapped id and the restored egress sidecar cannot start.
+            refusal = (
+                "idle_action 'pause' cannot keep a container-engine box on the "
+                "Kubernetes runtime: the box runs in a user namespace, a pause commits "
+                "its files under that namespace's node ids, and the resumed Pod gets "
+                "other ids, so the files come back owned by an unmapped id and the box "
+                "does not start. Use idle_action 'terminate'"
+            )
+        if refusal:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"environment payload: sandbox_container_engine {engine!r}: {refusal}",
+                status_code=400,
+            )
+
+    @staticmethod
+    def _container_engine_refusal() -> str | None:
+        """Why this deployment cannot create a container-engine box, or None when it can.
+
+        The bundled lifecycle server grants such a box what its engine needs
+        through a hook keyed on the box's ``astrabox.container-engine`` label:
+        on Docker ``grant_container_engine_boxes``, on Kubernetes
+        ``grant_container_engine_pods``, which only the ``batchsandbox``
+        workload provider runs and which needs the node path of a tun device
+        (``ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH``). An existing
+        OpenSandbox service applies only its own configuration. Shared by
+        :meth:`validate_runtime_profile_configuration` and
+        ``create_open_sandbox_box``.
+        """
+        from astrabox.deploy.sandbox_server import (
+            CONTAINER_ENGINE_TUN_HOST_PATH_ENV,
+            DEFAULT_KUBE_WORKLOAD_PROVIDER,
+            KUBE_WORKLOAD_PROVIDER_ENV,
+            RUNTIME_DOCKER,
+            container_engine_tun_host_path,
+            kube_workload_provider,
+            sandbox_runtime,
+        )
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if existing_lifecycle_service_url():
+            return (
+                "a container engine runs only in boxes of the OpenSandbox server bundled "
+                "with AstraBox, whose hooks grant what the engine needs; an existing "
+                "OpenSandbox service (ASTRABOX_SANDBOX_OPENAPI_BASE_URL) applies only its "
+                "own configuration"
+            )
+        if sandbox_runtime() == RUNTIME_DOCKER:
+            return None
+        provider = kube_workload_provider()
+        if provider != DEFAULT_KUBE_WORKLOAD_PROVIDER:
+            return (
+                f"on the Kubernetes runtime only the {DEFAULT_KUBE_WORKLOAD_PROVIDER!r} "
+                f"workload provider creates container-engine boxes "
+                f"({KUBE_WORKLOAD_PROVIDER_ENV}={provider!r})"
+            )
+        if not container_engine_tun_host_path():
+            return (
+                f"on the Kubernetes runtime a container-engine box needs "
+                f"{CONTAINER_ENGINE_TUN_HOST_PATH_ENV}, the node path of a tun device node "
+                "on a filesystem that supports idmapped mounts, created on every node "
+                "(docs/providers/opensandbox.md, 'Run a container engine in sandboxes')"
+            )
+        return None
+
     @staticmethod
     def _bundled_docker() -> bool:
         from astrabox.deploy.sandbox_server import RUNTIME_DOCKER, sandbox_runtime
@@ -1536,6 +1771,72 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         )
 
         return not existing_lifecycle_service_url() and sandbox_runtime() == RUNTIME_DOCKER
+
+    @staticmethod
+    def _host_network_refusal() -> str | None:
+        """Why this deployment cannot join a box to host networks, or None when it can.
+
+        Only the bundled server's Docker runtime joins one
+        (``attach_allowlisted_networks``). A Kubernetes Pod is already on the
+        cluster network, and what it may reach there is its egress policy's
+        decision, so the refusal names the setting that grants it: a Limited
+        RuntimeProfile's allowed hosts, which OpenSandbox's egress sidecar
+        admits by name and by the addresses it resolves. Shared by
+        :meth:`validate_runtime_profile_configuration` and
+        ``create_open_sandbox_box``.
+        """
+        from astrabox.deploy.sandbox_server import RUNTIME_KUBERNETES, sandbox_runtime
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if existing_lifecycle_service_url():
+            return (
+                "sandbox_networks joins sandboxes to Docker networks of their host only "
+                "through the OpenSandbox server bundled with AstraBox on its Docker "
+                "runtime; an existing OpenSandbox service (ASTRABOX_SANDBOX_OPENAPI_BASE_URL) "
+                "applies only its own configuration"
+            )
+        if sandbox_runtime() == RUNTIME_KUBERNETES:
+            return (
+                "sandbox_networks joins sandboxes to Docker networks of their host, and a "
+                "Kubernetes sandbox has none to join: its Pod is on the cluster network, "
+                "where the RuntimeProfile's networking decides what it reaches. Remove "
+                "sandbox_networks and add the Service's name "
+                "(<service>.<namespace>.svc.cluster.local) to networking.allowed_hosts; "
+                "give a service outside the cluster a Service without a selector and an "
+                "EndpointSlice with its address (docs/providers/opensandbox.md, "
+                "'Reach services from a Kubernetes sandbox')"
+            )
+        return None
+
+    @staticmethod
+    def _shared_mount_refusal() -> str | None:
+        """Why this deployment cannot mount host paths and volumes, or None when it can.
+
+        Both runtimes of the bundled server mount them from the create's own
+        ``volumes`` and take ``storage.allowed_host_paths`` from the same
+        allowlist the AstraBox server checks. An existing OpenSandbox service
+        has its own allowlist, and the Lifecycle API does not report which
+        runtime it uses, so whether a source names a node directory, a path in
+        that server's filesystem, a Docker volume or a PersistentVolumeClaim
+        is not known here. Shared by
+        :meth:`validate_runtime_profile_configuration` and
+        ``create_open_sandbox_box``.
+        """
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if existing_lifecycle_service_url():
+            return (
+                "sandbox_mounts mounts host paths and volumes only through the OpenSandbox "
+                "server bundled with AstraBox: an existing OpenSandbox service "
+                "(ASTRABOX_SANDBOX_OPENAPI_BASE_URL) checks host paths against its own "
+                "storage.allowed_host_paths, and its Lifecycle API does not report which "
+                "runtime it uses, so what a source names there is not known"
+            )
+        return None
 
     def fit_resources(
         self, limits: Mapping[str, str], requests: Mapping[str, str]
@@ -1548,12 +1849,15 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         the Docker runtime runs boxes on this host, so only there is this
         host's count the right ceiling. A Kubernetes limit may exceed one node,
         and an existing OpenSandbox service runs on hosts this one cannot see:
-        both keep the recipe.
+        both keep the recipe. A limit within the count is returned as given.
         """
+        from astrabox.config.settings import cpu_quantity
+
         fitted = dict(limits)
         cpu = str(fitted.get("cpu") or "")
-        if cpu.isdigit() and self._bundled_docker():
-            fitted["cpu"] = str(min(int(cpu), os.cpu_count() or 1))
+        host_cpus = os.cpu_count() or 1
+        if cpu and self._bundled_docker() and cpu_quantity(cpu) > host_cpus:
+            fitted["cpu"] = str(host_cpus)
         return fitted, dict(requests)
 
     # --- in-box transport (data plane) ------------------------------------
@@ -1611,9 +1915,12 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         try:
             sdk_sandbox = await Sandbox.connect(
                 str(sandbox_id),
-                connection_config=self._sdk_connection_config(
-                    settings,
-                    use_server_proxy_override=use_server_proxy_override,
+                connection_config=with_execd_access(
+                    self._sdk_connection_config(
+                        settings,
+                        use_server_proxy_override=use_server_proxy_override,
+                    ),
+                    execd_access_headers(getattr(info, "metadata", None)),
                 ),
                 skip_health_check=True,
             )
@@ -1768,17 +2075,23 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         )
 
     async def pause(self, sandbox_id: str) -> bool:
-        """Commit the box's filesystem, free its compute; True when PAUSED.
+        """Commit the box's filesystem, free its compute; True when Paused.
 
         The control plane does the work asynchronously — the pause call returns
-        while a commit Job is still running — so acknowledgement is not evidence.
-        This polls until the state settles, because the one caller that matters
-        stops renewing the lease on a True and a box that never actually paused
-        would then be reclaimed with its workspace.
+        while its commit Job still runs, and the box stays Pausing, frozen and
+        unreachable, until the controller decides. This waits for that verdict,
+        because the one caller that matters stops renewing the lease on a True
+        and a box that never actually paused would then be reclaimed with its
+        workspace.
 
-        A commit that fails leaves the sandbox RUNNING, which is the safe
-        outcome and is reported as False rather than raised: the box is still
-        usable, the deployment merely did not get to reclaim it.
+        * Paused, or already Resuming: True.
+        * Running again after Pausing was seen: the controller's failed pause,
+          which keeps the Pod and its files. False — the box runs on.
+        * Still Running, never seen Pausing, when :data:`_PAUSE_VERDICT_SECONDS`
+          has passed: the pause did not happen. False.
+        * Failed, terminated or not found: the box is gone. False.
+        * Still Pausing, or unreadable, at that point: ``SANDBOX_UNREACHABLE``.
+          The box is neither running nor gone, and stays parked.
         """
         settings = self._settings()
         secret = _config.resolve_api_key(settings)
@@ -1793,7 +2106,57 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             ) from exc
         finally:
             await manager.close()
-        return await self._settles_on(sandbox_id, wanted=_PAUSED_STATES, operation="pause")
+        return await self._pause_verdict(sandbox_id)
+
+    async def _pause_verdict(self, sandbox_id: str) -> bool:
+        """The controller's answer to an accepted pause (see :meth:`pause`)."""
+        deadline = time.monotonic() + _PAUSE_VERDICT_SECONDS
+        seen_pausing = False
+        state = ""
+        while True:
+            probe = await self.probe(sandbox_id)
+            if probe.probe_status == SANDBOX_LIFECYCLE_PROBE_NOT_FOUND:
+                logger.warning(
+                    "open_sandbox pause: sandbox %s disappeared while pausing", sandbox_id
+                )
+                return False
+            state = str(probe.sandbox_state or "")
+            if state in _PAUSE_DONE_STATES:
+                return True
+            if state in _PAUSE_PENDING_STATES:
+                seen_pausing = True
+            elif state.upper() in _RUNNING_STATES and seen_pausing:
+                logger.warning(
+                    "open_sandbox pause: sandbox %s went from Pausing back to Running — "
+                    "the controller failed the pause and kept its Pod",
+                    sandbox_id,
+                )
+                return False
+            elif state.upper() in _SETTLE_LOST_STATES:
+                logger.warning(
+                    "open_sandbox pause: sandbox %s settled on %s while pausing", sandbox_id, state
+                )
+                return False
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_SETTLE_POLL_SECONDS)
+        if state.upper() in _RUNNING_STATES:
+            logger.warning(
+                "open_sandbox pause: sandbox %s still Running and never seen Pausing "
+                "after %ss — the pause did not happen",
+                sandbox_id,
+                _PAUSE_VERDICT_SECONDS,
+            )
+            return False
+        raise APIError(
+            code="SANDBOX_UNREACHABLE",
+            message=(
+                f"open_sandbox pause: the control plane has not decided the pause of "
+                f"sandbox {sandbox_id!r} within {_PAUSE_VERDICT_SECONDS:.0f}s (last "
+                f"state={state or probe.error_text or 'unknown'!r}); it stays parked"
+            ),
+            status_code=503,
+        )
 
     async def resume(self, sandbox_id: str) -> bool:
         """Restore a paused box from its snapshot, under the SAME id.
@@ -1821,11 +2184,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     async def _settles_on(self, sandbox_id: str, *, wanted: frozenset[str], operation: str) -> bool:
         """Poll until the control plane reports one of ``wanted``, or give up.
 
-        Returns False on the timeout rather than raising: a transition that has
-        not finished is not the same as an error, and every caller of pause and
-        resume has a correct thing to do with "not yet" (leave the box alone).
+        Returns False on the timeout rather than raising: a resume that has not
+        finished is not an error, and its caller keeps the parked mark, so the
+        next attempt resumes the same box.
         """
-        deadline = time.monotonic() + _PAUSE_SETTLE_TIMEOUT_SECONDS
+        deadline = time.monotonic() + _RESUME_SETTLE_TIMEOUT_SECONDS
         state = ""
         while time.monotonic() < deadline:
             probe = await self.probe(sandbox_id)
@@ -1842,12 +2205,12 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                     "/".join(sorted(wanted)),
                 )
                 return False
-            await asyncio.sleep(_PAUSE_SETTLE_POLL_SECONDS)
+            await asyncio.sleep(_SETTLE_POLL_SECONDS)
         logger.warning(
             "open_sandbox %s: sandbox %s did not settle within %ss (last state=%s)",
             operation,
             sandbox_id,
-            _PAUSE_SETTLE_TIMEOUT_SECONDS,
+            _RESUME_SETTLE_TIMEOUT_SECONDS,
             state or "unknown",
         )
         return False
@@ -2111,9 +2474,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     ) -> SandboxBrowserEndpoint | None:
         """Resolve OpenSandbox's native execd/gateway URL by sandbox id.
 
-        Docker returns execd's ``/proxy/{port}`` URL. Kubernetes Secure Access
-        uses the SDK's signed-endpoint operation, which produces an OSEP-0011
-        URI or wildcard route suitable for direct browser navigation.
+        Docker returns execd's ``/proxy/{port}`` URL, and refuses a box whose
+        execd requires its credential (:mod:`.execd_access`): a browser cannot
+        send it. Kubernetes Secure Access uses the SDK's signed-endpoint
+        operation, which produces an OSEP-0011 URI or wildcard route suitable
+        for direct browser navigation.
 
         The AIO gateway port is refused. It serves the box's own file and
         command API behind the per-box ``SANDBOX_API_KEY``; a browser link to it
@@ -2168,6 +2533,21 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             use_server_proxy_override=False,
         )
         try:
+            if handle.execd_access:
+                raise APIError(
+                    code="SANDBOX_BROWSER_ROUTE_UNAVAILABLE",
+                    message=(
+                        "this sandbox's execd requires a per-sandbox credential, "
+                        "and on the Docker runtime a browser reaches every in-box "
+                        "port through execd, which it cannot authenticate to. "
+                        "HTML preview, the Browser panel and exposed ports need "
+                        "the Kubernetes runtime with the OpenSandbox ingress "
+                        "Gateway, or sandboxes created with "
+                        "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN unset "
+                        "(see docs/deploy.md)"
+                    ),
+                    status_code=409,
+                )
             if expires_at is None:
                 endpoint = await handle.get_endpoint(int(port))
             else:
@@ -3010,9 +3390,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         The SDK invokes handlers while it consumes the response, so a small
         queue turns those callbacks into the provider seam's async iterator.
         Cancelling this iterator cancels the SDK request and closes the SSE
-        connection. OpenSandbox v1.1.0 does not reliably stop the active run
-        on disconnect, so callers that need interruption must run disposable
-        work in a sibling isolated session and delete that session afterward.
+        connection. execd then interrupts the active run with SIGINT and keeps
+        the session's shell, but kills the whole session when the command
+        ignores SIGINT for ten seconds, so callers that need a deterministic
+        interruption run disposable work in a sibling isolated session and
+        delete that session afterward.
 
         Execd currently merges the isolated shell's stderr into stdout before
         scanning it, so ordinary command output arrives as ``stdout``. Its

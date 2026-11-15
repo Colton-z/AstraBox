@@ -5,7 +5,8 @@ Each rule is a failure that stays invisible until a user installs a release:
 
 * **Every default image is published.** A deployment that configures no image
   runs ``<prefix><component>:<version>`` (``astrabox.config.release_images``).
-  Each engine's default runtime image and the workspace mounter's must be a
+  Each engine's default runtime image, the workspace mounter's, execd's and the
+  egress sidecar's must be a
   component ``.github/workflows/release.yml`` builds and tags, at this package's
   version, and the workflow's build and merge matrices must name the same
   images, the all-in-one included.
@@ -60,6 +61,20 @@ def published_components() -> tuple[set[str], list[str]]:
     ):
         problems.append("build-all-in-one does not build containers/all-in-one/Dockerfile")
     built.add("all-in-one")
+    # The dsh-superagent runtime is built FROM the DeepSeek Harness image each
+    # architecture just pushed, for the same reason.
+    superagent = jobs["build-dsh-superagent"]
+    if "build" not in _needs(superagent):
+        problems.append(
+            "build-dsh-superagent does not need build, so it is not built from the "
+            "sandbox-deepseek-harness digest"
+        )
+    if not any(
+        (step.get("with") or {}).get("file") == "containers/sandbox-dsh-superagent/Dockerfile"
+        for step in superagent["steps"]
+    ):
+        problems.append("build-dsh-superagent does not build containers/sandbox-dsh-superagent/Dockerfile")
+    built.add("sandbox-dsh-superagent")
     execd = jobs["build-execd"]
     built.update(execd["strategy"]["matrix"]["component"])
     if "build-execd" not in _needs(jobs["build"]):
@@ -69,7 +84,7 @@ def published_components() -> tuple[set[str], list[str]]:
         problems.append(f"built {sorted(built)} but tags {sorted(merged)}")
     # A failed build of any image must skip every merge, so a release never
     # tags half its images.
-    if not {"build-execd", "build", "build-all-in-one"} <= _needs(jobs["merge"]):
+    if not {"build-execd", "build", "build-all-in-one", "build-dsh-superagent"} <= _needs(jobs["merge"]):
         problems.append("merge does not wait for all image build jobs")
     return built, problems
 
@@ -78,7 +93,7 @@ def unpublished_default_images() -> list[str]:
     import astrabox
     from astrabox.common.utils.settings import load_astrabox_settings
     from astrabox.config.release_images import PUBLISHED_IMAGE_PREFIX
-    from astrabox.deploy.sandbox_server import execd_image
+    from astrabox.deploy.sandbox_server import egress, execd_image
     from astrabox.core.service.orchestrator.engine.registry import registered_engine_adapters
     from astrabox.providers import register_builtin_providers
 
@@ -90,6 +105,7 @@ def unpublished_default_images() -> list[str]:
     ]
     images.append(load_astrabox_settings().workspace_mounter_image)
     images.append(execd_image())
+    images.append(egress()["image"])
     for image in images:
         if not image or not image.startswith(PUBLISHED_IMAGE_PREFIX):
             problems.append(f"{image!r} is not under {PUBLISHED_IMAGE_PREFIX}")

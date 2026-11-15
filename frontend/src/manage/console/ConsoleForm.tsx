@@ -820,6 +820,10 @@ export function ConsoleSelect({
   // An unknown current value (open shape, e.g. a sandbox backend that isn't
   // in the enum) is surfaced as a real option so it's never silently lost.
   const known = options.some((o) => o.value === value);
+  // An option whose value is empty is the field's own answer for "nothing
+  // chosen" ("My default account"), so it stands in for the placeholder: a
+  // second option with the same empty value would be the one shown selected.
+  const choosesEmpty = options.some((o) => o.value === '');
   // Sans, like every control that offers a choice: mono means "you will type or
   // paste this" (§6), and a reader types none of a dropdown.
   return (
@@ -832,9 +836,11 @@ export function ConsoleSelect({
       aria-invalid={invalid || undefined}
       onChange={(e) => onChange(e.target.value)}
     >
-      <NativeSelectOption value="" disabled>
-        {placeholder ?? t('manage:console.select_placeholder')}
-      </NativeSelectOption>
+      {!choosesEmpty && (
+        <NativeSelectOption value="" disabled>
+          {placeholder ?? t('manage:console.select_placeholder')}
+        </NativeSelectOption>
+      )}
       {!known && value !== '' && <NativeSelectOption value={value}>{value}</NativeSelectOption>}
       {options.map((o) => (
         <NativeSelectOption key={o.value} value={o.value}>

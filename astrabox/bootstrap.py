@@ -456,6 +456,24 @@ def _select_scheduler_provider() -> None:
         ) from exc
 
 
+def _log_settings_to_review() -> None:
+    """Log what each setting an installer asks an operator to review is set to."""
+    from astrabox.config.env_registry import ENV_REGISTRY, SETUP_REVIEW
+
+    defaults = {spec.name: spec.default for spec in ENV_REGISTRY}
+    # Each name is a registry row with its own read site; this only reports them.
+    environment = dict(os.environ)
+    logger.info(
+        "settings that depend on this host and team: %s",
+        ", ".join(
+            f"{name}={environment[name]}"
+            if environment.get(name)
+            else f"{name} unset (default {defaults[name] or 'none'})"
+            for name in SETUP_REVIEW
+        ),
+    )
+
+
 def bootstrap(
     *,
     sandbox_backend: str | None = None,
@@ -519,4 +537,5 @@ def bootstrap(
     _note_backends_without_inventory_listing(enabled_backends)
     if not _bootstrapped:
         logger.info("astrabox provider composition bootstrapped")
+        _log_settings_to_review()
     _bootstrapped = True

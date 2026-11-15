@@ -79,6 +79,7 @@ from astrabox.core.service.orchestrator.engine.runtime_profiles import (
 )
 from astrabox.core.service.orchestrator.runtime.models import SessionRuntime
 from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sandbox_id
+from astrabox.seams.sandbox import SANDBOX_CONTAINER_ENGINE_DOCKER
 
 logger = get_logger(__name__)
 
@@ -321,15 +322,37 @@ def _model_catalog(template: Any) -> str | None:
     return json.dumps(catalog, sort_keys=True)
 
 
-def provider_config(base_url: str) -> dict[str, Any]:
+def provider_config(base_url: str, *, endpoint_provider: str | None = None) -> dict[str, Any]:
     """The `model_providers` table one thread runs against.
 
     Built here rather than written into the image because the gateway's
     address is a deployment fact and the image is not per-deployment. Codex
     validates the pair itself: an unknown `model_provider` fails
     `thread/start` by name.
+
+    A ``chatgpt_plan`` RuntimeProfile's thread talks to OpenAI's API with the
+    conversation owner's ChatGPT plan token, configured as OpenAI documents
+    for plan usage: the token is the provider's own credential, not Codex's
+    OpenAI login, and the route takes HTTP requests only.
     """
 
+    if endpoint_provider == "chatgpt_plan":
+        return {
+            "model_provider": CODEX_PROVIDER_ID,
+            # Hosted tools are restricted on plan usage; this stays off until
+            # each is shown to work there.
+            "web_search": "disabled",
+            "model_providers": {
+                CODEX_PROVIDER_ID: {
+                    "name": "ChatGPT plan",
+                    "base_url": base_url,
+                    "env_key": CODEX_CREDENTIAL_ENV_VAR,
+                    "wire_api": "responses",
+                    "requires_openai_auth": False,
+                    "supports_websockets": False,
+                }
+            },
+        }
     return {
         "model_provider": CODEX_PROVIDER_ID,
         # This provider terminates at the deployment's OpenAI-compatible
@@ -480,6 +503,7 @@ async def _publish_runtime(
     instructions: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
+    endpoint_provider: str | None = None,
     config: dict[str, Any] | None = None,
     turn_start: dict[str, Any] | None = None,
     prepare_engine_input: Any = None,
@@ -497,7 +521,10 @@ async def _publish_runtime(
         instructions=instructions,
         model=model,
         turn_options=turn_start,
-        thread_config={**(provider_config(base_url) if base_url else {}), **(config or {})},
+        thread_config={
+            **(provider_config(base_url, endpoint_provider=endpoint_provider) if base_url else {}),
+            **(config or {}),
+        },
         # Start only: a rejoin names a thread that already has its mode, and
         # `thread/start`'s `sandbox` field has no meaning on a resume. The
         # session's reader applies its stored mode to a rejoined thread.
@@ -598,8 +625,12 @@ class CodexEngineAdapter(EngineAdapter):
             # three, spelled as profile ids (`:workspace`), and those are
             # config-selected while these are what `thread/start` takes.
             default_runtime_image=release_image(CODEX_RUNTIME_IMAGE_COMPONENT),
+            # containers/sandbox-codex/Dockerfile, "container engine".
+            container_engines=(SANDBOX_CONTAINER_ENGINE_DOCKER,),
             permission_modes=CODEX_SANDBOX_MODES,
-            permission_mode_defaults=(("agent_chat", "workspace-write"),),
+            # The sandbox is the isolation boundary, so a conversation starts with
+            # the program's widest mode; a person narrows it per conversation.
+            permission_mode_defaults=(("agent_chat", "danger-full-access"),),
             # Codex writes the rollout and mentions it to nobody: no protocol
             # frame carries a line of it, and `thread/resume` rebuilds a thread
             # from that file and nothing else. Declaring it is what makes the
@@ -834,6 +865,7 @@ class CodexEngineAdapter(EngineAdapter):
                 # like a broken adapter rather than a missing field.
                 model=str(model_access.model_name or "").strip() or None,
                 base_url=base_url,
+                endpoint_provider=str(model_access.endpoint_provider or "") or None,
                 config=_thread_config(
                     template, deployment_settings=context.deployment_settings,
                     deployment_id=startup_mcp_deployment_id(context),

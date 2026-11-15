@@ -225,7 +225,7 @@ case "$LANE" in
     fi
     run_phase assistant "Assistant/Hermes contract" \
       "${assistant_targets[@]}" \
-      -m "e2e and assistant_live and not backend_restart"
+      -m "e2e and assistant_live and not backend_restart and not deployment_shape"
     rc=$?
     ;;
 esac

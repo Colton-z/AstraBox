@@ -6,7 +6,7 @@ from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_s
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, is_dataclass, replace
 from typing import Any
 
@@ -49,6 +49,7 @@ from astrabox.core.service.orchestrator.author_boundary import (
 )
 from astrabox.core.service.orchestrator.runtime_profile_schema import (
     normalize_runtime_profile_payload,
+    validate_runtime_profile_capacity,
     validate_runtime_profile_payload,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
@@ -92,6 +93,7 @@ _ASSISTANT_RUNTIME_FIELDS = (
     "mcp_assignments",
     "connector_servers",
     "credential_vault_ids",
+    "owner_secrets",
 )
 
 
@@ -268,9 +270,9 @@ class AgentConfigService:
         Assistant, is treated as in :meth:`_build_agent_view`.
         """
         from astrabox.core.service.orchestrator.assistant.assistant_layers import (
-            LAYER_RUNTIME_FIELDS,
             inherited_layers,
             joined_instructions,
+            layers_for_engine,
             merged_engine_options,
             narrowest,
         )
@@ -282,7 +284,11 @@ class AgentConfigService:
         env = await self._require_runtime_profile(
             env_name, ref=f"assistant '{assistant_id}'", require_enabled=require_enabled_runtime_profile
         )
-        layers = await inherited_layers()
+        layers = await layers_for_engine(
+            await inherited_layers(),
+            str(env.get("engine_kind") or "").strip(),
+            await self._runtime_profile_repo.list_all(),
+        )
         model_override = assistant.get("model_config_override") or {}
         model = (
             str(model_override.get("model_name") or "").strip()
@@ -358,14 +364,7 @@ class AgentConfigService:
                 ]
             ),
             runtime_profile_name=env_name,
-            assistant_revision=self._assistant_revision(
-                assistant,
-                env,
-                layers=[
-                    {field: layer.get(field) for field in LAYER_RUNTIME_FIELDS}
-                    for _label, layer in layers
-                ],
-            ),
+            assistant_revision=self._assistant_revision(assistant, env, layers=layers),
         )
         self._overlay_runtime_profile(view, env)
         if require_enabled_runtime_profile:
@@ -376,13 +375,17 @@ class AgentConfigService:
 
     @staticmethod
     def _assistant_revision(
-        assistant: dict[str, Any], env: dict[str, Any], *, layers: list[dict[str, Any]] | None = None
+        assistant: dict[str, Any],
+        env: dict[str, Any],
+        *,
+        layers: list[tuple[str, dict[str, Any]]],
     ) -> str:
         """The identity of what an Assistant's runtime is prepared from.
 
         The Assistant's fields its runtime view is built from
-        (``_ASSISTANT_RUNTIME_FIELDS``), the runtime fields of the layers it
-        inherits as the caller passes them, and the RuntimeProfile's revision.
+        (``_ASSISTANT_RUNTIME_FIELDS``), the runtime fields of the layers as
+        this Assistant receives them (``assistant_layers.layers_for_engine``),
+        and the RuntimeProfile's revision.
         Bookkeeping (the main conversation, the workspace id, the primary mark,
         versions and timestamps) is left out, so writing it prepares nothing
         again. It says only that the definition moved; which change matters to
@@ -390,11 +393,16 @@ class AgentConfigService:
         profile again.
         """
 
+        from astrabox.core.service.orchestrator.assistant.assistant_layers import LAYER_RUNTIME_FIELDS
+
         definition = {field: assistant.get(field) for field in _ASSISTANT_RUNTIME_FIELDS}
         payload = json.dumps(
             {
                 "assistant": definition,
-                "layers": list(layers or []),
+                "layers": [
+                    {field: layer.get(field) for field in LAYER_RUNTIME_FIELDS}
+                    for _label, layer in layers
+                ],
                 "runtime_profile_updated_at": str(env.get("updated_at") or ""),
             },
             sort_keys=True,
@@ -494,6 +502,8 @@ class AgentConfigService:
             ),
             runtime_profile_name=env_name,
             exposure_mode=str(item.get("exposure_mode") or "").strip() or None,
+            model_account_id=str(item.get("model_account_id") or "").strip() or None,
+            model_account_owner_id=str(item.get("created_by") or "").strip() or None,
             idle_hibernate_seconds=self._coerce_positive_int(item.get("idle_hibernate_seconds")),
             terminal_panel=bool(item.get("terminal_panel", False)),
             diff_panel=bool(item.get("diff_panel", False)),
@@ -544,6 +554,15 @@ class AgentConfigService:
         view.sandbox_permission_level = (
             str(env.get("sandbox_permission_level") or "").strip() or None
         )
+        view.sandbox_container_engine = (
+            str(env.get("sandbox_container_engine") or "").strip() or None
+        )
+        view.sandbox_cpu = str(env.get("sandbox_cpu") or "").strip() or None
+        view.sandbox_memory = str(env.get("sandbox_memory") or "").strip() or None
+        networks = env.get("sandbox_networks")
+        view.sandbox_networks = list(networks) if isinstance(networks, list) else None
+        mounts = env.get("sandbox_mounts")
+        view.sandbox_mounts = list(mounts) if isinstance(mounts, list) else None
         networking = env.get("networking")
         view.networking = networking if isinstance(networking, dict) else None
         # One parser decides what a valid tracing document is, and it runs at
@@ -868,9 +887,12 @@ class AgentConfigService:
         if editable.get("prepared_capacity") is None:
             # Written, not assumed on read: the capacity sweep selects Agents
             # whose stored value is positive, so an absent key would stay cold.
-            editable["prepared_capacity"] = default_prepared_capacity(
-                str(env.get("sandbox_backend") or "")
+            editable["prepared_capacity"] = (
+                0
+                if self._model_credential_owner(env) != "deployment"
+                else default_prepared_capacity(str(env.get("sandbox_backend") or ""))
             )
+        self._check_prepared_capacity_owner(int(editable["prepared_capacity"]), environment=env)
         self._check_prepared_capacity_backend(
             int(editable["prepared_capacity"]),
             sandbox_backend=str(env.get("sandbox_backend") or ""),
@@ -879,6 +901,7 @@ class AgentConfigService:
             int(editable["prepared_capacity"]), agent_id=""
         )
         self._check_terminal_panel_backend(bool(editable.get("terminal_panel")), environment=env)
+        self._check_sign_in_terminal(bool(editable.get("terminal_panel")), environment=env)
 
         agent_id = str(uuid.uuid4())
         doc = {
@@ -994,6 +1017,14 @@ class AgentConfigService:
             },
         )
         if "prepared_capacity" in updates or "runtime_profile_name" in updates:
+            self._check_prepared_capacity_owner(
+                int(
+                    updates["prepared_capacity"]
+                    if "prepared_capacity" in updates
+                    else existing.get("prepared_capacity") or 0
+                ),
+                environment=env,
+            )
             self._check_prepared_capacity_backend(
                 int(
                     updates["prepared_capacity"]
@@ -1007,14 +1038,13 @@ class AgentConfigService:
                 int(updates["prepared_capacity"]), agent_id=target
             )
         if "terminal_panel" in updates or "runtime_profile_name" in updates:
-            self._check_terminal_panel_backend(
-                bool(
-                    updates["terminal_panel"]
-                    if "terminal_panel" in updates
-                    else existing.get("terminal_panel")
-                ),
-                environment=env,
+            effective_terminal_panel = bool(
+                updates["terminal_panel"]
+                if "terminal_panel" in updates
+                else existing.get("terminal_panel")
             )
+            self._check_terminal_panel_backend(effective_terminal_panel, environment=env)
+            self._check_sign_in_terminal(effective_terminal_panel, environment=env)
         # The whole effective definition, not only the changed fields: moving
         # an Agent to a stricter RuntimeProfile must meet that RuntimeProfile too.
         await validate_author_declarations(
@@ -1059,6 +1089,59 @@ class AgentConfigService:
             # than a runtime field.
             raise _version_conflict()
         return self.sanitize_agent_doc(written)
+
+    @staticmethod
+    def _model_credential_owner(environment: Mapping[str, Any]) -> str:
+        """Whose credential the RuntimeProfile's model endpoint spends (``credential_owner``)."""
+        from astrabox.seams.model import model_endpoint_for_name
+
+        name = str(environment.get("endpoint_provider") or "").strip()
+        return model_endpoint_for_name(name).credential_owner if name else "deployment"
+
+    @classmethod
+    def _check_prepared_capacity_owner(
+        cls, capacity: int, *, environment: Mapping[str, Any]
+    ) -> None:
+        """Refuse prepared capacity where the model credential is not the deployment's.
+
+        A box prepared before a conversation claims it has no owner whose
+        account its model requests could spend. Where the runtime signs in
+        inside its box there is no credential at all, and a prepared box is
+        claimed by re-pointing a deployment credential it holds.
+        """
+        if capacity <= 0:
+            return
+        owner = cls._model_credential_owner(environment)
+        provider = environment.get("endpoint_provider")
+        if owner == "session_owner":
+            raise invalid_request(
+                "prepared_capacity must be 0 on a RuntimeProfile whose model endpoint "
+                f"({provider!r}) is paid by each conversation's owner: "
+                "a box prepared before a conversation exists has no owner"
+            )
+        if owner == "sandbox":
+            raise invalid_request(
+                "prepared_capacity must be 0 on a RuntimeProfile whose model endpoint "
+                f"({provider!r}) has the runtime sign in inside each conversation's sandbox: "
+                "a prepared box is claimed by re-pointing a deployment model credential, "
+                "and this endpoint has none"
+            )
+
+    @classmethod
+    def _check_sign_in_terminal(cls, terminal_panel: bool, *, environment: Mapping[str, Any]) -> None:
+        """Refuse an Agent without a terminal where its users sign in from the terminal.
+
+        On a RuntimeProfile whose runtime signs in inside the sandbox
+        (``credential_owner`` ``sandbox``) each conversation's user signs in
+        from the conversation's terminal, and without the panel they cannot.
+        """
+        if terminal_panel or cls._model_credential_owner(environment) != "sandbox":
+            return
+        raise invalid_request(
+            "terminal_panel must be true on a RuntimeProfile whose model endpoint "
+            f"({environment.get('endpoint_provider')!r}) has the runtime sign in inside each "
+            "conversation's sandbox: its users sign in from the conversation's terminal"
+        )
 
     @staticmethod
     def _check_prepared_capacity_backend(capacity: int, *, sandbox_backend: str) -> None:
@@ -1228,6 +1311,11 @@ class AgentConfigService:
                     "enabled": True,
                     "engine_available": True,
                     "supported_session_kinds": ["agent_chat"],
+                    # The model endpoint provider, so the form asks for what
+                    # it needs: a ChatGPT plan one spends a linked account.
+                    # None when the deployment's default serves the profile.
+                    "endpoint_provider": str(config.get("endpoint_provider") or "").strip()
+                    or None,
                     # The engine's declared engine_options shape, carried so
                     # the Agent form can render the bag's fields for the
                     # chosen environment. Empty means the engine takes no bag
@@ -1281,6 +1369,7 @@ class AgentConfigService:
         # Schema validation (types / required / enum / no undeclared fields);
         # does not rewrite the payload.
         validate_runtime_profile_payload({**payload, "name": name})
+        await validate_runtime_profile_capacity(payload)
         # The request is the whole RuntimeProfile: a field it leaves out is
         # cleared, and a credential sent back masked keeps the stored one.
         return await self._runtime_profile_repo.put(

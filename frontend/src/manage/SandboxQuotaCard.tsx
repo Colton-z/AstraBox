@@ -24,14 +24,19 @@ const POOL_MEMBER_SESSION_PREFIX = 'client-pool-';
  * Where a ceiling came from, for the source strings the quota writes itself
  * (`configure_sandbox_quotas` in
  * `astrabox/core/service/orchestrator/runtime/sandbox_quota.py`). Any other
- * source, such as the account of a ceiling derived from host memory, is quoted
- * as given.
+ * source is quoted as given.
  */
 const SOURCE_LABEL = new Map<string, string>([
   ['configured', 'manage:sandboxes.quota_source_configured'],
   ['unlimited', 'manage:sandboxes.quota_source_unlimited'],
   ['unlimited (unset)', 'manage:sandboxes.quota_source_unset'],
 ]);
+
+/**
+ * The memory ceiling no operator set (`QUOTA_SOURCE_HOST_MEMORY`): the whole
+ * host's memory less 4 GiB, which counts nothing else the host runs.
+ */
+const HOST_MEMORY_SOURCE = 'derived from host memory';
 
 interface Figure {
   label: string;
@@ -123,6 +128,14 @@ function sandboxCounts(entry: AdminSandboxQuotaBackend) {
 
 function sourceText(source: string | undefined, t: TFunction): ReactNode {
   if (!source) return undefined;
+  if (source === HOST_MEMORY_SOURCE) {
+    return (
+      <span className="inline-flex gap-1.5">
+        <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+        <span>{t('manage:sandboxes.quota_source_host_memory')}</span>
+      </span>
+    );
+  }
   const key = SOURCE_LABEL.get(source);
   return key ? t(key) : <span data-slot="verbatim">{source}</span>;
 }

@@ -301,7 +301,7 @@ class AdminSandboxQuotaCeilings(BaseModel):
     memory_bytes: int | None
     cpu: float | None
     concurrent_creates: int | None
-    #: Where each ceiling came from: configured, derived (and from what), or unlimited.
+    #: Where each ceiling came from: configured, derived from host memory, or unlimited.
     sources: dict[str, str]
 
 
@@ -604,10 +604,12 @@ def register_sandbox_routes(app: Any) -> None:
         nothing the timer would not have decided on its next tick. It is a
         `POST` because it acts.
 
-        The summary is the tick's own — `idle_candidates` / `idle_parked` /
-        `idle_active` / `idle_failed`, plus the dead-binding counters — so a caller
-        sees why nothing happened, which is usually the question. An empty object
-        means neither sweep found a candidate.
+        The summary is the tick's own — `idle_candidates` /
+        `idle_parking_started` / `idle_parking_in_flight` / `idle_active`, plus
+        the dead-binding counters — so a caller sees why nothing happened, which
+        is usually the question. A park runs on after the tick answers: its
+        outcome is the session's parked mark and the box's state. An empty
+        object means neither sweep found a candidate.
         """
         await _resolve_user(request)
         summary = await _svc()._expiration_watcher.scan_once()

@@ -1,0 +1,301 @@
+#!/usr/bin/env bash
+# AstraBox — the container engine a box runs when its RuntimeProfile asks for one.
+#
+#   serve   The supervisord program (as root). Does nothing unless the create
+#           set ASTRABOX_CONTAINER_ENGINE=docker. Then it checks what the box
+#           was granted, prepares the engine's state and becomes a rootless
+#           Docker Engine running as the workload account.
+#   ready   Run by the platform through the command channel when it creates
+#           such a box. Waits until the engine answers the workload account on
+#           the default socket path, or prints why it cannot and exits 1.
+#   daemon  Run by dockerd-rootless.sh in place of dockerd (DOCKERD names this
+#           script). Starts the containers' resolver, then dockerd, and stops
+#           both when either ends.
+#
+# The engine is a system capability of the image: a prepared box is created
+# from the image before any conversation exists, so nothing here waits for, or
+# reads, anything a conversation supplies.
+#
+# Rootless, with a user-mode network (slirp4netns): every inner container's
+# connection leaves as an ordinary socket of the box, so the egress policy the
+# box was created under applies to inner containers unchanged. A rootful engine
+# would forward inner traffic through a kernel bridge the egress sidecar does
+# not filter, and would need NET_ADMIN over the sidecar's own rules.
+#
+# Inner containers resolve names as the box does. The box finds the containers
+# of the host networks it joined in its /etc/hosts, which the lifecycle server
+# writes when it creates the box; a container gets an /etc/hosts of its own
+# from dockerd and never sees those lines. So dockerd hands every container a
+# resolver of the engine's (dnsmasq) as its nameserver: on the default bridge
+# in resolv.conf, on a user-defined network as the upstream of Docker's
+# embedded server. It answers from the box's /etc/hosts and forwards every
+# other name to the box's nameservers, which the egress sidecar's DNS policy
+# answers as it answers the box. It listens in the containers' network
+# namespace: in the box's own, the sidecar redirects every packet to port 53,
+# whatever its address, to the egress DNS proxy, which serves no host records.
+set -euo pipefail
+
+ENGINE="${ASTRABOX_CONTAINER_ENGINE:-none}"
+STATE_DIR=/run/astrabox-container-engine
+FAILURE_FILE="${STATE_DIR}/failure"
+# The per-box volume the create mounts here. It must not be the box's overlay
+# root: the engine's own overlay snapshots cannot use an upper directory that
+# is itself on overlayfs.
+DATA_ROOT=/var/lib/astrabox/container-engine
+SETUID_FILES=/opt/astrabox/container-engine-setuid-files
+ENGINE_LOG="${LOG_DIR:-/var/log}/astrabox-container-engine.log"
+# How long `ready` waits for the daemon: rootlesskit, slirp4netns, containerd
+# and dockerd start in a few seconds on an idle host.
+READY_SECONDS=60
+# `serve` exits with this when the box cannot run the engine at all. The
+# supervisord program lists it as an expected exit, so a missing grant is
+# reported once (FAILURE_FILE) instead of being restarted in a loop.
+CANNOT_RUN=3
+# How long `daemon` waits for the containers' resolver to listen before it
+# starts dockerd; dnsmasq binds its socket as soon as it starts.
+RESOLVER_SECONDS=5
+
+fail() {
+    mkdir -p "${STATE_DIR}"
+    printf '%s\n' "$*" > "${FAILURE_FILE}"
+    printf 'astrabox container engine: %s\n' "$*" >&2
+    exit "${CANNOT_RUN}"
+}
+
+workload_identity() {
+    local entry
+    entry="$(getent passwd "${USER}")" || fail "workload account ${USER} does not exist"
+    WORKLOAD_UID="$(printf '%s\n' "${entry}" | cut -d: -f3)"
+    WORKLOAD_GID="$(printf '%s\n' "${entry}" | cut -d: -f4)"
+    WORKLOAD_HOME="$(printf '%s\n' "${entry}" | cut -d: -f6)"
+    RUNTIME_DIR="/run/user/${WORKLOAD_UID}"
+}
+
+# Why a nested user namespace with its own /proc cannot be created as the
+# workload account. The two causes outside the image are named, because both
+# are fixed by an operator, not by retrying.
+explain_userns_refusal() {
+    local detail="$1" restrict=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+    if [ -r "${restrict}" ] && [ "$(cat "${restrict}")" = "1" ]; then
+        printf '%s' "the Docker host restricts unprivileged user namespaces " \
+            "(kernel.apparmor_restrict_unprivileged_userns=1), so the workload " \
+            "account cannot write its uid_map; set the sysctl to 0 on the host " \
+            "(${detail})"
+        return
+    fi
+    if awk '$5 ~ "^/proc/." { found = 1 } END { exit !found }' /proc/self/mountinfo; then
+        printf '%s' "the box's /proc has masked or read-only system paths, so " \
+            "no container can mount its own /proc; the box was not created " \
+            "with them cleared (${detail})"
+        return
+    fi
+    printf '%s' "the workload account cannot create a user namespace with its own /proc (${detail})"
+}
+
+# Whether the box itself runs in a user namespace narrower than the host's,
+# as a Kubernetes box created with hostUsers: false does.
+in_user_namespace() {
+    ! awk 'NR == 1 && $1 == 0 && $2 == 0 && $3 == 4294967295 { full = 1 } END { exit !full }' \
+        /proc/self/uid_map
+}
+
+# The ids the box's user namespace holds, from its map file ($1).
+ids_held() {
+    awk '{ printf "%s%d-%d", sep, $1, $1 + $3 - 1; sep = ", " }' "$1"
+}
+
+# Whether every subordinate range of ${USER} in $1 (/etc/subuid or
+# /etc/subgid) lies inside one range of the box's own id map ($2). Prints the
+# first range that does not. newuidmap cannot map an id the box's namespace
+# does not hold; it fails with EPERM, and the daemon restarts without a reason.
+subid_ranges_fit() {
+    awk -v user="${USER}" '
+        FNR == NR { low[NR] = $1; high[NR] = $1 + $3; held = NR; next }
+        {
+            split($0, entry, ":")
+            if (entry[1] != user) next
+            start = entry[2]; end = entry[2] + entry[3]; inside = 0
+            for (i = 1; i <= held; i++) if (start >= low[i] && end <= high[i]) inside = 1
+            if (!inside) { printf "%d-%d", start, end - 1; outside = 1; exit }
+        }
+        END { exit outside }' "$2" "$1"
+}
+
+serve() {
+    case "${ENGINE}" in
+        none) exit 0 ;;
+        docker) ;;
+        *) fail "ASTRABOX_CONTAINER_ENGINE=${ENGINE} is not an engine this image runs (docker)" ;;
+    esac
+    rm -f "${FAILURE_FILE}"
+    workload_identity
+
+    # The engine's user-mode network opens a tap device inside its own network
+    # namespace. A box has no /dev/net/tun unless it is created here; runc
+    # allows the node, and the box holds no capability over the namespace the
+    # device would be used in.
+    if [ ! -c /dev/net/tun ]; then
+        # The kernel creates a device node only for CAP_MKNOD in the host's
+        # initial user namespace, which root of a user-namespaced box lacks.
+        in_user_namespace && fail "the box has no /dev/net/tun and runs in a user" \
+            "namespace, where no device node can be created; the device must be" \
+            "mounted into the box (on Kubernetes the lifecycle server mounts the node" \
+            "ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH names)"
+        mkdir -p /dev/net
+        mknod -m 0666 /dev/net/tun c 10 200 || fail "cannot create /dev/net/tun"
+    fi
+
+    mountpoint -q "${DATA_ROOT}" || fail "no engine volume is mounted at ${DATA_ROOT}"
+    chown "${WORKLOAD_UID}:${WORKLOAD_GID}" "${DATA_ROOT}"
+    chmod 0700 "${DATA_ROOT}"
+    install -d -o "${WORKLOAD_UID}" -g "${WORKLOAD_GID}" -m 0700 "${RUNTIME_DIR}"
+
+    grep -q "^${USER}:" /etc/subuid && grep -q "^${USER}:" /etc/subgid \
+        || fail "${USER} has no subordinate id range in /etc/subuid and /etc/subgid"
+    local ids outside
+    for ids in uid gid; do
+        if ! outside="$(subid_ranges_fit "/etc/sub${ids}" "/proc/self/${ids}_map")"; then
+            fail "the box's user namespace holds ${ids}s $(ids_held "/proc/self/${ids}_map")," \
+                "not ${USER}'s subordinate ${ids}s ${outside} (/etc/sub${ids}), so the" \
+                "engine cannot map its containers' ids; on Kubernetes the kubelet's" \
+                "userNamespaces.idsPerPod must be 262144 (docs/providers/opensandbox.md)"
+        fi
+    done
+
+    # newuidmap and newgidmap must run setuid to map the engine's id range,
+    # which no_new_privileges forbids. A box created for the engine runs
+    # without it; every other setuid or setgid bit goes first, so lifting
+    # that flag grants exactly those two programs and not sudo, su or the like.
+    grep -q '^NoNewPrivs:[[:space:]]*0$' /proc/self/status \
+        || fail "the box was created with no_new_privileges, so newuidmap cannot map the engine's id range"
+    # The image lists its setuid and setgid files at build; walking the root
+    # filesystem here would outlast the wait for the engine in a small box.
+    [ -r "${SETUID_FILES}" ] \
+        || fail "the image has no ${SETUID_FILES}; it was not built for the container engine"
+    xargs -0 -r chmod ug-s < "${SETUID_FILES}"
+    command -v dnsmasq > /dev/null \
+        || fail "the image has no dnsmasq for the containers' names; it was not built for the container engine"
+
+    local refusal
+    if ! refusal="$(runuser -u "${USER}" -- unshare --user --map-root-user --pid --fork --mount-proc true 2>&1)"; then
+        fail "$(explain_userns_refusal "${refusal}")"
+    fi
+
+    # Tools that assume the default socket path (the docker CLI, Compose,
+    # language SDKs) reach the rootless daemon without any environment.
+    ln -sfn "${RUNTIME_DIR}/docker.sock" /run/docker.sock
+
+    # The detached network namespace is where `daemon` finds the containers'
+    # network: rootlesskit keeps it at ${ROOTLESSKIT_STATE_DIR}/netns.
+    cd "${WORKLOAD_HOME}"
+    exec runuser -u "${USER}" -- env -i \
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+        HOME="${WORKLOAD_HOME}" \
+        USER="${USER}" \
+        LOGNAME="${USER}" \
+        XDG_RUNTIME_DIR="${RUNTIME_DIR}" \
+        DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns \
+        DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=builtin \
+        DOCKERD_ROOTLESS_ROOTLESSKIT_DISABLE_HOST_LOOPBACK=true \
+        DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=true \
+        DOCKERD=/usr/local/bin/astrabox-container-engine \
+        dockerd-rootless.sh daemon
+}
+
+# Runs as root of the engine's user namespace, in the box's network namespace,
+# with the containers' namespace detached at ${ROOTLESSKIT_STATE_DIR}/netns
+# (dockerd-rootless.sh's child stage, which execs DOCKERD with the arguments
+# `serve` gave it).
+daemon() {
+    local netns address resolver engine ended status deadline
+    [ -n "${ROOTLESSKIT_STATE_DIR:-}" ] \
+        || { echo "astrabox container engine: daemon runs only under dockerd-rootless.sh" >&2; exit 1; }
+    netns="${ROOTLESSKIT_STATE_DIR}/netns"
+    # The address of the containers' namespace on its user-mode link, which
+    # every inner container routes to through its own network's gateway.
+    address="$(nsenter -n"${netns}" ip -4 -o addr show dev tap0 \
+        | awk '{ sub("/.*", "", $4); print $4; exit }')"
+    [ -n "${address}" ] \
+        || { echo "astrabox container engine: the containers' network has no IPv4 address on tap0" >&2; exit 1; }
+
+    # No cache: each lookup reaches the egress DNS proxy, which admits the
+    # addresses it answers for as long as their records live, exactly as when
+    # a container asked the box's nameservers itself.
+    nsenter -n"${netns}" dnsmasq --keep-in-foreground --conf-file=/dev/null \
+        --user=nobody --group=nogroup --pid-file= --log-facility=- \
+        --listen-address="${address}" --bind-interfaces \
+        --resolv-file=/etc/resolv.conf --strict-order --cache-size=0 &
+    resolver=$!
+    deadline=$((SECONDS + RESOLVER_SECONDS))
+    until [ -n "$(nsenter -n"${netns}" ss -Hlnu "src ${address}:53")" ]; do
+        if ! kill -0 "${resolver}" 2> /dev/null; then
+            wait "${resolver}" && status=0 || status=$?
+            echo "astrabox container engine: the containers' resolver exited (${status}) before listening" >&2
+            exit 1
+        fi
+        if [ "${SECONDS}" -ge "${deadline}" ]; then
+            kill -TERM "${resolver}"
+            echo "astrabox container engine: the containers' resolver did not listen on ${address}:53 within ${RESOLVER_SECONDS}s" >&2
+            exit 1
+        fi
+        sleep 0.1
+    done
+
+    dockerd --data-root "${DATA_ROOT}" --dns "${address}" &
+    engine=$!
+    trap 'kill -TERM "${engine}" "${resolver}" 2> /dev/null' TERM INT
+    wait -n -p ended "${engine}" "${resolver}" && status=0 || status=$?
+    trap - TERM INT
+    kill -TERM "${engine}" "${resolver}" 2> /dev/null || true
+    wait "${engine}" "${resolver}" 2> /dev/null || true
+    # Without its resolver the engine's containers would lose every name: the
+    # daemon stops with it, and supervisord starts the engine again.
+    if [ "${ended:-}" = "${resolver}" ]; then
+        echo "astrabox container engine: the containers' resolver exited (${status}); stopping the engine" >&2
+        exit 1
+    fi
+    exit "${status}"
+}
+
+ready() {
+    local deadline=$((SECONDS + READY_SECONDS)) answer="" entry
+    while [ "${SECONDS}" -lt "${deadline}" ]; do
+        if [ -s "${FAILURE_FILE}" ]; then
+            printf 'astrabox container engine: %s\n' "$(cat "${FAILURE_FILE}")" >&2
+            exit 1
+        fi
+        # The base image creates the account during boot, which a platform
+        # check that starts with the box can precede.
+        if ! entry="$(getent passwd "${USER}")"; then
+            answer="workload account ${USER} does not exist yet"
+            sleep 0.5
+            continue
+        fi
+        if answer="$(runuser -u "${USER}" -- env -i \
+                PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+                HOME="$(printf '%s\n' "${entry}" | cut -d: -f6)" \
+                docker info --format '{{.ServerVersion}} {{.Driver}} {{json .SecurityOptions}}' 2>&1)"; then
+            case "${answer}" in
+                *name=rootless*)
+                    printf 'docker %s\n' "${answer}"
+                    exit 0
+                    ;;
+                *)
+                    printf 'astrabox container engine: the daemon is not rootless: %s\n' "${answer}" >&2
+                    exit 1
+                    ;;
+            esac
+        fi
+        sleep 0.5
+    done
+    printf 'astrabox container engine: no answer within %ss: %s\n' "${READY_SECONDS}" "${answer}" >&2
+    tail -n 20 "${ENGINE_LOG}" >&2 2>/dev/null || true
+    exit 1
+}
+
+case "${1:-}" in
+    serve) serve ;;
+    ready) ready ;;
+    daemon) daemon ;;
+    *) echo "usage: astrabox-container-engine serve|ready|daemon" >&2; exit 2 ;;
+esac

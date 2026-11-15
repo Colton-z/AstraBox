@@ -49,11 +49,60 @@ SANDBOX_SELF_DESCRIPTION = {
 }
 
 
-def sandbox_boot_env(*, shared: bool) -> dict[str, str]:
+#: The image's switch for its container engine
+#: (``containers/container-engine/astrabox-container-engine``): ``docker``
+#: starts a rootless Docker Engine at boot. A box without an engine is created
+#: without the variable, which the image reads as ``none``.
+CONTAINER_ENGINE_ENV = "ASTRABOX_CONTAINER_ENGINE"
+#: Where the image's engine keeps its images, containers and build cache. A
+#: create mounts a volume of the box's own here: the engine's overlay snapshots
+#: cannot have their upper directory on the box's overlay root.
+CONTAINER_ENGINE_DATA_ROOT = "/var/lib/astrabox/container-engine"
+#: Waits until the engine answers the workload account on the default socket
+#: path; otherwise prints why it cannot and exits non-zero.
+CONTAINER_ENGINE_READY_COMMAND = "/usr/local/bin/astrabox-container-engine ready"
+
+#: Directories a sandbox's platform, sandbox service or operating system owns.
+#: A RuntimeProfile's shared mount may not be placed at, under or above one: it
+#: would hide what the box runs from (the control server and engine homes, the
+#: AIO base, OpenSandbox's execd and its isolation layers, the container
+#: engine's data), put host storage inside the user's Workspace, or replace
+#: system directories. ``/home`` holds every workload account's private home
+#: and ``/tmp`` the runner's logs, spool and clone staging.
+RESERVED_MOUNT_TARGETS: tuple[str, ...] = (
+    "/workspace",
+    "/home",
+    "/tmp",
+    "/opt/astrabox",
+    "/opt/conversation-runtime",
+    "/opt/gem",
+    "/opt/opensandbox",
+    "/var/lib/astrabox",
+    "/var/lib/execd",
+    "/bin",
+    "/boot",
+    "/dev",
+    "/etc",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/libx32",
+    "/proc",
+    "/root",
+    "/run",
+    "/sbin",
+    "/sys",
+    "/usr",
+    "/var/run",
+)
+
+
+def sandbox_boot_env(*, shared: bool, container_engine: str) -> dict[str, str]:
     return {
         **SANDBOX_SELF_DESCRIPTION,
         "DISABLE_BROWSER": "true" if shared else "false",
         "DISABLE_VNC": "true" if shared else "false",
+        **({CONTAINER_ENGINE_ENV: container_engine} if container_engine != "none" else {}),
     }
 
 

@@ -33,12 +33,14 @@ PKG             ?= astrabox
 AGENT_IMAGE         ?= astrabox/sandbox-claude-code:latest
 ASSISTANT_IMAGE     ?= astrabox/sandbox-hermes:latest
 DSH_IMAGE           ?= astrabox/sandbox-deepseek-harness:latest
+DSH_SUPERAGENT_IMAGE ?= astrabox/sandbox-dsh-superagent:latest
 CODEX_IMAGE         ?= astrabox/sandbox-codex:latest
 PI_IMAGE            ?= astrabox/sandbox-pi:latest
 # An explicit execd input belongs to the caller; build only the implicit default.
 _EXECD_PREREQUISITE := $(if $(filter undefined,$(origin EXECD_IMAGE)),build-execd-image)
 EXECD_IMAGE         ?= astrabox/execd:latest
 WORKSPACE_MOUNTER_IMAGE ?= astrabox/workspace-mounter:latest
+EGRESS_IMAGE        ?= astrabox/egress:latest
 SERVER_IMAGE        ?= astrabox/server:latest
 # `--build-context <stage>=DIR` flags for images with checksum-pinned source
 # stages. Empty for a standalone build, which downloads each pinned source in its
@@ -61,7 +63,7 @@ NPM_REGISTRY        ?= https://registry.npmjs.org/
         check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes check-sandbox-seam \
         check-env-registry check-http-surface check-background-tasks check-release \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
-        build-agent-image build-assistant-image build-dsh-image build-codex-image build-pi-image build-execd-image build-workspace-mounter-image build-all-in-one-image clean \
+        build-agent-image build-assistant-image build-dsh-image build-dsh-superagent-image build-codex-image build-pi-image build-execd-image build-workspace-mounter-image build-egress-image build-all-in-one-image clean \
         k8s-testbed-up k8s-testbed-status k8s-testbed-down k8s-testbed-purge
 
 help: ## Show this help.
@@ -257,6 +259,12 @@ build-dsh-image: ## Build the in-sandbox DeepSeek Harness runtime image.
 	  -f containers/sandbox-deepseek-harness/Dockerfile \
 	  .
 
+build-dsh-superagent-image: build-dsh-image ## Build the dsh-superagent Assistant runtime image, FROM the DeepSeek Harness image.
+	docker build -t $(DSH_SUPERAGENT_IMAGE) \
+	  --build-arg DSH_IMAGE=$(DSH_IMAGE) \
+	  -f containers/sandbox-dsh-superagent/Dockerfile \
+	  .
+
 build-codex-image: ## Build the in-sandbox Codex app-server runtime image.
 	docker build -t $(CODEX_IMAGE) \
 	  --build-arg SANDBOX_EXECD_IMAGE=$(EXECD_IMAGE) \
@@ -274,6 +282,9 @@ build-pi-image: ## Build the in-sandbox pi RPC runtime image.
 
 build-workspace-mounter-image: ## Build the host-side mergerfs workspace helper, outside agent sandboxes.
 	docker build -t $(WORKSPACE_MOUNTER_IMAGE) $(DOCKER_BUILD_CONTEXTS) -f containers/workspace-mounter/Dockerfile .
+
+build-egress-image: ## Build the sandbox egress sidecar: OpenSandbox's, decrypting only credential-bound hosts.
+	docker build -t $(EGRESS_IMAGE) -f containers/egress/Dockerfile .
 
 build-server-image: ## Build the deployment image (console + backend). Slow by design: it builds the frontend.
 	docker build --build-arg NODE_VERSION=$$(cat .nvmrc) -t $(SERVER_IMAGE) -f containers/server/Dockerfile .
@@ -293,6 +304,7 @@ push-images: ## Tag every cluster-pulled image $(IMAGE_TAG) and push to $$REGIST
 	docker tag $(CODEX_IMAGE)     $(REGISTRY)/astrabox/sandbox-codex:$(IMAGE_TAG)
 	docker tag $(PI_IMAGE)        $(REGISTRY)/astrabox/sandbox-pi:$(IMAGE_TAG)
 	docker tag $(WORKSPACE_MOUNTER_IMAGE) $(REGISTRY)/astrabox/workspace-mounter:$(IMAGE_TAG)
+	docker tag $(EGRESS_IMAGE)    $(REGISTRY)/astrabox/egress:$(IMAGE_TAG)
 	docker tag $(SERVER_IMAGE)    $(REGISTRY)/astrabox/server:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/execd:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/sandbox-claude-code:$(IMAGE_TAG)
@@ -301,11 +313,13 @@ push-images: ## Tag every cluster-pulled image $(IMAGE_TAG) and push to $$REGIST
 	docker push $(REGISTRY)/astrabox/sandbox-codex:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/sandbox-pi:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/workspace-mounter:$(IMAGE_TAG)
+	docker push $(REGISTRY)/astrabox/egress:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/server:$(IMAGE_TAG)
 	@echo
 	@echo "pushed $(IMAGE_TAG) — point the deployment at it:"
 	@echo "  ASTRABOX_AGENT_IMAGE=$(REGISTRY)/astrabox/sandbox-claude-code:$(IMAGE_TAG)"
 	@echo "  ASTRABOX_WORKSPACE_MOUNTER_IMAGE=$(REGISTRY)/astrabox/workspace-mounter:$(IMAGE_TAG)"
+	@echo "  ASTRABOX_SANDBOX_EGRESS_IMAGE=$(REGISTRY)/astrabox/egress:$(IMAGE_TAG)"
 	@echo "  assistant environment runtime_template_name=$(REGISTRY)/astrabox/sandbox-hermes:$(IMAGE_TAG)"
 	@echo "  dsh environment runtime_template_name=$(REGISTRY)/astrabox/sandbox-deepseek-harness:$(IMAGE_TAG)"
 	@echo "  codex environment runtime_template_name=$(REGISTRY)/astrabox/sandbox-codex:$(IMAGE_TAG)"

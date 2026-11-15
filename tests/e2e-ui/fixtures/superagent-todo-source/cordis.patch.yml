@@ -1,0 +1,4 @@
+# The Bundle's layer: an owner who installs the package (Profile package.json) gets the Source.
+- insert:
+    - id: astrabox-e2e-todo-source
+      name: astrabox-e2e-todo-source

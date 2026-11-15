@@ -68,6 +68,52 @@ invocation.
 
 ---
 
+### One conversation that continues {#continuing-conversation}
+
+A Webhook trigger starts a new Session for every request. To send several
+events into one conversation, create a trigger with the scene
+`channel:generic_json` instead and post a JSON object to the same trigger
+address:
+
+```json
+{
+  "text": "Review requested for change 4812 on lane build-2",
+  "conversation_id": "lane-build-2",
+  "message_id": "review-4812-requested"
+}
+```
+
+- `conversation_id` names the conversation: requests that carry the same
+  value reach the same Session, in the order they are accepted, and wait
+  their turn while the Agent is answering. A request without one starts its
+  own Session.
+- `message_id` makes a delivery safe to repeat: a request whose id the trigger
+  has already accepted is acknowledged as a duplicate and starts nothing.
+- `text` is the message the Agent receives. `reply.callback_url`, when given,
+  receives the Agent's reply as `{"text": ..., "message_id": ...}`.
+- `data` carries the event's fields as any JSON value. The Agent receives it as
+  that JSON after `text` and a blank line, or as the whole message when there
+  is no `text`:
+
+  ```json
+  {
+    "text": "Review requested on lane build-2",
+    "data": {"object": "change-4812", "type": "review", "state": "requested", "commit": "9f2c1e7"},
+    "conversation_id": "lane-build-2",
+    "message_id": "review-4812-requested"
+  }
+  ```
+
+  Say what the fields mean, and what to do with them, in the Agent's
+  instructions or in `text`.
+
+Sign each request as for a Webhook trigger (`X-Webhook-Timestamp` and
+`X-Webhook-Signature`, [Request headers](#request-headers)) with the trigger's
+secret. The trigger also accepts the secret itself in `X-Channel-Secret` or
+`Authorization: Bearer`, which anyone who captures one request can reuse; turn
+on the trigger's `signed_requests` setting
+(`"channel_config": {"signed_requests": true}`) to accept signed requests only.
+
 ## 3. Webhook trigger management
 
 Use the web console to create, inspect, enable, disable, and delete Webhook

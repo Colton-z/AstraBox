@@ -1,0 +1,44 @@
+# AstraBox's machine configuration for dsh-superagent, applied after the bundle's own layer.
+#
+# The bundle refuses to start without a state directory. It lives under DSH_HOME, the
+# runtime's private home, beside the harness's own session logs: it is the Assistant's
+# state, not the user's workspace.
+- id: dsh-superagent
+  config:
+    stateDir: !!js dshHomePath('state/superagent')
+
+# The Assistant's page is the bundle's panel: the harness's web page opens on it
+# (panel-landing/lib/client.js).
+- insert:
+    - id: astrabox-panel-landing
+      name: file:///opt/astrabox/dsh-panel-landing/lib/index.js
+
+# dsh-superagent creates its main Session and its Executor Sessions itself, on the
+# profile's default model, so the platform's model route and the default have to be part
+# of the composition the process boots with: a route declared later, over the API, would
+# arrive after the first Session started on the vendor's default. The values are the
+# Assistant's model and the platform gateway, which the platform writes before it starts
+# the harness; the credential stays a reference (`apiKeyEnv`), resolved per request.
+- id: llm-pi-ai
+  config:
+    providers:
+      astrabox-gateway:
+        displayName: AstraBox model gateway
+        api: openai-completions
+        baseURL: !!js process.env.ASTRABOX_DSH_GATEWAY_BASE_URL
+        apiKeyEnv: DEEPSEEK_API_KEY
+        models:
+          - id: !!js process.env.ASTRABOX_DSH_MODEL
+
+- id: agent-default-model
+  config:
+    provider: astrabox-gateway
+    model: !!js process.env.ASTRABOX_DSH_MODEL
+
+# The harness ships DeepSeek session-log upload on: every request to the official
+# DeepSeek API, gateways included, would also carry the Session's log. A platform
+# running other people's work does not hand it to a model vendor by default;
+# `enabled: false` is the vendor's own opt-out (dsh-session-log-deepseek README).
+- id: session-log-deepseek
+  config:
+    enabled: false

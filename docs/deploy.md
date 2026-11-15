@@ -85,12 +85,14 @@ independent runtime policies use separate Environments and business databases.
 
 ### Access and upgrades
 
-Login establishes identity; Environment membership and resource permissions
-establish access. Open **Console → Environment** to manage local details and member accounts.
+Login establishes identity and, by default, entry: every account that can sign
+in may use the Environment, and resource permissions decide what it can reach. A
+deployment that shares its identity provider with others can admit only a member
+list instead ([Environment entry policy](team-login.md#environment-entry-policy)).
+Open **Console → Environment** to manage local details, and the member accounts
+when that policy is selected.
 Platform administrators can also update metadata and member user IDs through `/api/v1/admin/environments/{name}`. Updates require the
-current `version`; the API cannot create a foreign Environment. Grant execution
-accounts membership too: channel and scheduler dispatch do not inherit the
-administrator role of whoever configured them. The first start of the no-login
+current `version`; the API cannot create a foreign Environment. The first start of the no-login
 local deployment grants its local account membership once; restarting never
 reinstates a removed grant.
 
@@ -100,8 +102,8 @@ recipes become RuntimeProfiles. The upgrade refuses a database containing
 runtime references for multiple execution owners; those require separate
 Environment databases before this deployment model can serve them. For a
 single-owner installation, retain that owner as the Environment name (the
-original default is `astrabox`). A new membership check may require an
-administrator to grant existing signed-in accounts access before they resume
+original default is `astrabox`). Under the `members` entry policy, an
+administrator grants existing signed-in accounts membership before they resume
 use. The upgrade does not copy production history or credentials into gray.
 
 Retiring old network configurations and cleaning ownerless resources require
@@ -132,10 +134,38 @@ mounted Docker daemon.
 |---|---|
 | Docker Engine 26.0 or later (Engine API 1.45) | Persistent workspaces reach each sandbox through a mount of a sub-directory of a Docker volume (`VolumeOptions.Subpath`), which Engine API 1.45 added. Everything else the stack uses is older. |
 | Docker Compose plugin 2.17.0 or later | `containers/compose.yaml` restarts the server when a sandbox edge is recreated (`depends_on` with `restart: true`), which Compose 2.17.0 introduced. |
+| 4 GiB of memory for the server container | The server container also runs the bundled LiteLLM gateway and the sandbox lifecycle server. It holds about 1.6 GiB once started and more during its first start, when LiteLLM migrates its database. Under a lower limit the kernel kills LiteLLM during that start and the container restarts in a loop. Sandboxes need their own memory on top. |
 
 The installer and the server both check the daemon and refuse an older one,
 naming the version they found; the server checks at every start, so upgrading
 the host never leaves it running on an engine it does not support.
+
+### A container engine in sandboxes {#container-engine-host}
+
+A RuntimeProfile can give each of its sandboxes a rootless Docker Engine
+([RuntimeProfiles](runtime-profiles.md#container-engine)). This section is
+the Docker host's part; on Kubernetes, see
+[OpenSandbox](providers/opensandbox.md#container-engine-kubernetes). The
+bundled server creates such a sandbox without masked `/proc` paths and without
+`no_new_privileges`, which the engine needs to map its user ids and to give
+each container its own `/proc`. Whoever gains root in such a sandbox can
+therefore change kernel settings of this host; offer the engine only to teams
+you trust with that.
+
+The engine creates user namespaces as the sandbox's unprivileged user, which
+Ubuntu 23.10 and later restrict through AppArmor by default. Allow them on the
+host:
+
+```bash
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-astrabox-userns.conf
+sudo sysctl --system
+```
+
+Without it, a sandbox created for the engine is refused with a message naming
+the setting. Each such sandbox keeps its images and build cache on a Docker
+volume of its own, created and deleted with the sandbox; the volume has no size
+limit, so the host's Docker data disk bounds it. The two grants apply only to
+sandboxes created for the engine.
 
 ### The sandbox network boundary {#sandbox-network-boundary}
 
@@ -150,11 +180,17 @@ stack keeps the platform off that network:
   capability-scoped callback routes and DNS to the server, over the private
   `sandbox-edges` network, which has no route off the host and which sandboxes
   never join.
-- The lifecycle server publishes each sandbox's execd, file/terminal and
-  egress-API ports on the Docker bridge gateway (`ASTRABOX_PUBLISH_HOST_IP`,
-  which the installer sets from `docker network inspect bridge`), not on the
-  host's other interfaces. Those in-box services have no authentication: do not
-  set `ASTRABOX_PUBLISH_HOST_IP` to `0.0.0.0` unless something in front of those
+- The lifecycle server publishes three ports of each sandbox on the Docker
+  bridge gateway (`ASTRABOX_PUBLISH_HOST_IP`, which the installer sets from
+  `docker network inspect bridge`), not on the host's other interfaces:
+  execd, which runs commands, serves files and the terminal, and is the only
+  route to every other in-box port; the image's web gateway on 8080; and the
+  egress sidecar's API. The gateway requires the sandbox's `SANDBOX_API_KEY`
+  and the egress API the token OpenSandbox gives the sidecar; their health
+  routes answer anyone. execd answers anyone that reaches it, unless
+  `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` gives it a token of the sandbox
+  ([below](#sandbox-execd-authentication)). Do not set
+  `ASTRABOX_PUBLISH_HOST_IP` to `0.0.0.0` unless something in front of those
   ports authenticates every request.
 - Every sandbox's egress policy, under both `Limited` and `Unrestricted`
   networking, denies Docker's default bridge except `sandbox-edge`: other
@@ -174,7 +210,13 @@ stack keeps the platform off that network:
 `Unrestricted` still allows every other destination, including the host's
 other addresses and your LAN. Other containers on the default bridge that are
 not AstraBox sandboxes, and processes on the host, can reach the published
-sandbox ports; the host and its other containers are inside the trust boundary.
+sandbox ports. By default execd answers them, so they can run commands as
+root, read and write files and open every in-box service in any sandbox: the
+host and its other containers are inside the trust boundary. With
+`ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` every published port asks them for
+a credential of the sandbox, and only root on the host and anything that can
+use the Docker socket, which can read those credentials from the containers'
+configuration, stay inside it.
 
 Docker gives the two edges their bridge addresses when they start, and an edge
 that restarts can come back at a different one. Every sandbox keeps the
@@ -194,6 +236,158 @@ conversation then continues on a new one:
 docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
 docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
 ```
+
+The volumes of sandboxes removed this way are reclaimed as their leases run
+out while the server keeps running; see
+[Container engine on Docker](providers/opensandbox.md#container-engine-docker)
+for removing them after a restart.
+
+### Sandbox execd authentication {#sandbox-execd-authentication}
+
+With `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true`, every sandbox the bundled
+lifecycle server creates on Docker starts execd with an access token of its
+own, OpenSandbox's `EXECD_ACCESS_TOKEN`. execd then refuses every request
+without it in `X-EXECD-ACCESS-TOKEN` with `401`: commands, files, the terminal,
+isolated sessions, metrics, and its `/proxy/<port>` route to the sandbox's
+other ports. Only `/ping` and `/ready` answer without it. AstraBox's execd
+image adds two changes to OpenSandbox's (`containers/execd/README.md`): the
+route that replaces the token requires the token too, and the proxy does not
+pass the token on to the other in-box services. The setting is off by default
+because it costs the browser features described below; turn it on where other
+containers or users of the host must not reach the sandboxes.
+
+AstraBox stores no token. It writes a random value to the sandbox's metadata
+when it creates the sandbox and derives the token from that value and the
+deployment's secret (`ASTRABOX_TRANSCRIPT_SIGNING_KEY`, else
+`ASTRABOX_VAULT_MASTER_KEY` or the local secret store's master key), so every
+AstraBox replica, a restarted server, a prepared sandbox claimed later and
+every conversation of a shared sandbox derive the same token, and someone who
+reads the sandbox's metadata through the lifecycle API cannot. Changing that
+secret leaves existing sandboxes with a token unreachable; remove them as shown
+in [the sandbox network boundary](#sandbox-network-boundary). Before AstraBox
+uses a new sandbox with a token, it checks that execd refuses a request without
+the token and accepts it with the token, and that execd's token-replacing route
+refuses it; a sandbox that fails is destroyed and the conversation fails with
+`SANDBOX_EXECD_ACCESS_UNVERIFIED`. That happens when
+`ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE` names an execd image other than
+AstraBox's. A sandbox an Agent prepares ahead of its conversations is checked
+when it is created and again when a conversation takes it, so one prepared
+before the setting was turned on is replaced rather than handed out. The
+Agent's prepared state then shows `SANDBOX_EXECD_ACCESS_UNVERIFIED` and its
+reason, and it tries again after 10 seconds, doubling the wait after each
+further failure up to five minutes. A prepared sandbox whose check was
+interrupted, by a server restart or a destruction that was not confirmed, is
+destroyed by the periodic sweep of sandboxes no conversation holds.
+
+The token reaches execd through the sandbox's create environment. The image's
+entrypoint is started without it, and execd removes it from every command,
+terminal and isolated session it starts, so the Agent's processes do not have
+it in their environment. It remains in the environment of the sandbox's first
+process and of execd, both running as root, which only root in the sandbox can
+read. The bundled images run the Agent as their own unprivileged account; the
+conversation's terminal runs as root and can read it, which gives the person at
+the terminal nothing beyond the root access to that sandbox the terminal
+already gives. `docker exec` also starts its processes with the token, from the
+container's configuration.
+
+On the Docker runtime a browser reaches an in-box port only through execd's
+`/proxy/<port>` route, and a browser cannot send the token. In a sandbox with
+the token, HTML preview, the Browser panel and exposed ports therefore fail
+with `SANDBOX_BROWSER_ROUTE_UNAVAILABLE`, and a Pi Agent cannot share a sandbox
+between conversations, because each such conversation runs its own execd
+behind the sandbox's and both read the same header. Use the Kubernetes runtime
+with the OpenSandbox ingress Gateway when you need both the browser features
+and authenticated sandboxes.
+
+The setting applies to sandboxes created afterwards. A sandbox created without
+a token keeps answering without one until it is replaced; AstraBox sends a
+token only to a sandbox whose metadata records one. To close the existing
+sandboxes at once after turning the setting on, remove every sandbox on the
+host as shown in [the sandbox network boundary](#sandbox-network-boundary);
+each conversation continues on a new one. Turning it off again leaves the
+sandboxes that have a token as they are.
+
+Kubernetes sandboxes and sandboxes of a lifecycle service the deployment runs
+itself are created without an execd token, and
+`ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` refuses their creation. There,
+a `NetworkPolicy` keeps other Pods away from sandbox Pods and OpenSandbox
+Secure Access protects the ingress Gateway
+([OpenSandbox](providers/opensandbox.md#sandbox-network-policy)).
+
+### Share host networks and storage with sandboxes {#share-host-networks-and-storage}
+
+A RuntimeProfile can join its sandboxes to Docker networks of this host and
+mount host directories or named volumes into them
+([RuntimeProfiles](runtime-profiles.md#host-networks-and-storage)), but only
+what you list in the settings file:
+
+```dotenv
+# Docker networks a sandbox may join (user-defined networks, IPv4 only).
+ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS=foundry-shared
+# Host directories a sandbox may mount, each named exactly.
+ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS=/srv/foundry/git-objects,/srv/foundry/build-cache
+# Docker named volumes a sandbox may mount.
+ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES=foundry-npm-cache
+```
+
+Empty lists allow nothing, which is the default. Restart the server after a
+change. The server refuses to start when an entry cannot be applied: `bridge`,
+`host` or `none` as a network, a network name that is not at most 63 letters,
+digits, `-`, `_` or `.`, a host path that is not absolute and normalized, or a
+volume name with characters other than lowercase letters, digits and `-`.
+RuntimeProfiles are checked against the lists when they are saved and again
+for every sandbox created from them, so removing an entry refuses the next
+sandbox of every RuntimeProfile that names it, with `SANDBOX_NETWORK_NOT_ALLOWED`
+or `SANDBOX_MOUNT_NOT_ALLOWED`.
+
+Prepare what you list before a sandbox uses it:
+
+- Create the network and attach the services to it, for example with
+  `docker network create foundry-shared` or a Compose project's own network
+  (Compose prefixes its name with the project). Give each service a container
+  name or network alias without dots: a sandbox resolves those names, as they
+  were when the sandbox was created. A service that later moves to another
+  address is reached at that address only by sandboxes created afterwards, so
+  give shared services fixed addresses (Compose `ipv4_address`) when sandboxes
+  run for a long time. A network whose subnet lies in
+  `ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS` or `169.254.0.0/16`, or that has IPv6
+  enabled, is refused when a sandbox is created.
+- Create each host directory, with ownership that lets the sandbox's processes
+  read or write it: they run as the image's workload account (uid 1000 in the
+  bundled images) or, with one sandbox per Agent, as one account per
+  conversation. A missing directory is refused when a sandbox is created; it is
+  not created for you.
+- Create each named volume (`docker volume create foundry-npm-cache`). A
+  missing volume is refused when a sandbox is created; sandboxes never create
+  or delete one.
+
+Only the bundled OpenSandbox server applies these settings, and host networks
+also need Docker Engine 28.0 (API 1.48) or later: older engines give a joined
+network the sandbox's default route and published ports when its name sorts
+before `bridge`, so on them a RuntimeProfile with host networks is refused
+when it is saved and when a sandbox is created. With
+`ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes`, the two storage lists name node
+directories and PersistentVolumeClaims in the sandbox namespace instead
+([OpenSandbox](providers/opensandbox.md#kubernetes-mounts)), and
+`ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS` has no effect: the server warns at
+startup, RuntimeProfiles with host networks are refused, and a sandbox reaches
+a cluster Service through its RuntimeProfile's allowed hosts
+([OpenSandbox](providers/opensandbox.md#reach-cluster-services)). With an
+existing OpenSandbox service, the server warns at startup that none of the
+three has an effect, and RuntimeProfiles that use them are refused.
+
+What you grant:
+
+- A sandbox on a network reaches every port of every container on it, in both
+  network access modes: the sandbox's egress policy allows the network's
+  subnet. Containers on the network cannot open connections into the sandbox,
+  and two sandboxes on one network cannot reach each other.
+- A read-write host directory or volume is host storage the sandbox's Agent
+  can change or delete, shared by every sandbox that mounts it. A read-only
+  one still lets the Agent read everything in it.
+
+List only networks and storage that every team using such a RuntimeProfile
+may use.
 
 ### Install a release {#install-a-release}
 
@@ -262,13 +456,15 @@ you run the installer for the new release:
    docker compose stop server
    ```
 
-2. Remove the sandboxes on the Docker host. These commands remove every
-   OpenSandbox sandbox on the host, including those of any other AstraBox
-   installation there:
+2. Remove the 0.1.8 installation's sandboxes from the Docker host. Each
+   sandbox and the egress proxy beside it carry their installation's
+   identifier in the `astrabox.installation` label, so this leaves other
+   installations' sandboxes on the host running. Run it from
+   `~/astrabox/containers` while the 0.1.8 database is still in place:
 
    ```bash
-   docker ps -aq --filter label=opensandbox.io/id | xargs -r docker rm -f
-   docker ps -aq --filter label=opensandbox.io/egress-sidecar-for | xargs -r docker rm -f
+   installation=$(docker compose exec -T postgres psql -U postgres -d astrabox -tAc 'SELECT installation_id FROM installation')
+   docker ps -aq --filter "label=astrabox.installation=$installation" | xargs -r docker rm -f
    ```
 
    When sandboxes run on Kubernetes or an existing OpenSandbox service, delete
@@ -356,6 +552,31 @@ other Compose value, then re-run the installer:
 printf '%s\n' "ASTRABOX_SERVER_HOST_PORT='9000'" >> ~/astrabox/containers/.env
 ```
 
+Every setting of the deployment goes in that file. `containers/settings.reference.env`,
+beside it, lists each one with its default and what it does; a setting the
+file leaves out keeps its default. [The complete list](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md)
+has the same settings.
+
+A few defaults are decisions about this host and your team: how much of the
+host's memory and CPU sandboxes may take (all but 4 GiB of memory, and every
+CPU, unless you set a ceiling), how large each conversation's sandbox is, how
+long an idle conversation keeps its sandbox, and who may create Agents and use
+the deployment. They are the first section of the reference file. On a first
+install from a terminal the installer offers to go through them; it takes any
+of them from the environment (`ASTRABOX_SANDBOX_QUOTA_MEMORY=24Gi bash
+install.sh`) whether or not it can ask; and every run ends by listing them
+with the value each has.
+
+How much memory sandboxes may hold together is not left to a default on a
+first install, because AstraBox cannot see what else the host runs. From a
+terminal the installer asks for it, showing the host's memory and suggesting
+that amount less 4 GiB; a first install without a terminal stops before it
+writes anything until `ASTRABOX_SANDBOX_QUOTA_MEMORY` is set, to a size or to
+`unlimited`. An upgrade does not stop for it: run from a terminal, the
+installer asks the first time it reviews an installation's settings;
+otherwise the [derived ceiling](#cap-what-a-sandbox-backend-runs) stays, and
+the server warns about it.
+
 Manage the installed stack from that directory with the ordinary Compose
 commands, `docker compose ps`, `docker compose logs -f server` and
 `docker compose down`. With team login on, they include Casdoor.
@@ -394,7 +615,8 @@ console without login to other computers.
 Every release publishes these images, tagged with its version. The installer
 writes that version to the settings file as `ASTRABOX_IMAGE_TAG`; a deployment
 that names no image of its own runs `<ASTRABOX_IMAGE_PREFIX><component>:<ASTRABOX_IMAGE_TAG>`
-for its server, every Agent program's sandbox and the workspace helper.
+for its server, every Agent program's sandbox, each sandbox's egress sidecar
+and the workspace helper.
 
 | Image | Architectures |
 |---|---|
@@ -404,6 +626,7 @@ for its server, every Agent program's sandbox and the workspace helper.
 | `ghcr.io/colton-z/astrabox-sandbox-deepseek-harness` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-hermes` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-pi` | amd64, arm64 |
+| `ghcr.io/colton-z/astrabox-egress` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-workspace-mounter` | amd64 |
 
 The workspace helper is amd64 only: it installs the mergerfs release archive
@@ -414,7 +637,7 @@ built for that architecture.
 A checkout builds and runs its own images, `astrabox/<component>:latest`:
 
 ```bash
-make build-agent-image
+make build-agent-image build-egress-image
 
 export ANTHROPIC_API_KEY="your-anthropic-api-key"
 export ANTHROPIC_MODEL="your-model-name"
@@ -877,7 +1100,9 @@ scheduler reserves for it on a node; Docker ignores requests. Memory requests
 equal the limits, so a node never promises memory it does not have. CPU
 requests are lower, because a sandbox that finds the CPU busy only runs slower.
 A sandbox takes the size in effect when it is created and keeps it until it is
-replaced.
+replaced. A RuntimeProfile can set its own CPU and memory for every sandbox
+created from it, of either kind; see
+[Sandbox size](runtime-profiles.md#sandbox-size).
 
 A shared sandbox takes another conversation while its free memory, measured
 from what the sandbox uses rather than from its limit, leaves 640 MiB for it.
@@ -886,25 +1111,11 @@ shared sandbox holds about five. A larger shared sandbox holds more
 conversations for its size, because the runtime underneath is paid for once:
 an 8 GiB sandbox holds about twelve.
 
-Each sandbox runs beside an egress sidecar limited to 1 CPU and 128 MiB. On a
-Docker host the bundled sandbox server sets that limit. On Kubernetes,
-OpenSandbox 0.2.3 creates the sidecar without resources, so give the sandbox
-namespace a LimitRange whose container default is the same:
-
-```yaml
-apiVersion: v1
-kind: LimitRange
-metadata:
-  name: astrabox-sandbox-sidecars
-spec:
-  limits:
-    - type: Container
-      default: {cpu: "1", memory: 128Mi}
-      defaultRequest: {cpu: 50m, memory: 128Mi}
-```
-
-The default applies to every container in the namespace that states no
-resources of its own, OpenSandbox's execd init container included.
+Each sandbox runs beside an egress sidecar limited to 1 CPU and 128 MiB, which
+the bundled sandbox server sets on both runtimes. On Kubernetes it also gives
+the sidecar and OpenSandbox's execd init container a request of 50m CPU and
+128 MiB, through OpenSandbox's `[egress]` and `[kubernetes]` resource settings.
+An existing OpenSandbox service sizes its sidecar itself.
 
 ### Cap what a sandbox backend runs {#cap-what-a-sandbox-backend-runs}
 
@@ -941,7 +1152,12 @@ ten conversations with their own sandboxes. On a host of 8 GiB or less the
 ceiling is 4 GiB or less, too little for one shared sandbox of the default size
 (4 GiB and its sidecar), so an Agent or Assistant whose RuntimeProfile shares a
 sandbox cannot start: lower `ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT` and its request, or raise
-`ASTRABOX_SANDBOX_QUOTA_MEMORY`. Set a variable to `unlimited` to remove the
+`ASTRABOX_SANDBOX_QUOTA_MEMORY`. The host's memory says nothing about what
+else the host runs, so on a host shared with other software this default lets
+sandboxes take the memory that software needs: set
+`ASTRABOX_SANDBOX_QUOTA_MEMORY` to what sandboxes may hold. While the ceiling
+is derived, startup logs a warning that says so, and the **Sandboxes** page
+says it under the memory ceiling. Set a variable to `unlimited` to remove the
 ceiling. Startup logs each ceiling and where it came from, and
 refuses a ceiling on a backend that cannot list its sandboxes, since what it
 runs could not be counted. The **Sandboxes** page of the console shows each

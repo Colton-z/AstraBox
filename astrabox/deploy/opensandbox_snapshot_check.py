@@ -66,6 +66,14 @@ async def verify_opensandbox_snapshots(
         settings,
         lifecycle_base_url_override=lifecycle_base_url,
     )
+    # The lifecycle server answers the create POST only once the runtime is
+    # running. A shorter client timeout returns no sandbox id while the server
+    # can still finish the create, and cleanup below cannot remove that sandbox.
+    create_connection = _config.sdk_connection_config(
+        settings,
+        request_timeout_seconds=_config.create_request_timeout_seconds(settings),
+        lifecycle_base_url_override=lifecycle_base_url,
+    )
     secret = connection.get_api_key() or None
     selected_image = str(image or resolve_agent_image()).strip()
     if not selected_image:
@@ -98,7 +106,7 @@ async def verify_opensandbox_snapshots(
                     "astrabox.managed-by": "snapshot-verifier",
                     "astrabox.verification-id": marker,
                 },
-                connection_config=connection,
+                connection_config=create_connection,
             )
             sandbox_id = str(active.id)
             timings[stage] = time.monotonic() - stage_started

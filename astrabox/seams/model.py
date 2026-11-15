@@ -18,6 +18,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 import ipaddress
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -71,6 +72,14 @@ class ModelRequestContext:
 
     conversation_id: str | None = None
     user_id: str | None = None
+    #: The model account the conversation's Agent names, for a provider whose
+    #: credential is the Session owner's; ``None`` means the owner's default.
+    account_id: str | None = None
+    #: For a provider whose credential is the Session owner's: renew the
+    #: credential of the account the conversation spends now instead of
+    #: choosing one. True while a response may be running, which must not
+    #: change accounts.
+    keep_account: bool = False
 
 
 class ModelEndpointConfigurationError(RuntimeError):
@@ -84,6 +93,23 @@ class ModelEndpointProvider(ABC):
     name: str
     #: Exactly one built-in or deployment provider may declare the default.
     is_default: bool = False
+    #: Whose credential a sandbox spends at this endpoint. ``deployment``:
+    #: :meth:`resolve` carries one credential every Session may use.
+    #: ``session_owner``: there is no such credential; each Session spends the
+    #: one :meth:`ensure_session_credential` returns for its owner, which
+    #: authorizes the request and can expire
+    #: (:meth:`session_credential_expires_at`). ``sandbox``: the platform holds
+    #: and delivers no credential at all; the runtime authenticates with a
+    #: login its user makes inside the sandbox, which the platform never reads
+    #: or keeps, and which lasts only as long as that sandbox.
+    credential_owner: Literal["deployment", "session_owner", "sandbox"] = "deployment"
+    #: The engines whose model wire this endpoint serves; empty for any engine.
+    #: A RuntimeProfile that selects the endpoint for another engine is refused.
+    engine_kinds: frozenset[str] = frozenset()
+    #: Hosts other than the endpoint's own that a sandbox has to reach for the
+    #: runtime to authenticate there, such as a vendor's sign-in service. A
+    #: RuntimeProfile with limited networking must allow each of them.
+    sandbox_hosts: tuple[str, ...] = ()
 
     @abstractmethod
     def resolve(self, *, requested: ModelEndpoint, settings: Any = None) -> ModelEndpoint:
@@ -173,8 +199,10 @@ class ModelEndpointProvider(ABC):
         Session its own credential; the platform hands that value to the
         Session's sandbox instead of the deployment-wide one, and the gateway
         attributes what it sees. ``None`` means this provider has no
-        per-Session identity, and the caller keeps the shared credential —
-        the difference is attribution, never authorization.
+        per-Session identity, and the caller keeps the shared credential. For
+        a ``deployment`` provider the difference is attribution, never
+        authorization; a ``session_owner`` or ``sandbox`` provider has no
+        shared credential to keep.
 
         Derived rather than looked up: a replica that did not mint the
         credential still has to name it when it composes egress state.
@@ -192,6 +220,18 @@ class ModelEndpointProvider(ABC):
         any model request can be made under it. A provider that cannot honour
         the request raises; returning ``None`` means only that this provider
         has no per-Session identity to establish.
+        """
+
+        _ = context
+        return None
+
+    async def session_credential_expires_at(
+        self, *, context: ModelRequestContext
+    ) -> datetime | None:
+        """When the credential :meth:`ensure_session_credential` last returned stops working.
+
+        ``None`` for a credential that does not expire. A running sandbox has
+        to be given the renewed credential before this.
         """
 
         _ = context

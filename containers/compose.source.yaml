@@ -3,7 +3,13 @@
 # the checkout and uvicorn watches that mounted directory.
 services:
   server:
+    # The image's installed metadata lists the entry points of the release it
+    # was built from; source-metadata.py runs the server with the checkout's.
     command:
+      - python
+      - /opt/astrabox/source/source-metadata.py
+      - /opt/astrabox/source/pyproject.toml
+      - --
       - python
       - -m
       - uvicorn
@@ -18,6 +24,8 @@ services:
       - "8000"
     volumes:
       - ../astrabox:/usr/local/lib/python3.12/site-packages/astrabox:ro
+      - ../pyproject.toml:/opt/astrabox/source/pyproject.toml:ro
+      - ../scripts/source-metadata.py:/opt/astrabox/source/source-metadata.py:ro
       - ../channel-gateway/src:/opt/astrabox/channel-gateway/src:ro
       - ./litellm/config.yaml:/opt/astrabox/litellm/config.yaml:ro
       - ../astrabox/identity/oidc.py:/opt/astrabox/litellm/astrabox_oidc.py:ro

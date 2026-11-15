@@ -99,6 +99,10 @@ class AgentView:
     endpoint_provider: str | None = None
     # ── runtime settings ─────────────────────────────────────────────────
     exposure_mode: str | None = None
+    #: The model account the Agent names and whose it is (its creator's); see
+    #: ``ModelRequestContext.account_id``.
+    model_account_id: str | None = None
+    model_account_owner_id: str | None = None
     idle_hibernate_seconds: int | None = None
     #: Keep one platform-ready runtime prepared for this Agent. Shared tenancy
     #: obtains base boxes through the sandbox provider's client-pool capability;
@@ -133,6 +137,20 @@ class AgentView:
     #: still needs ``advanced`` when the engine enforces its permission mode
     #: inside. None == ``default``, so nothing is granted unasked.
     sandbox_permission_level: str | None = None
+    #: A container engine each box of this environment runs for its Agent
+    #: (``none`` or ``docker``). None == ``none``.
+    sandbox_container_engine: str | None = None
+    #: CPU and memory limits of each box of this environment, as Kubernetes
+    #: quantities. None == the deployment's size for that kind of box
+    #: (``sandbox_create_resources``).
+    sandbox_cpu: str | None = None
+    sandbox_memory: str | None = None
+
+
+    #: Host networks each box of this environment joins, as stored.
+    sandbox_networks: list[str] | None = None
+    #: Host paths and named volumes each box mounts, as stored.
+    sandbox_mounts: list[dict[str, Any]] | None = None
     #: Underlying sandbox backend selector; None == the default backend.
     sandbox_backend: str | None = None
     status: str | None = None

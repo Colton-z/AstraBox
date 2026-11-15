@@ -7,18 +7,22 @@ channel providers (see :mod:`astrabox.seams.channel` for the seam contract).
 Inbound (``scene = "channel:generic_json"``, POSTed to the normal webhook
 trigger endpoint):
 
-* auth — the binding's secret as a bearer-style token
-  (``X-Channel-Secret`` header, or ``Authorization: Bearer <secret>``),
-  compared constant-time; 401 on mismatch. REPLAY BOUNDARY: a static bearer
-  is inherently replayable — a captured secret authorizes any request until
-  the binding is rotated, and this reference provider adds no timestamp or
-  body binding. It is adequate for a trusted internal caller over TLS; a
-  public-internet or untrusted-network integration MUST use a provider with a
-  signed-timestamp + body-bound scheme (Slack/DingTalk/Feishu-style — see the
-  built-in ``hmac`` webhook scene for the pattern), NOT this one.
-* payload — ``{"text": "...", "message_id": "...", "conversation_id": "...",
-  "sender": "...", "reply_to": "...", "action": "...", "reply": {...}}``;
-  ``text`` (required unless ``action`` is set) becomes the turn message.
+* auth — one of two, with the binding's secret. A signed request
+  (``X-Webhook-Timestamp`` and ``X-Webhook-Signature``, the scheme of
+  :mod:`astrabox.common.utils.webhook_signature`) binds the timestamp and the
+  body, so a captured request cannot carry another body and expires with the
+  freshness window. The secret as a bearer-style token (``X-Channel-Secret``,
+  or ``Authorization: Bearer <secret>``) is replayable for as long as the
+  binding keeps its secret, and is adequate only for a trusted internal
+  caller over TLS. A binding whose ``signed_requests`` setting is on accepts
+  signed requests only. 401 on mismatch.
+* payload — ``{"text": "...", "data": {...}, "message_id": "...",
+  "conversation_id": "...", "sender": "...", "reply_to": "...", "action": "...",
+  "reply": {...}}``;
+  ``text`` becomes the turn message. ``data`` (optional, any JSON value)
+  carries an event's fields: it follows ``text`` as JSON after a blank line,
+  or is the whole message when there is no ``text``. One of ``text``,
+  ``data`` or ``action`` is required.
   ``message_id`` (optional) rides as the at-least-once dedup key — platform
   redeliveries of the same id get an idempotent ``duplicate`` ack.
   ``conversation_id`` (optional) rides as the conversation key — messages
@@ -51,9 +55,11 @@ import httpx
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
+from astrabox.common.utils.webhook_signature import signed_request_refusal
 from astrabox.seams.channel import (
     ChannelDeliveryReceipt,
     ChannelDescriptor,
+    ChannelField,
     ChannelInbound,
     ChannelInteraction,
     ChannelProvider,
@@ -80,6 +86,20 @@ class GenericJsonChannelProvider(ChannelProvider):
             label="Generic JSON webhook",
             participant_format="the request's sender value, exactly as sent",
             participant_example="user123",
+            config_fields=(
+                ChannelField(
+                    key="signed_requests",
+                    label="Require signed requests",
+                    required=False,
+                    kind="boolean",
+                    default=False,
+                    help=(
+                        "Accept only requests signed with the secret "
+                        "(X-Webhook-Timestamp and X-Webhook-Signature), not the "
+                        "secret sent as a bearer token."
+                    ),
+                ),
+            ),
         )
 
     def verify_and_resolve(
@@ -90,16 +110,23 @@ class GenericJsonChannelProvider(ChannelProvider):
         binding: Mapping[str, Any],
     ) -> ChannelInbound:
         secret = str(binding.get("secret") or "")
-        provided = str(
-            headers.get("x-channel-secret")
-            or _strip_bearer(headers.get("authorization") or "")
-        )
-        if not secret or not provided or not hmac.compare_digest(secret, provided):
-            raise APIError(
-                code="CHANNEL_UNAUTHORIZED",
-                message="invalid channel secret",
-                status_code=401,
+        config = binding.get("channel_config")
+        signed_only = bool((config if isinstance(config, Mapping) else {}).get("signed_requests"))
+        if signed_only or headers.get("x-webhook-signature"):
+            refusal = signed_request_refusal(secret, headers, raw_body)
+            if refusal is not None:
+                raise APIError(code="CHANNEL_UNAUTHORIZED", message=refusal, status_code=401)
+        else:
+            provided = str(
+                headers.get("x-channel-secret")
+                or _strip_bearer(headers.get("authorization") or "")
             )
+            if not secret or not provided or not hmac.compare_digest(secret, provided):
+                raise APIError(
+                    code="CHANNEL_UNAUTHORIZED",
+                    message="invalid channel secret",
+                    status_code=401,
+                )
 
         try:
             payload = json.loads(raw_body.decode("utf-8"))
@@ -117,10 +144,18 @@ class GenericJsonChannelProvider(ChannelProvider):
             )
         text = str(payload.get("text") or "").strip()
         action = str(payload.get("action") or "").strip() or None
+        data = payload.get("data")
+        if data is not None:
+            # The event's fields reach the Agent as the JSON the sender wrote,
+            # after the text and a blank line: the Webhook trigger's own
+            # "prefix, blank line, payload" shape. Reading them is the Agent's
+            # work; nothing here selects or renames a field.
+            fields = json.dumps(data, ensure_ascii=False)
+            text = f"{text}\n\n{fields}" if text else fields
         if not text and action is None:
             raise APIError(
                 code="CHANNEL_BAD_PAYLOAD",
-                message='payload.text is required (the turn message)',
+                message="payload.text or payload.data is required (the turn message)",
                 status_code=400,
             )
 

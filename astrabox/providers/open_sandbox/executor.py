@@ -8,6 +8,7 @@ import time
 import weakref
 from datetime import timedelta
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 from opensandbox import Sandbox
 from opensandbox.models.sandboxes import CredentialProxyConfig
@@ -17,6 +18,12 @@ from astrabox.providers.execd import EXECD_PORT
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.deploy.sandbox_server import (
+    CONTAINER_ENGINE_DATA_VOLUME,
+    CONTAINER_ENGINE_METADATA_KEY,
+    NETWORK_METADATA_PREFIX,
+    network_metadata,
+)
 from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import (
     AIO_SANDBOX_API_KEY_ENV,
@@ -25,6 +32,18 @@ from astrabox.providers.open_sandbox.aio_auth import (
 from astrabox.providers.open_sandbox._metadata import (
     assignment_metadata_value,
     session_metadata_value,
+)
+from astrabox.providers.open_sandbox.execd_access import (
+    EXECD_ACCESS_NOT_ENFORCED,
+    EXECD_ACCESS_TOKEN_ENV,
+    EXECD_ACCESS_TOKEN_HEADER,
+    SANDBOX_EXECD_ACCESS_METADATA_KEY,
+    entrypoint_without_token,
+    execd_access_headers,
+    execd_access_required,
+    new_execd_access_subject,
+    require_execd_access_enforced,
+    with_execd_access,
 )
 from astrabox.providers.open_sandbox.networking import (
     SANDBOX_NETWORK_WIRING_METADATA_KEY,
@@ -41,10 +60,14 @@ from astrabox.providers.open_sandbox.sandbox import (
 )
 from astrabox.providers.sandbox_image import (
     AIO_IMAGE_ENTRYPOINT,
+    CONTAINER_ENGINE_DATA_ROOT,
+    CONTAINER_ENGINE_READY_COMMAND,
     IN_BOX_SIDECAR_PORT,
 )
 from astrabox.seams.sandbox import (
     SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
+    SANDBOX_CONTAINER_ENGINE_NONE,
+    SANDBOX_CONTAINER_ENGINES,
     SANDBOX_ENVIRONMENT_METADATA_KEY,
     SANDBOX_INSTALLATION_METADATA_KEY,
     SANDBOX_MANAGED_BY_METADATA_KEY,
@@ -59,6 +82,7 @@ from astrabox.seams.sandbox import (
     SandboxUnreachable,
     sandbox_installation_id,
     environment_name_metadata,
+    SandboxSharedMount,
 )
 
 logger = get_logger(__name__)
@@ -123,9 +147,10 @@ _EXECD_COMMAND_TRANSIENT_ERRORS = (
     SandboxCommandOutcomeUnknown,
 )
 
-# OpenSandbox server 0.2.3 consumes this exact extension on both its Docker and
+# opensandbox-server consumes this exact extension on both its Docker and
 # Kubernetes direct-create paths. It adds the namespace/mount privileges and
-# tmpfs that execd's isolation capability measures after the box starts.
+# tmpfs that execd's isolation capability measures after the box starts, and
+# on Docker empties the box's masked and read-only system paths.
 _EXECD_ISOLATION_EXTENSION_KEY = "bootstrap.execd.isolation"
 
 # Probes /health from INSIDE the box (urllib, no extra deps): readiness is
@@ -666,25 +691,31 @@ def _volumes_from_specs(specs: list[dict[str, Any]] | None) -> list[Any]:
     volumes: list[Any] = []
     for spec in specs or []:
         pvc = dict(spec.get("pvc") or {})
-        if not pvc:
-            raise RuntimeError(
-                "a workspace volume must name a backend; only pvc is built here"
-            )
+        host = dict(spec.get("host") or {})
+        if bool(pvc) == bool(host):
+            raise RuntimeError("a create volume must name exactly one backend, pvc or host")
+        # By alias throughout: these models declare their fields under the wire
+        # names and do not populate by field name, so the alias IS the key.
+        # Validating the whole nested payload also lets the model build the
+        # backend struct itself.
+        backend: dict[str, Any] = (
+            {
+                "pvc": {
+                    "claimName": str(pvc["claimName"]),
+                    "createIfNotExists": bool(pvc.get("createIfNotExists", True)),
+                    "deleteOnSandboxTermination": bool(
+                        pvc.get("deleteOnSandboxTermination", False)
+                    ),
+                }
+            }
+            if pvc
+            else {"host": {"path": str(host["path"])}}
+        )
         volumes.append(
             Volume.model_validate(
                 {
                     "name": str(spec["name"]),
-                    # By alias throughout: these models declare their fields
-                    # under the wire names and do not populate by field name, so
-                    # the alias IS the key. Validating the whole nested payload
-                    # also lets the model build the backend struct itself.
-                    "pvc": {
-                        "claimName": str(pvc["claimName"]),
-                        "createIfNotExists": bool(pvc.get("createIfNotExists", True)),
-                        "deleteOnSandboxTermination": bool(
-                            pvc.get("deleteOnSandboxTermination", False)
-                        ),
-                    },
+                    **backend,
                     "mountPath": str(spec["mountPath"]),
                     "subPath": str(spec["subPath"]) if spec.get("subPath") else None,
                     "readOnly": bool(spec.get("readOnly", False)),
@@ -895,6 +926,118 @@ async def require_open_sandbox_permission_level(
     )
 
 
+#: How long the platform waits for the image's engine check, which itself
+#: gives up after 60 seconds (containers/container-engine/astrabox-container-engine).
+_CONTAINER_ENGINE_READY_TIMEOUT_SECONDS = 75.0
+
+
+def _container_engine_volume(container_engine: str) -> list[dict[str, Any]]:
+    """The per-box volume the engine keeps its state on, created and deleted with the box.
+
+    On the bundled server's Docker runtime, a Docker volume the create asks
+    for as :data:`CONTAINER_ENGINE_DATA_VOLUME`; the server names it after the
+    sandbox it creates (``sandbox_server.name_container_engine_volumes``), so
+    each box gets its own and the server can still find it by the sandbox's id
+    after the sandbox's container is gone. On its Kubernetes runtime the
+    create carries none: the server's hook mounts an ``emptyDir`` there
+    (``sandbox_server.grant_container_engine_pods``), where upstream would
+    otherwise provision a PersistentVolumeClaim from the cluster's default
+    StorageClass.
+    """
+    if (
+        container_engine == SANDBOX_CONTAINER_ENGINE_NONE
+        or not OpenSandboxSandboxProvider._bundled_docker()
+    ):
+        return []
+    return [
+        {
+            "name": "container-engine",
+            "pvc": {
+                "claimName": CONTAINER_ENGINE_DATA_VOLUME,
+                "createIfNotExists": True,
+                "deleteOnSandboxTermination": True,
+            },
+            "mountPath": CONTAINER_ENGINE_DATA_ROOT,
+        }
+    ]
+
+
+def _shared_mount_volumes(mounts: tuple[SandboxSharedMount, ...]) -> list[dict[str, Any]]:
+    """The create's volumes for a RuntimeProfile's host paths and named volumes.
+
+    A host path is OpenSandbox's ``host`` backend. On Docker the bundled
+    server hands it to Docker as a bind mount that refuses a missing source
+    (``sandbox_server.mount_volumes_through_docker``); on Kubernetes upstream
+    mounts it as a ``hostPath`` of type ``DirectoryOrCreate`` on the node that
+    runs the Pod. A named volume is the ``pvc`` backend with neither
+    ``createIfNotExists`` nor ``deleteOnSandboxTermination``: a Docker named
+    volume, or a PersistentVolumeClaim in the sandbox namespace, that must
+    already exist and outlives every box.
+
+    Every box this backend creates, cold, prepared or shared, is a template
+    create without ``extensions.poolRef``, which upstream refuses together
+    with ``volumes`` (and with the network policy every box carries), so the
+    same volumes reach every box of a RuntimeProfile.
+    """
+    return [
+        {
+            "name": f"shared-mount-{index}",
+            **(
+                {"host": {"path": mount.source}}
+                if mount.is_host_path
+                else {
+                    "pvc": {
+                        "claimName": mount.source,
+                        "createIfNotExists": False,
+                        "deleteOnSandboxTermination": False,
+                    }
+                }
+            ),
+            "mountPath": mount.target,
+            "readOnly": mount.read_only,
+        }
+        for index, mount in enumerate(mounts)
+    ]
+
+
+async def require_open_sandbox_container_engine(
+    handle: OpenSandboxHandle,
+    container_engine: str,
+    *,
+    session_id: str,
+) -> None:
+    """Prove the box's container engine answers its workload account.
+
+    The image starts the engine at boot and runs this check's other half; a
+    box whose engine cannot start (a grant missing from its create, the host's
+    user-namespace restriction, an image without the engine) is refused with
+    the box's own diagnosis.
+    """
+    if container_engine == SANDBOX_CONTAINER_ENGINE_NONE:
+        return
+    result = await handle.commands.run(
+        CONTAINER_ENGINE_READY_COMMAND,
+        timeout=_CONTAINER_ENGINE_READY_TIMEOUT_SECONDS,
+    )
+    if result.exit_code == 0:
+        logger.info(
+            "open_sandbox container engine ready: session=%s sandbox=%s %s",
+            session_id,
+            handle.sandbox_id,
+            result.stdout.strip(),
+        )
+        return
+    raise APIError(
+        code="SANDBOX_CONTAINER_ENGINE_UNAVAILABLE",
+        message=(
+            f"open_sandbox sandbox {handle.sandbox_id!r} cannot run container engine "
+            f"{container_engine!r} (exit {result.exit_code}): {result.output.strip()[-1500:]}"
+        ),
+        status_code=409,
+        data={"sandbox_id": handle.sandbox_id, "sandbox_container_engine": container_engine},
+    )
+
+
 async def create_open_sandbox_box(
     *,
     session_id: str,
@@ -911,6 +1054,9 @@ async def create_open_sandbox_box(
     transport: Any = None,
     network_policy: Any = None,
     permission_level: str = SANDBOX_PERMISSION_LEVEL_DEFAULT,
+    container_engine: str = SANDBOX_CONTAINER_ENGINE_NONE,
+    networks: tuple[str, ...] = (),
+    shared_mounts: tuple[SandboxSharedMount, ...] = (),
     credential_proxy_enabled: bool = False,
     vault_write: tuple[list[Any], list[Any]] | None = None,
     volumes: list[dict[str, Any]] | None = None,
@@ -945,7 +1091,17 @@ async def create_open_sandbox_box(
     ``permission_level`` is mapped to OpenSandbox's namespaced execd-isolation
     extension for ``advanced`` and then verified against the running box;
     ``privileged`` has no direct-create mapping and is refused before the API is
-    called. ``credential_proxy_enabled`` creates the credential proxy without writing a
+    called. ``container_engine`` ``docker`` is created only through the bundled
+    server, whose hooks grant it on either runtime
+    (``CONTAINER_ENGINE_METADATA_KEY``, ``_container_engine_refusal``), with a
+    per-box engine volume (:func:`_container_engine_volume`), and the box is
+    returned only once its engine answers
+    (:func:`require_open_sandbox_container_engine`). ``networks`` are
+    likewise joined only by that server, from create metadata its hook reads;
+    ``shared_mounts`` are the create's ``host`` and ``pvc`` volumes
+    (:func:`_shared_mount_volumes`), mounted by the bundled server on either
+    runtime.
+    ``credential_proxy_enabled`` creates the credential proxy without writing a
     vault yet; this is the safe Agent-prewarm state. A non-empty ``vault_write``
     also enables the proxy and immediately writes its contents. ``cwd``, when
     given, is pre-created inside the box so a later process spawn cannot race
@@ -968,6 +1124,42 @@ async def create_open_sandbox_box(
             message="open_sandbox create requires a non-empty assignment_id",
             status_code=500,
         )
+    if container_engine not in SANDBOX_CONTAINER_ENGINES:
+        raise APIError(
+            code="UNSUPPORTED_SANDBOX_CONTAINER_ENGINE",
+            message=f"open_sandbox cannot create sandbox_container_engine={container_engine!r}",
+            status_code=409,
+            data={"sandbox_container_engine": container_engine},
+        )
+    engine_refusal = (
+        OpenSandboxSandboxProvider._container_engine_refusal()
+        if container_engine != SANDBOX_CONTAINER_ENGINE_NONE
+        else None
+    )
+    if engine_refusal:
+        raise APIError(
+            code="SANDBOX_CONTAINER_ENGINE_UNAVAILABLE",
+            message=(
+                f"open_sandbox cannot create sandbox_container_engine={container_engine!r}: "
+                f"{engine_refusal}"
+            ),
+            status_code=409,
+            data={"sandbox_container_engine": container_engine},
+        )
+    network_refusal = OpenSandboxSandboxProvider._host_network_refusal() if networks else None
+    if network_refusal:
+        raise APIError(
+            code="SANDBOX_NETWORK_NOT_ALLOWED",
+            message=f"open_sandbox create: {network_refusal}",
+            status_code=409,
+        )
+    mount_refusal = OpenSandboxSandboxProvider._shared_mount_refusal() if shared_mounts else None
+    if mount_refusal:
+        raise APIError(
+            code="SANDBOX_MOUNT_NOT_ALLOWED",
+            message=f"open_sandbox create: {mount_refusal}",
+            status_code=409,
+        )
     assignment_metadata = assignment_metadata_value(assignment)
     session_metadata = session_metadata_value(session_id)
     caller_metadata = {
@@ -981,8 +1173,13 @@ async def create_open_sandbox_box(
         SANDBOX_ASSIGNMENT_ID_METADATA_KEY,
         SANDBOX_NETWORK_WIRING_METADATA_KEY,
         SANDBOX_INSTALLATION_METADATA_KEY,
+        CONTAINER_ENGINE_METADATA_KEY,
+        SANDBOX_EXECD_ACCESS_METADATA_KEY,
     }
-    collisions = sorted(reserved_metadata & set(caller_metadata))
+    collisions = sorted(
+        (reserved_metadata & set(caller_metadata))
+        | {key for key in caller_metadata if key.startswith(NETWORK_METADATA_PREFIX)}
+    )
     if collisions:
         raise APIError(
             code="SANDBOX_CONFIG_INVALID",
@@ -994,10 +1191,23 @@ async def create_open_sandbox_box(
         )
     installation = await sandbox_installation_id()
     settings = load_astrabox_settings()
-    connection_config = _config.sdk_connection_config(
-        settings,
-        transport=transport,
-        request_timeout_seconds=_config.create_request_timeout_seconds(settings),
+    # The box's execd credential is derived from a subject recorded in its
+    # metadata, so connect() reproduces it (execd_access). The create's own
+    # SDK object carries it from the start.
+    execd_access_required_here = execd_access_required(settings)
+    execd_access_metadata = (
+        {SANDBOX_EXECD_ACCESS_METADATA_KEY: new_execd_access_subject()}
+        if execd_access_required_here
+        else {}
+    )
+    execd_access = execd_access_headers(execd_access_metadata)
+    connection_config = with_execd_access(
+        _config.sdk_connection_config(
+            settings,
+            transport=transport,
+            request_timeout_seconds=_config.create_request_timeout_seconds(settings),
+        ),
+        execd_access,
     )
     # Key hygiene (the invariant the provider's _api_error enforces): every call
     # below is a lifecycle-face request carrying the API key header, and a
@@ -1022,13 +1232,18 @@ async def create_open_sandbox_box(
     if create_extensions:
         hardening["extensions"] = create_extensions
     create_env = dict(env)
-    reserved = sorted(key for key in create_env if str(key).startswith("OPENSANDBOX_EGRESS_"))
+    reserved = sorted(
+        key
+        for key in create_env
+        if str(key).startswith("OPENSANDBOX_EGRESS_") or key == EXECD_ACCESS_TOKEN_ENV
+    )
     if reserved:
         raise APIError(
             code="SANDBOX_CONFIG_INVALID",
             message=(
-                "sandbox environment variables under OPENSANDBOX_EGRESS_* are "
-                "reserved for the host; remove: " + ", ".join(reserved)
+                "sandbox environment variables under OPENSANDBOX_EGRESS_* and "
+                f"{EXECD_ACCESS_TOKEN_ENV} are reserved for the host; remove: "
+                + ", ".join(reserved)
             ),
             status_code=400,
         )
@@ -1050,6 +1265,14 @@ async def create_open_sandbox_box(
     # metadata projection — the exact string stored on the box. The key stays
     # in its create environment and is never returned in a browser URL.
     create_env[AIO_SANDBOX_API_KEY_ENV] = derive_aio_api_key(assignment_metadata)
+    if execd_access:
+        create_env[EXECD_ACCESS_TOKEN_ENV] = execd_access[EXECD_ACCESS_TOKEN_HEADER]
+        resolved_entrypoint = entrypoint_without_token(resolved_entrypoint)
+    create_volumes = [
+        *(volumes or []),
+        *_container_engine_volume(container_engine),
+        *_shared_mount_volumes(shared_mounts),
+    ]
     provider = OpenSandboxSandboxProvider(transport=transport)
     recovered = await provider.find_sandbox_by_assignment(assignment)
     if recovered is not None and recovered.session_id != session_metadata:
@@ -1133,13 +1356,22 @@ async def create_open_sandbox_box(
                     # refuses a box whose record differs from the deployment's.
                     SANDBOX_NETWORK_WIRING_METADATA_KEY: sandbox_network_wiring(settings),
                     SANDBOX_INSTALLATION_METADATA_KEY: installation,
+                    **execd_access_metadata,
+                    **(
+                        {CONTAINER_ENGINE_METADATA_KEY: container_engine}
+                        if container_engine != SANDBOX_CONTAINER_ENGINE_NONE
+                        else {}
+                    ),
+                    # The bundled server's hook joins the box to these
+                    # (sandbox_server.attach_allowlisted_networks).
+                    **network_metadata(networks),
                 },
                 connection_config=connection_config,
                 # Durable storage, when the caller planned any. Passed at CREATE
                 # because that is the only moment a mount can be established:
                 # this backend offers no in-box remount, and a pooled box is
                 # created before the conversation that borrows it exists.
-                volumes=_volumes_from_specs(volumes) if volumes else None,
+                volumes=_volumes_from_specs(create_volumes) if create_volumes else None,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -1151,9 +1383,14 @@ async def create_open_sandbox_box(
             ) from exc
     handle = OpenSandboxHandle(sdk_sandbox)
     try:
+        if execd_access_required_here:
+            await require_open_sandbox_execd_access(provider, handle)
         await require_open_sandbox_permission_level(handle, permission_level)
         if require_execd_command_stream:
             await _wait_for_execd_command_stream(handle, session_id=str(session_id))
+        await require_open_sandbox_container_engine(
+            handle, container_engine, session_id=str(session_id)
+        )
         if vault_write is not None:
             # BEFORE anything else uses the box. The CLI is launched with a
             # placeholder, so until this lands the sandbox holds a credential
@@ -1203,7 +1440,61 @@ async def create_open_sandbox_box(
     return handle
 
 
+async def require_open_sandbox_execd_access(
+    provider: OpenSandboxSandboxProvider, handle: OpenSandboxHandle
+) -> None:
+    """Refuse a box unless its execd admits only the box's own credential.
+
+    Every box this backend hands out passes it: a new box in the create guard
+    above, a prepared one again when its client pool hands it out
+    (``agent_pool``), and an unclaimed prepared one the ownerless reap finds
+    (:meth:`OpenSandboxSandboxProvider.unclaimed_sandbox_refusal`).
+
+    The check goes where another container goes: execd's published port
+    itself. OpenSandbox's Docker endpoint for an in-box port, execd's own
+    included, is ``<host>:<published execd port>/proxy/<port>``
+    (``_resolve_host_mapped_endpoint`` in ``services/docker/networking.py``), so
+    the direct endpoint without its path is execd's root. A request through
+    ``/proxy`` would meet execd's credential check twice and prove nothing about
+    the root routes.
+
+    A box returned by assignment recovery may predate the credential; it has
+    none to prove and is refused like one whose execd ignores it.
+    """
+
+    access = handle.execd_access
+    if not access:
+        raise APIError(
+            code="SANDBOX_EXECD_ACCESS_UNVERIFIED",
+            message=(
+                f"sandbox {handle.sandbox_id!r} was created without an execd "
+                "credential, which this deployment requires"
+            ),
+            status_code=502,
+            evidence={"reason": EXECD_ACCESS_NOT_ENFORCED},
+        )
+    direct = await provider._connect_handle(
+        handle.sandbox_id, use_server_proxy_override=False
+    )
+    try:
+        endpoint = await direct.get_endpoint(EXECD_PORT)
+    finally:
+        await direct.close()
+    root = urlsplit(endpoint.url)._replace(path="", query="", fragment="").geturl()
+    await require_execd_access_enforced(
+        root,
+        token=access[EXECD_ACCESS_TOKEN_HEADER],
+        routing_headers={
+            name: value
+            for name, value in endpoint.headers.items()
+            if name != EXECD_ACCESS_TOKEN_HEADER
+        },
+    )
+
+
 __all__ = [
     "create_open_sandbox_box",
+    "require_open_sandbox_execd_access",
+    "require_open_sandbox_container_engine",
     "require_open_sandbox_permission_level",
 ]

@@ -1,13 +1,16 @@
 import type { SessionRecord } from '../types';
 
-type PollingSession = Pick<SessionRecord, 'state' | 'current_responses' | 'pending_interaction' | 'held_inputs'>;
+type PollingSession = Pick<
+  SessionRecord, 'state' | 'current_responses' | 'pending_interaction' | 'held_inputs' | 'background_tasks'
+>;
 
 const WORKING_POLL_INTERVAL_MS = 3000;
 const SETTLING_POLL_INTERVAL_MS = 1500;
 
 /**
  * Whether the session is at rest: ready, with no response running, no input
- * the platform still holds, and no interaction waiting on its owner. A
+ * the platform still holds, no interaction waiting on its owner, and no
+ * background task, whose end the conversation's stream does not announce. A
  * terminated or deleted session is at rest too; nothing will change it.
  */
 export function isSessionAtRest(session: PollingSession | null | undefined): boolean {
@@ -16,6 +19,7 @@ export function isSessionAtRest(session: PollingSession | null | undefined): boo
   return state === 'READY'
     && !session?.current_responses?.length
     && !session?.held_inputs?.length
+    && !session?.background_tasks?.length
     && !session?.pending_interaction;
 }
 
@@ -34,7 +38,9 @@ export function sessionDetailPollInterval(
   if (lifecycleState === 'busy') return WORKING_POLL_INTERVAL_MS;
   if (lifecycleState !== 'ready') return null;
   if (isSessionAtRest(session)) return null;
-  return session?.pending_interaction ? WORKING_POLL_INTERVAL_MS : SETTLING_POLL_INTERVAL_MS;
+  // A question waiting on its owner, or background work, can last minutes: the slower cadence is enough.
+  return session?.pending_interaction || session?.background_tasks?.length
+    ? WORKING_POLL_INTERVAL_MS : SETTLING_POLL_INTERVAL_MS;
 }
 
 /**

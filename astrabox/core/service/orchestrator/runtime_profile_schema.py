@@ -26,8 +26,12 @@ from typing import Any
 
 from astrabox.bootstrap import SANDBOX_IDLE_ACTIONS
 from astrabox.seams.sandbox import (
+    SANDBOX_CONTAINER_ENGINE_NONE,
+    SANDBOX_CONTAINER_ENGINES,
     SANDBOX_NETWORK_MODES,
     SANDBOX_NETWORK_LIMITED,
+    SANDBOX_NETWORK_UNRESTRICTED,
+    SANDBOX_PERMISSION_LEVEL_ADVANCED,
     SANDBOX_PERMISSION_LEVEL_DEFAULT,
     SANDBOX_PERMISSION_LEVELS,
     SANDBOX_TENANCIES,
@@ -148,6 +152,15 @@ _NETWORKING_ITEM_SCHEMA: list[dict[str, Any]] = [
     {"key": "allow_mcp_servers", "type": "boolean"},
 ]
 
+# One sandbox_mounts item. ``source`` is a host path (starting with ``/``) or a
+# named volume; ``read_only`` is settled to true at write time when omitted, so
+# read-write is always stated.
+_SHARED_MOUNT_ITEM_SCHEMA: list[dict[str, Any]] = [
+    {"key": "source", "type": "string", "required": True},
+    {"key": "target", "type": "string", "required": True},
+    {"key": "read_only", "type": "boolean", "default": True},
+]
+
 # The authoritative editable field list. Order = render order on the form.
 # Field `key` is the stable contract; label/help are owned by frontend i18n
 # (manage:runtime_profile_form.fields.<key>.{label,help}) — the schema carries shape, not copy.
@@ -161,10 +174,11 @@ RUNTIME_PROFILE_FIELD_SCHEMA: list[dict[str, Any]] = [
     # ── runtime ───────────────────────────────────────────────────────────
     {"key": "sandbox_backend", "type": "enum", "group": GROUP_RUNTIME},
     {"key": "runtime_template_name", "type": "string", "advanced": True, "group": GROUP_RUNTIME},
-    # There is deliberately no per-environment CPU/memory field. The sandbox
-    # backend's create path sends no resource request, so anything offered here
-    # would be recorded and never applied — see docs/deploy.md "Sandbox resource
-    # limits" for where the caps actually come from.
+    # The CPU and memory limits of every box of this RuntimeProfile, cold or
+    # prepared, a conversation's own or an Agent's shared; empty leaves each to
+    # the deployment's size for the kind of box (``sandbox_create_resources``).
+    {"key": "sandbox_cpu", "type": "string", "advanced": True, "group": GROUP_RUNTIME},
+    {"key": "sandbox_memory", "type": "string", "advanced": True, "group": GROUP_RUNTIME},
     {
         "key": "networking",
         "type": "object",
@@ -217,6 +231,21 @@ RUNTIME_PROFILE_FIELD_SCHEMA: list[dict[str, Any]] = [
     {"key": "sandbox_permission_level", "type": "enum",
      "enum": list(SANDBOX_PERMISSION_LEVELS), "advanced": True,
      "group": GROUP_RUNTIME, "default": SANDBOX_PERMISSION_LEVEL_DEFAULT},
+    # A container engine each box of this RuntimeProfile runs for its Agent.
+    # Opt-in: the grants it needs make a box on the Docker backend close to
+    # host root for whoever reaches root in it (docs/runtime-profiles.md).
+    {"key": "sandbox_container_engine", "type": "enum",
+     "enum": list(SANDBOX_CONTAINER_ENGINES), "advanced": True,
+     "group": GROUP_RUNTIME, "default": SANDBOX_CONTAINER_ENGINE_NONE},
+    # Host networks each box joins and host storage it mounts: reach beyond
+    # the box itself. Opt-in, and limited to what the operator allow-listed
+    # (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS, ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS,
+    # ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES); docs/runtime-profiles.md says what
+    # each one grants.
+    {"key": "sandbox_networks", "type": "string_list", "advanced": True,
+     "group": GROUP_RUNTIME},
+    {"key": "sandbox_mounts", "type": "object_list", "advanced": True,
+     "group": GROUP_RUNTIME, "item_schema": _SHARED_MOUNT_ITEM_SCHEMA},
     # ── model connectivity ────────────────────────────────
     # endpoint_provider selects a registered model gateway. The schema response
     # fills its default from the provider registry, so this domain schema does
@@ -303,6 +332,12 @@ def normalize_runtime_profile_payload(payload: dict[str, Any]) -> dict[str, Any]
 
         action = str(load_astrabox_settings().sandbox_idle_action or "").strip().lower()
     normalized["idle_action"] = action
+    mounts = normalized.get("sandbox_mounts")
+    if isinstance(mounts, list):
+        normalized["sandbox_mounts"] = [
+            {**item, "read_only": item.get("read_only", True)} if isinstance(item, dict) else item
+            for item in mounts
+        ]
     from astrabox.core.service.orchestrator.runtime_profile_networking import (
         normalized_runtime_profile_networking,
     )
@@ -348,8 +383,16 @@ def validate_runtime_profile_payload(payload: dict[str, Any]) -> None:
     _assert_idle_action_is_reachable(payload)
     _assert_permission_level_is_reachable(payload)
     _assert_tenancy_has_permission_level(payload)
-    _assert_backend_capabilities(payload)
+    _assert_container_engine_is_deliverable(payload)
+    _assert_sandbox_size_is_a_quantity(payload)
+    # Ahead of the allowlists: a field this deployment cannot apply at all is
+    # refused with that reason (and, for host networks on Kubernetes, with
+    # what to use instead), not with an allowlist the operator could extend
+    # to no effect.
     _assert_provider_configuration_is_reachable(payload)
+    _assert_networks_and_mounts_are_deliverable(payload)
+    _assert_owner_credential_is_deliverable(payload)
+    _assert_backend_capabilities(payload)
 
 
 def _reject_undeclared_fields(payload: dict[str, Any]) -> None:
@@ -444,6 +487,72 @@ def _assert_idle_action_is_reachable(payload: dict[str, Any]) -> None:
     )
 
 
+def _assert_owner_credential_is_deliverable(payload: dict[str, Any]) -> None:
+    """Refuse a model endpoint where its wire or its credential cannot be kept as it requires.
+
+    An endpoint serves the engines it names (``engine_kinds``): the ChatGPT
+    plan serves Codex's Responses wire, the Anthropic endpoints Claude Code.
+
+    An endpoint whose credential is not the deployment's belongs to one
+    person's conversation. An Agent's shared box serves several users'
+    conversations behind one egress boundary and one file system, where one
+    could spend another's account (``credential_owner`` ``session_owner``) or
+    read another's login (``sandbox``), so such an endpoint requires a box per
+    conversation. An owner's credential also requires protected delivery: with
+    it off, the credential would sit in the box's environment. A runtime that
+    signs in inside its box must reach its sign-in service, so limited
+    networking must allow each host the endpoint names (``sandbox_hosts``).
+    """
+    from astrabox.common.utils.settings import load_astrabox_settings
+    from astrabox.core.service.orchestrator.runtime_profile_networking import (
+        parse_runtime_profile_networking,
+        runtime_profile_admits_host,
+    )
+    from astrabox.seams.model import model_endpoint_for_name
+
+    name = str(payload.get("endpoint_provider") or "").strip()
+    if not name:
+        return
+    provider = model_endpoint_for_name(name)
+    engine_kind = str(payload.get("engine_kind") or "").strip()
+    if provider.engine_kinds and engine_kind not in provider.engine_kinds:
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} requires engine_kind "
+            + " or ".join(repr(kind) for kind in sorted(provider.engine_kinds))
+        )
+    if provider.credential_owner == "deployment":
+        return
+    tenancy = str(payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION).strip().lower()
+    if tenancy != SANDBOX_TENANCY_CONVERSATION:
+        whose = (
+            "spends each conversation owner's own account"
+            if provider.credential_owner == "session_owner"
+            else "keeps the login each conversation's user makes inside its sandbox"
+        )
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} {whose} and requires "
+            "sandbox_tenancy 'conversation'"
+        )
+    if provider.credential_owner == "session_owner" and not bool(
+        getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
+    ):
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} requires protected credential "
+            "delivery (ASTRABOX_SANDBOX_CREDENTIAL_VAULT)"
+        )
+    networking = parse_runtime_profile_networking(payload.get("networking"))
+    missing = [
+        host for host in provider.sandbox_hosts
+        if networking.mode != SANDBOX_NETWORK_UNRESTRICTED
+        and not runtime_profile_admits_host(networking, host)
+    ]
+    if missing:
+        raise invalid_request(
+            f"environment payload: endpoint_provider {name!r} signs in from the sandbox and "
+            f"needs networking.allowed_hosts to include {', '.join(missing)}"
+        )
+
+
 def _assert_tenancy_has_permission_level(payload: dict[str, Any]) -> None:
     """Refuse shared tenancy when its required isolation grant was not asked for."""
 
@@ -460,6 +569,190 @@ def _assert_tenancy_has_permission_level(payload: dict[str, Any]) -> None:
         "inside one box and therefore requires sandbox_permission_level "
         "'advanced' or 'privileged'"
     )
+
+
+def _assert_container_engine_is_deliverable(payload: dict[str, Any]) -> None:
+    """Refuse an in-box container engine where it cannot run as configured.
+
+    The engine needs a box of its own per conversation (its published ports
+    and the box's CPU, memory and disk belong to one conversation), the
+    ``advanced`` grant (it creates namespaces inside the box), an image that
+    carries it (the engine adapter declares whether its image does), and a
+    backend that declares it. The backend may refuse it further for its
+    deployment (``validate_runtime_profile_configuration``).
+    """
+    engine = str(
+        payload.get("sandbox_container_engine") or SANDBOX_CONTAINER_ENGINE_NONE
+    ).strip().lower()
+    if engine == SANDBOX_CONTAINER_ENGINE_NONE:
+        return
+    label = f"environment payload: sandbox_container_engine {engine!r}"
+    tenancy = str(payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION).strip().lower()
+    if tenancy != SANDBOX_TENANCY_CONVERSATION:
+        raise invalid_request(
+            f"{label} requires sandbox_tenancy 'conversation': in an Agent's shared box "
+            "one conversation could reach another's published container ports"
+        )
+    level = str(
+        payload.get("sandbox_permission_level") or SANDBOX_PERMISSION_LEVEL_DEFAULT
+    ).strip().lower()
+    if level != SANDBOX_PERMISSION_LEVEL_ADVANCED:
+        raise invalid_request(
+            f"{label} creates namespaces inside the box and therefore requires "
+            "sandbox_permission_level 'advanced'"
+        )
+    engine_kind = str(payload.get("engine_kind") or "").strip()
+    if engine_kind:
+        from astrabox.core.service.orchestrator.engine.capabilities import (
+            capabilities_for_engine_kind,
+        )
+
+        if engine not in capabilities_for_engine_kind(engine_kind).container_engines:
+            raise invalid_request(
+                f"{label}: engine {engine_kind!r}'s image does not carry it"
+            )
+    from astrabox.seams.sandbox import sandbox_for_name
+
+    provider = sandbox_for_name(payload.get("sandbox_backend"))
+    if engine not in getattr(provider, "supported_container_engines", ()):
+        raise invalid_request(
+            f"{label}: sandbox backend {provider.name!r} does not declare it"
+        )
+
+
+#: The least CPU a RuntimeProfile may give its boxes: the deployment's default
+#: CPU request for a conversation's own box (``ASTRABOX_SANDBOX_CPU_REQUEST``).
+MIN_SANDBOX_CPU = "250m"
+#: The least memory a RuntimeProfile may give its boxes: the default size of a
+#: conversation's own box, which holds the idle footprint of every Agent
+#: program, up to about 940 MiB (docs/deploy.md, "Plan capacity for prepared
+#: sandboxes").
+MIN_SANDBOX_MEMORY = "1Gi"
+
+
+def _assert_sandbox_size_is_a_quantity(payload: dict[str, Any]) -> None:
+    """Refuse a box size that is not a Kubernetes quantity, or is below its floor.
+
+    A unit left off is the likely mistake: memory ``2`` is two bytes and CPU
+    ``500`` is five hundred cores. The floor catches the first; the capacity
+    check at save (:func:`validate_runtime_profile_capacity`) catches the
+    second wherever the deployment knows its capacity.
+    """
+    from astrabox.config.settings import cpu_quantity, memory_quantity
+
+    for key, parse, floor in (
+        ("sandbox_cpu", cpu_quantity, MIN_SANDBOX_CPU),
+        ("sandbox_memory", memory_quantity, MIN_SANDBOX_MEMORY),
+    ):
+        value = payload.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            amount = parse(str(value))
+        except ValueError as exc:
+            raise invalid_request(f"{key}: {exc}") from None
+        if amount < parse(floor):
+            raise invalid_request(
+                f"{key} {value!r} is below {floor}, the least a box of a RuntimeProfile may have"
+            )
+
+
+async def validate_runtime_profile_capacity(payload: dict[str, Any]) -> None:
+    """Refuse a box size the deployment could never create.
+
+    Call after :func:`validate_runtime_profile_payload`. The sandbox quota
+    charges each box its limits plus what its backend runs beside it, and
+    refuses a create past a ceiling, so a size whose own charge passes a
+    ceiling would refuse every conversation. The same holds for memory beyond
+    the single host the backend runs every box on, and for a limit the backend
+    would lower (``SandboxProvider.fit_resources``). A ceiling the deployment
+    does not know, such as a Kubernetes cluster's nodes without a configured
+    quota, is not checked.
+    """
+    from astrabox.config.settings import memory_quantity
+    from astrabox.core.service.orchestrator.engine.provisioning import sandbox_create_resources
+    from astrabox.core.service.orchestrator.runtime import sandbox_quota
+    from astrabox.core.service.orchestrator.runtime.runtime_profile import resolve_sandbox_size
+    from astrabox.seams.sandbox import sandbox_for_name
+
+    size = resolve_sandbox_size(payload)
+    if not size:
+        return
+    provider = sandbox_for_name(payload.get("sandbox_backend"))
+    tenancy = str(payload.get("sandbox_tenancy") or SANDBOX_TENANCY_CONVERSATION).strip().lower()
+    limits, requests = sandbox_create_resources(payload, shared=tenancy == SANDBOX_TENANCY_AGENT)
+    fitted, _ = provider.fit_resources(limits, requests)
+    for kind in size:
+        if fitted[kind] != limits[kind]:
+            raise invalid_request(
+                f"sandbox_{kind} {size[kind]!r} is more than sandbox backend "
+                f"{provider.name!r} can give one box; it would create the box with "
+                f"{fitted[kind]}"
+            )
+    charge = sandbox_quota.box_charge(provider, limits)
+    quota = sandbox_quota.quota_for(str(provider.name))
+    if "memory" in size and quota.memory is not None and charge.memory > quota.memory:
+        raise invalid_request(
+            f"sandbox_memory {size['memory']!r}, with what sandbox backend "
+            f"{provider.name!r} runs beside each box, is more than the sandbox quota's "
+            f"memory ceiling of {_gib(quota.memory)} "
+            f"({quota.sources.get('memory', 'configured')}), so no box of this "
+            "RuntimeProfile could be created; lower it, or raise ASTRABOX_SANDBOX_QUOTA_MEMORY"
+        )
+    if "cpu" in size and quota.cpu is not None and charge.cpu > quota.cpu + 1e-9:
+        raise invalid_request(
+            f"sandbox_cpu {size['cpu']!r}, with what sandbox backend {provider.name!r} "
+            f"runs beside each box, is more than the sandbox quota's CPU ceiling of "
+            f"{quota.cpu:g}, so no box of this RuntimeProfile could be created; lower "
+            "it, or raise ASTRABOX_SANDBOX_QUOTA_CPU"
+        )
+    host = await provider.host_memory_bytes()
+    if "memory" in size and host is not None and memory_quantity(size["memory"]) > host:
+        raise invalid_request(
+            f"sandbox_memory {size['memory']!r} is more than the {_gib(host)} of the "
+            f"host sandbox backend {provider.name!r} runs every box on"
+        )
+
+
+def _gib(value: float) -> str:
+    return f"{value / 2**30:.2f}Gi"
+
+
+def _assert_networks_and_mounts_are_deliverable(payload: dict[str, Any]) -> None:
+    """Refuse host networks and mounts the deployment or its backend does not allow.
+
+    Each network, host path and volume must be on the operator's allowlist and
+    each mount target outside the directories the box's platform and system
+    own; the resolvers that decide that run again for every box created. The
+    selected backend must declare the capability, and may refuse it further
+    for its deployment (``validate_runtime_profile_configuration``).
+    """
+    from astrabox.common.utils.errors import APIError
+    from astrabox.core.service.orchestrator.runtime.runtime_profile import (
+        resolve_sandbox_mounts,
+        resolve_sandbox_networks,
+    )
+    from astrabox.seams.sandbox import sandbox_for_name
+
+    networks = resolve_sandbox_networks(payload)
+    mounts = resolve_sandbox_mounts(payload)
+    if not networks and not mounts:
+        return
+    provider = sandbox_for_name(payload.get("sandbox_backend"))
+    if networks and not provider.supports_network_attachment:
+        raise APIError(
+            code="SANDBOX_NETWORK_NOT_ALLOWED",
+            message=f"sandbox backend {provider.name!r} cannot join a sandbox to host networks",
+            status_code=409,
+            data={"sandbox_networks": list(networks)},
+        )
+    if mounts and not provider.supports_shared_mounts:
+        raise APIError(
+            code="SANDBOX_MOUNT_NOT_ALLOWED",
+            message=f"sandbox backend {provider.name!r} cannot mount host paths or volumes",
+            status_code=409,
+            data={"sandbox_mounts": [mount.source for mount in mounts]},
+        )
 
 
 def _assert_backend_capabilities(payload: dict[str, Any]) -> None:

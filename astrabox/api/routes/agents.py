@@ -82,6 +82,7 @@ class AgentRecord(BaseModel):
     packages: list[dict[str, Any]] | None = None
     runtime_profile_name: str | None = None
     exposure_mode: str | None = None
+    model_account_id: str | None = None
     idle_hibernate_seconds: int | None = None
     prepared_capacity: int | None = None
     enabled: bool | None = None
@@ -186,6 +187,9 @@ class AgentRuntimeProfileOption(BaseModel):
     display_name: str
     engine_kind: str
     enabled: bool
+    #: The RuntimeProfile's model endpoint provider; null when the
+    #: deployment's default serves it.
+    endpoint_provider: str | None = None
     #: The engine's declared engine_options field schema (may be empty). The
     #: platform carries the declaration for form rendering and interprets none
     #: of its keys.

@@ -38,6 +38,7 @@
     "group_system": "系统",
     "group_integrations": "集成服务",
     "mcp_tokens": "MCP 客户端",
+    "model_accounts": "模型账号",
     "connectors": "Connectors",
     "assistant_defaults": "Assistant 默认配置",
     "environment": "环境"
@@ -104,6 +105,7 @@
     "allowed_domains": "允许接收这项凭证的域名",
     "expires_on": "{{when}} 到期",
     "expired_on": "已于 {{when}} 过期",
+    "token_from": "访问令牌从 {{endpoint}} 获取并自动续期",
     "expires_at": "过期时间（可选）",
     "credential_required": "请填写服务地址或变量名，并填写密钥内容。",
     "header_required": "请填写 MCP 服务要求的请求头名称。",
@@ -453,7 +455,19 @@
     "field_current_sandbox": "当前沙箱",
     "err_runtime_profile_required": "请选择这个 Assistant 使用的运行配置。",
     "card_note": "Agent 程序和 运行配置 在创建 Assistant 时确定，其他字段可以随时修改。",
-    "create_title": "创建 Assistant"
+    "create_title": "创建 Assistant",
+    "owner_secrets_title": "凭据",
+    "owner_secrets_intro": "它的运行环境启动前需要你提供的内容。每个值都只写不读：AstraBox 将其保存在密钥存储中，之后不再显示。",
+    "owner_secret_configured": "已配置",
+    "owner_secret_missing": "未设置",
+    "owner_secret_optional_unset": "未设置，不使用",
+    "owner_secret_deployment_default": "使用部署的共享账号",
+    "owner_secret_updated": "更新于 {{when}}",
+    "owner_secret_placeholder_set": "输入值",
+    "owner_secret_placeholder_replace": "输入新值以替换",
+    "owner_secret_set": "设置",
+    "owner_secret_replace": "替换",
+    "owner_secret_saving": "正在保存…"
   },
   "assistant_form": {
     "section_basic": "基本信息",
@@ -574,6 +588,7 @@
     "quota_source_configured": "已配置",
     "quota_source_unlimited": "设为不限",
     "quota_source_unset": "未设置",
+    "quota_source_host_memory": "未设置：取整台宿主机的内存减去 4 GiB。宿主机上的其他软件不计在内，沙箱可能占用它们所需的内存。请将 ASTRABOX_SANDBOX_QUOTA_MEMORY 设为沙箱可占用的内存。",
     "quota_in_use": "使用中",
     "quota_prepared": "待命",
     "quota_starting": "启动中",
@@ -667,6 +682,16 @@
         "label": "沙箱镜像或模板",
         "help": "留空时使用所选 Agent 程序的部署默认值"
       },
+      "sandbox_cpu": {
+        "label": "沙箱 CPU",
+        "help": "本运行配置每个沙箱最多可用的 CPU，以核数（2、0.5）或毫核（500m）表示，至少 250m。它适用于每个沙箱：按需启动的、预先准备的，以及开启沙箱共享时 Agent 各会话共用的那个沙箱。留空时使用部署为该类沙箱设定的大小。部署的沙箱配额或宿主机容纳不下的大小会被拒绝。运行中的沙箱保持原有大小，直到被替换。",
+        "placeholder": "部署默认值"
+      },
+      "sandbox_memory": {
+        "label": "沙箱内存",
+        "help": "本运行配置每个沙箱最多可用的内存，需带单位（4Gi、1536Mi），至少 1Gi。它适用于每个沙箱：按需启动的、预先准备的，以及开启沙箱共享时 Agent 各会话共用的那个沙箱，此时它能容纳的会话数由内存决定。留空时使用部署为该类沙箱设定的大小。部署的沙箱配额或宿主机容纳不下的大小会被拒绝。运行中的沙箱保持原有大小，直到被替换。",
+        "placeholder": "部署默认值"
+      },
       "networking": {
         "label": "网络",
         "type": {
@@ -706,6 +731,22 @@
           "advanced": "高级——允许在沙箱内部划分隔离区域",
           "privileged": "特权——把容器当虚拟机使用（需后端支持）"
         }
+      },
+      "sandbox_container_engine": {
+        "label": "容器引擎",
+        "help": "在每个沙箱中运行容器引擎，让 Agent 可以构建镜像、运行容器并使用 Docker Compose。Docker 以沙箱自身的用户身份无 root 运行，容器经由沙箱访问网络，受本运行配置的网络策略约束。它要求每个会话使用独立沙箱、沙箱权限等级为高级，并且只适用于部署自带、运行在 Docker 上的 OpenSandbox 服务。仅为可信团队启用：在这种沙箱中取得 root 权限的人可以影响 Docker 宿主机。镜像、容器和构建缓存随沙箱一起删除，容器共用沙箱的 CPU、内存和进程数限制。",
+        "options": {
+          "none": "不启用",
+          "docker": "Docker（无 root）"
+        }
+      },
+      "sandbox_networks": {
+        "label": "宿主机网络",
+        "help": "每个沙箱加入的沙箱宿主机 Docker 网络，让 Agent 可以按容器名访问其中的服务。只能填写部署允许的网络（ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS）。加入的网络在两种网络访问模式下都可以访问其所有端口；从该网络发起的、进入沙箱的连接会被拒绝。只适用于部署自带、运行在 Docker Engine 28.0 或更高版本上的 OpenSandbox 服务；在 Kubernetes 上，请改用受限出站网络访问，并在“额外允许的主机”中填写 Service 的完整名称（service.namespace.svc.cluster.local）。仅为可以信任其接触该网络上每个服务的团队启用。"
+      },
+      "sandbox_mounts": {
+        "label": "宿主机存储",
+        "help": "挂载到每个沙箱中的宿主机目录和命名卷，格式为 {\"source\", \"target\", \"read_only\"} 列表。以 / 开头的 source 是 ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS 中的宿主机目录，其他是 ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES 中的卷。除非 read_only 为 false，挂载都是只读的。target 不能位于 /workspace、/home、/tmp 或平台、系统使用的其他目录之上、之中或其本身，请改为挂载到 /mnt 或 /srv 下。读写挂载让沙箱可以修改这些文件，所有挂载它的沙箱共享这些文件。只适用于部署自带的 OpenSandbox 服务：在 Kubernetes 上，宿主机目录是运行该沙箱的节点上的目录，不存在时会被创建；卷是沙箱命名空间中的 PersistentVolumeClaim。"
       },
       "endpoint_provider": {
         "label": "模型连接方式",
@@ -760,6 +801,7 @@
     "search_model_placeholder": "搜索模型，或输入模型 ID",
     "no_runtime_profiles": "没有可运行 Agent 的运行配置：每个运行配置都已停用，或其引擎未安装在这个版本里。",
     "no_models": "没有获取到模型列表，可直接输入模型 ID。",
+    "no_account_models": "这个账号没有列出模型，可直接输入模型 ID。",
     "category_unavailable": "不可用的分类",
     "select_categories_placeholder": "选择分类",
     "search_categories_placeholder": "搜索分类",
@@ -902,6 +944,56 @@
     "empty_title": "还没有密钥。",
     "empty_hint": "在上面签发一把，然后把它给出的那段配置粘贴到 MCP 客户端里。"
   },
+  "model_accounts": {
+    "title": "模型账号",
+    "meta_one": "{{count}} 个账号",
+    "meta_other": "{{count}} 个账号",
+    "description": "你的 ChatGPT 账号和 Anthropic API key。在消耗对话所有者账号的运行配置上，对话使用你名下对应类型的账号，而不是本部署的模型网关。",
+    "error_title": "无法加载你的模型账号",
+    "list_title": "你的账号",
+    "list_intro": "你的对话使用你在其运行配置所用类型下的默认账号，除非你创建的 Agent 指定了别的账号。AstraBox 无法读取订阅还剩多少用量；请在 ChatGPT 中查看。",
+    "manage_usage": "管理用量",
+    "open_page": "管理你的模型账号",
+    "empty_title": "还没有模型账号。",
+    "empty_hint": "在你自己的电脑上运行下面的命令关联 ChatGPT 账号，或添加一个 Anthropic API key。",
+    "default_badge": "默认",
+    "shared_badge": "已与团队共享",
+    "status_active": "可用",
+    "status_sign_in_required": "需重新登录",
+    "linked_at": "关联于 {{at}}",
+    "sign_in_again_intro": "OpenAI 已结束这个账号的登录（{{reason}}），对话无法再使用它。在你自己的电脑上运行下面的命令重新登录：",
+    "make_default": "设为默认",
+    "share": "与团队共享",
+    "share_button": "与团队共享 {{account}}",
+    "pool_note": "本部署已开启团队账号池。共享一个 ChatGPT 账号后，其他成员的对话在他们自己的账号达到订阅用量上限时，可以使用这个账号的 ChatGPT 订阅，OpenAI 会把这些用量计入你的订阅。已共享的账号会显示团队成员最近一次使用的时间。你可以随时停止共享；他们的对话从下一次回复起不再使用它。Anthropic API key 不会被共享。",
+    "pool_last_used": "团队成员最近使用于 {{at}}",
+    "pool_never_used": "还没有团队成员使用过",
+    "usage_limited": "已达到用量上限；{{at}} 后才会再分配给对话",
+    "rename": "重命名",
+    "rename_button": "重命名 {{account}}",
+    "rename_label": "{{account}} 的新名称",
+    "remove": "移除",
+    "remove_button": "移除 {{account}}",
+    "remove_title": "移除 {{account}}？",
+    "remove_description": "AstraBox 会先在 OpenAI 撤销这个账号的会话，再删除账号及其令牌。指定了它的你的 Agent 将无法开始你的对话，直到你选择其他账号。",
+    "remove_default": "这是你在该类型下的默认账号：移除后你将没有该类型的默认账号，直到你把另一个账号设为默认。",
+    "remove_action": "移除账号",
+    "revocation_unconfirmed": "{{account}} 已移除，但 OpenAI 没有确认它的会话已结束。请在 ChatGPT 设置中断开 AstraBox 来结束它。",
+    "link_title": "关联 ChatGPT 账号",
+    "link_intro": "在你自己电脑的终端里运行这条命令。它会在浏览器中打开 OpenAI 的登录页面；在那里允许使用订阅额度，账号就会关联到你名下。",
+    "link_note": "OpenAI 会把浏览器送回登录所用电脑上的 127.0.0.1，所以这个页面无法自己关联账号。命令通过 --token 或 ASTRABOX_TOKEN 登录 AstraBox。你关联的第一个账号会成为默认账号。",
+    "vendor_chatgpt_plan": "ChatGPT",
+    "vendor_anthropic_api_key": "Anthropic API key",
+    "added_at": "添加于 {{at}}",
+    "remove_description_api_key": "AstraBox 会删除它保存的这个 key。它无法在 Anthropic 撤销该 key；如需让它在所有地方失效，请在 Claude Console 中撤销。指定了它的你的 Agent 将无法开始你的对话，直到你选择其他 key。",
+    "key_title": "添加 Anthropic API key",
+    "key_intro": "在消耗所有者 Anthropic API key 的运行配置上，对话用你的 key 调用 Anthropic API，由 Anthropic 向该 key 所属组织计费。请使用属于某个 workspace 的 key。",
+    "key_label": "名称",
+    "key_label_placeholder": "可选——默认以 key 的末尾字符命名",
+    "key_value": "API key",
+    "key_add": "添加 key",
+    "key_note": "AstraBox 会先用 Anthropic 校验这个 key，只有 Anthropic 接受时才保存。保存后只写不读：任何页面都不会再显示它。你添加的第一个 key 会成为默认 key。"
+  },
   "connectors": {
     "card_title": "Connectors",
     "card_intro": "这个 Assistant 能使用的办公应用，每个都用你自己在厂商那里的账号登录授权。你连接的应用会自动在这里启用，除非你在这里关闭它。",
@@ -960,6 +1052,9 @@
     "name_help": "数据库首次绑定时确定。修改显示名称不会迁移数据或运行中的任务。",
     "members": "成员账号",
     "members_help": "添加允许进入此环境的账号 ID，包括渠道和定时任务的执行账号。Agent 和对话权限仍然生效。平台管理员无需成员授权即可管理访问权限。",
+    "entry": "可进入的账号",
+    "entry_authenticated": "所有能登录的账号",
+    "entry_members": "仅成员账号",
     "lede": "此部署的配置、凭据、对话和运行资源归属于当前环境。",
     "load_failed": "无法加载环境",
     "prewarm": "Agent 预热",

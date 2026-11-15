@@ -15,15 +15,17 @@ and prompt do not receive the saved value.
 |---|---|---|
 | Model-service credential | Added only to requests for the model gateway selected for the Agent | Agent and Assistant Sessions |
 | Remote MCP credential | Added as the configured bearer token, OAuth token, or API-key header for that remote MCP service | Agent and Assistant Sessions |
-| HTTP Basic credential | Added to a clean HTTPS URL, including private Git repository requests, without a sandbox-side token or placeholder | Agent Sessions |
+| HTTP Basic credential | Added to a clean HTTPS URL, including private Git repository requests, without a sandbox-side token or placeholder | Agent and Assistant Sessions |
 | Credential for another API | Exposed to the Agent program as an opaque environment-variable value and substituted in matching HTTP requests | Agent programs that support protected environment credentials |
-| Credential for another API, [header delivery](#header-delivery) | Exposed as an opaque environment-variable value that the sandbox backend replaces only in one named request header, for the listed domains | Agent Sessions on a sandbox backend that offers header delivery |
+| Credential for another API, [header delivery](#header-delivery) | Exposed as an opaque environment-variable value that the sandbox backend replaces only in one named request header, for the listed domains | Agent and Assistant Sessions on a sandbox backend that offers header delivery |
 
-An Assistant can use saved credentials for remote MCP services. It cannot be
-assigned a Credential Vault that contains an external-API environment variable,
-because its long-lived workspace cannot safely receive a
-conversation-specific placeholder. HTTP Basic Vault assignments are also
-unavailable to Assistants. Unsupported assignments are rejected.
+An Assistant takes every credential type. Its credentials belong to the
+Assistant, which has one owner and one sandbox: they are delivered to that
+sandbox's processes, which every conversation of the Assistant shares, under
+the sandbox's own placeholders, so a conversation adds no variable of its own.
+Every Session there composes the Assistant's current assignment, so a Vault
+assigned or unassigned while the Assistant runs is delivered or withdrawn at the
+next refresh described below.
 
 ## Configure protected credentials in the console
 
@@ -56,14 +58,32 @@ For placeholder-based credentials:
    rules.
 
 The real value is never returned by the credentials API or shown in the
-console. Rotated MCP credentials are refreshed before AstraBox hands the Agent
-program its next message; the Agent uses its placeholder. Outbound
-environment-variable and HTTP Basic credentials are resolved when AstraBox
-prepares or reconnects the runtime, not before every message in an already
-running runtime. A reconnect also removes from the sandbox any of these
-credentials archived or deleted since the sandbox received it. A reconnected
-runtime keeps the placeholders its process started with, including one that
-started in prepared capacity.
+console. A rotated, archived or deleted credential takes effect before the
+Agent program's next turn, as described in
+[Add an outbound credential](#add-an-outbound-credential) below; the Agent program keeps the
+placeholder it started with, including one that started in prepared capacity.
+
+The proxy terminates TLS to substitute the value, and only for that: it
+decrypts an HTTPS connection only when its server name matches a host a
+credential is bound to in the sandbox, and passes every other connection
+through untouched, with the destination's own certificate. The release's
+egress image (`containers/egress`) adds this choice to OpenSandbox's proxy,
+which in its supported sidecar mode decrypts every HTTPS connection. A host
+newly bound in the sandbox is decrypted from the next connection opened to it;
+a connection already passed through stays untouched. When the proxy cannot read
+the sandbox's credentials, it decrypts the connection and refuses its requests.
+In a sandbox with protected delivery, the sandbox backend sets `SSL_CERT_FILE`
+and `REQUESTS_CA_BUNDLE` (OpenSSL-based tools such as `curl`, and Python `requests`) and
+`NODE_EXTRA_CA_CERTS` (Node.js) to bundles that include the proxy's certificate
+authority, so those clients trust it without configuration. A client that pins
+certificates, or reads only its own trust store and ignores these variables,
+fails the TLS handshake to a host whose credential is substituted until it is
+pointed at the bundle `SSL_CERT_FILE` names.
+
+Codex hands the commands it runs the placeholder: its default
+`shell_environment_policy` keeps the variable. An Agent whose Codex `config`
+sets a policy that excludes the variable's name withholds it from those
+commands.
 
 HTTP Basic uses direct header injection instead. Configure the clean target
 URL, username, and write-only password or token in the Vault; the sandbox
@@ -187,9 +207,9 @@ Vault assignment leaves the RuntimeProfile record unchanged. RuntimeProfile
 networking and Vault record lifecycle are independent. Removing the assignment
 removes its managed host grant from new sandbox policy.
 
-OpenSandbox egress v1.1.7 supports credential interception on HTTPS 443, or HTTP
-80 when the credential explicitly permits insecure transport, and requires
-`dns+nft`. It also validates that each runtime binding host is explicitly
+OpenSandbox egress (release 1.2.1) supports credential interception on HTTPS
+443, or HTTP 80 when the credential explicitly permits insecure transport, and
+requires `dns+nft`. It also validates that each runtime binding host is explicitly
 reachable. The adapter therefore renders each attached binding host as an exact
 allow rule. Under unrestricted networking that rule is redundant; under limited
 networking it is the host grant carried by the Vault assignment. The RuntimeProfile
@@ -244,8 +264,68 @@ MCP credential types can be assigned to both Agents and Assistants. The engine
 connects directly to the configured MCP URL; AstraBox merges the provider
 gateway header and matching Vault header into one provider-neutral,
 destination-bound plan. Outbound environment credentials are available to
-Agents using a backend that supports protected delivery. The common runtime
-preparation gives each assignment its own placeholder context.
+Agents and Assistants using a backend that supports protected delivery. The
+common runtime preparation gives each assignment its own placeholder context.
+
+Before each turn, and on each tick of the background watcher for an Assistant
+(`ASTRABOX_EXPIRATION_WATCHER_INTERVAL_SECONDS`, 300 seconds by default),
+AstraBox writes the running sandbox's credentials again: a rotated value reaches the placeholder the process
+already holds, and an archived or deleted credential stops being delivered. A
+process holds the environment it started with, so an environment credential
+added after it started reaches it when its runtime next starts: a new
+conversation's sandbox for an Agent, and for an Assistant its next start after
+its sandbox is replaced, it is woken, or its configuration changes.
+
+## Use a short-lived access token {#oauth-grant}
+
+Many APIs accept only an OAuth2 access token that lives for minutes. Give the
+credential the grant instead of a value, and AstraBox obtains the token,
+renews it before it expires, and substitutes the current one:
+
+```http
+POST /api/v1/admin/vaults/{vault_id}/credentials
+Content-Type: application/json
+
+{
+  "display_name": "Reports API",
+  "auth": {
+    "type": "environment_variable",
+    "secret_name": "REPORTS_TOKEN",
+    "oauth": {
+      "grant_type": "password",
+      "token_endpoint": "https://auth.example.com/realms/main/protocol/openid-connect/token",
+      "client_id": "reports-cli",
+      "auth_method": "none",
+      "username": "svc-reports",
+      "password": "…",
+      "scope": "openid api:reports-read"
+    },
+    "networking": {"type": "limited", "allowed_hosts": ["api.example.com"]},
+    "injection_location": {"header": true, "body": false}
+  }
+}
+```
+
+`grant_type` is `password` (a service user, with `username` and `password`) or
+`client_credentials`. `auth_method` says how the client authenticates to the
+token endpoint: `none` for a public client, which sends only its `client_id`;
+`client_secret_basic` or `client_secret_post` with a `client_secret`.
+`client_credentials` needs one of the last two. `password` and `client_secret`
+are write-only, like every secret value.
+
+The AstraBox server calls the token endpoint; the sandbox never does and never
+holds the password, the client secret or a token. The endpoint therefore has
+to be reachable from the server, and may be a host the sandbox cannot reach.
+The Agent program sees the same kind of placeholder as for a stored value.
+
+The token is renewed 60 seconds before it expires: before a turn starts, and
+while a response or background work runs, so a response that outlasts the
+token keeps working. Every conversation using the credential shares one
+token, and each renewal runs the grant again; a refresh token the endpoint
+returns is not used. The token endpoint must return `expires_in`, and a token
+that lives less than about two minutes is renewed too late to rely on. While
+a sandbox is idle its token is left to expire; the next turn starts with a
+current one.
 
 ## Scope credential substitution
 
@@ -321,8 +401,6 @@ enable or disable it. Creating such a credential is rejected with
 delivery, and the console shows the **Delivery** choice only in that case. A
 Session whose sandbox backend does not offer it is rejected before a sandbox is
 allocated. The maintained OpenSandbox backend does not offer header delivery.
-Assistants cannot be assigned environment-variable credentials with either
-delivery.
 
 ## Use OpenSandbox prepared capacity
 

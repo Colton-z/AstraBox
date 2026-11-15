@@ -44,6 +44,9 @@ QUOTA_MEMORY_METADATA_KEY = "astrabox.quota-memory-bytes"
 
 #: Memory the derived default leaves to the platform, its stores and the host.
 _HOST_RESERVE_BYTES = 4 * 2**30
+#: The memory ceiling's source when it is derived from the host's total memory.
+#: The console states what it means (``SandboxQuotaCard``).
+QUOTA_SOURCE_HOST_MEMORY = "derived from host memory"
 #: A reservation whose create never answered is released when its box has not
 #: appeared in an inventory taken this long after it was made.
 _CREATE_GRACE = timedelta(minutes=15)
@@ -76,7 +79,7 @@ class SandboxQuota:
     memory: int | None = None
     cpu: float | None = None
     concurrent_creates: int | None = None
-    #: Where each ceiling came from: configured, derived (and from what), or unlimited.
+    #: Where each ceiling came from: configured, derived from host memory, or unlimited.
     sources: Mapping[str, str] = field(default_factory=dict)
 
 
@@ -171,9 +174,19 @@ async def configure_sandbox_quotas(providers: Mapping[str, Any]) -> dict[str, Sa
             host = await provider.host_memory_bytes()
             if host is not None:
                 memory = max(host - _HOST_RESERVE_BYTES, 0)
-                memory_source = (
-                    f"derived: host memory {host / _GIB:.1f}Gi less "
-                    f"{_HOST_RESERVE_BYTES // _GIB}Gi for the platform and the host"
+                memory_source = QUOTA_SOURCE_HOST_MEMORY
+                # The host's total says nothing about what else runs on it, so
+                # this ceiling lets sandboxes take memory other software holds.
+                logger.warning(
+                    "sandbox quota for backend %s: the memory ceiling, %s, is this whole "
+                    "host's memory (%s) less %dGi for AstraBox and the host. Software "
+                    "the host runs beside AstraBox is not counted, and sandboxes can take "
+                    "the memory it needs. Set ASTRABOX_SANDBOX_QUOTA_MEMORY to the memory "
+                    "this deployment's sandboxes may hold, or to 'unlimited'.",
+                    name,
+                    _format_memory(memory),
+                    _format_memory(host),
+                    _HOST_RESERVE_BYTES // _GIB,
                 )
         quota = SandboxQuota(
             boxes=boxes,
@@ -329,7 +342,10 @@ async def reserve_resume(provider: Any, sandbox_id: str) -> str | None:
     if box is not None:
         charge = SandboxCharge(cpu=box["cpu_millicores"] / 1000, memory=box["memory_bytes"])
     else:
-        charge = box_charge(provider, _shared_limits())
+        # No inventory has listed the box yet; it still carries what its
+        # create was charged, which its RuntimeProfile may have sized.
+        described = await provider.describe_sandbox(sandbox_id)
+        charge = _recorded_charge(provider, described.metadata)
     return await reserve(provider, charge, reason="resume", session_id="", assignment_id=sandbox_id)
 
 
@@ -360,7 +376,6 @@ async def settle_failed_create(provider: Any, key: str, *, assignment_id: str) -
 async def _inventory(provider: Any) -> dict[str, dict[str, Any]]:
     from astrabox.seams.sandbox import SANDBOX_INSTALLATION_METADATA_KEY, sandbox_installation_id
 
-    unknown = box_charge(provider, _shared_limits())
     releases_when_paused = bool(provider.paused_box_releases_resources())
     installation = await sandbox_installation_id()
     boxes: dict[str, dict[str, Any]] = {}
@@ -370,17 +385,10 @@ async def _inventory(provider: Any) -> dict[str, dict[str, Any]]:
             page=page, page_size=100, metadata={SANDBOX_INSTALLATION_METADATA_KEY: installation}
         )
         for item in listing.items:
-            metadata = dict(item.metadata or {})
-            try:
-                cpu = int(metadata[QUOTA_CPU_METADATA_KEY])
-                memory = int(metadata[QUOTA_MEMORY_METADATA_KEY])
-            except (KeyError, ValueError):
-                # Created before this deployment recorded charges: charge the
-                # larger kind of box, so the quota never counts it short.
-                cpu, memory = unknown.cpu_millicores, unknown.memory
+            charge = _recorded_charge(provider, item.metadata or {})
             boxes[str(item.sandbox_id)] = {
-                "cpu_millicores": cpu,
-                "memory_bytes": memory,
+                "cpu_millicores": charge.cpu_millicores,
+                "memory_bytes": charge.memory,
                 # Saved and released: it holds nothing until reserve_resume
                 # takes its charge back.
                 "released": releases_when_paused and str(item.state or "").upper() == "PAUSED",
@@ -392,10 +400,23 @@ async def _inventory(provider: Any) -> dict[str, dict[str, Any]]:
         page += 1
 
 
+def _recorded_charge(provider: Any, metadata: Mapping[str, str]) -> SandboxCharge:
+    """What a box's create wrote it was charged (``SandboxCharge.metadata``)."""
+    try:
+        return SandboxCharge(
+            cpu=int(metadata[QUOTA_CPU_METADATA_KEY]) / 1000,
+            memory=int(metadata[QUOTA_MEMORY_METADATA_KEY]),
+        )
+    except (KeyError, ValueError):
+        # Created before this deployment recorded charges: charge the larger
+        # kind of box, so the quota never counts it short.
+        return box_charge(provider, _shared_limits())
+
+
 def _shared_limits() -> dict[str, str]:
     from astrabox.core.service.orchestrator.engine.provisioning import sandbox_create_resources
 
-    return sandbox_create_resources(shared=True)[0]
+    return sandbox_create_resources(None, shared=True)[0]
 
 
 async def reconcile_sandbox_quota(provider: Any) -> dict[str, int]:

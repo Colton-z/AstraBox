@@ -243,6 +243,10 @@ class ApiClient:
         """Replace a resource in full."""
         return self._request("PUT", path, json=json)
 
+    def patch(self, path: str, *, json: Any = None) -> Any:
+        """Change the named fields of a resource."""
+        return self._request("PATCH", path, json=json)
+
     def delete(self, path: str) -> Any:
         """Remove a resource."""
         return self._request("DELETE", path)

@@ -179,6 +179,15 @@ class AstraBoxRuntimeSettings(BaseSettings):
             AliasPath("astrabox", "sandbox_platform", "secure_access"),
         ),
     )
+    #: Give each new Docker sandbox's execd a per-sandbox credential. See
+    #: ``providers/open_sandbox/execd_access``.
+    sandbox_execd_access_token: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN",
+            AliasPath("astrabox", "sandbox_platform", "execd_access_token"),
+        ),
+    )
     sandbox_endpoint_url_ttl_seconds: int = Field(
         default=900,
         ge=60,
@@ -280,6 +289,18 @@ class AstraBoxRuntimeSettings(BaseSettings):
         default="",
         validation_alias=AliasChoices(
             "ASTRABOX_MODEL_ENDPOINT_PROVIDER", AliasPath("astrabox", "model", "endpoint_provider")
+        ),
+    )
+    # The team pool of model accounts (astrabox/core/service/model_accounts):
+    # a conversation whose owner's account reached its plan usage limit spends
+    # the owner's other accounts, then accounts other members shared. Off, a
+    # conversation spends only its owner's chosen account and no account can
+    # be shared.
+    model_account_pool_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED",
+            AliasPath("astrabox", "model_accounts", "pool_enabled"),
         ),
     )
     # Which ExtensionProvider supplies the catalog and runtime bindings.
@@ -558,6 +579,32 @@ class AstraBoxRuntimeSettings(BaseSettings):
         validation_alias=AliasChoices(
             "ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS",
             AliasPath("astrabox", "sandbox_egress_deny_cidrs"),
+        ),
+    )
+    # What a RuntimeProfile may give its sandboxes beyond the sandbox itself,
+    # each a comma-separated list the operator owns: host networks a sandbox
+    # may join, host paths and named volumes it may mount. Empty allows none.
+    # A RuntimeProfile is checked against them when it is saved and again
+    # each time a sandbox is created (docs/runtime-profiles.md).
+    sandbox_attachable_networks: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS",
+            AliasPath("astrabox", "sandbox_attachable_networks"),
+        ),
+    )
+    sandbox_mountable_host_paths: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS",
+            AliasPath("astrabox", "sandbox_mountable_host_paths"),
+        ),
+    )
+    sandbox_mountable_volumes: str = Field(
+        default="",
+        validation_alias=AliasChoices(
+            "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES",
+            AliasPath("astrabox", "sandbox_mountable_volumes"),
         ),
     )
     # The model credential is held by the egress sidecar instead of being handed

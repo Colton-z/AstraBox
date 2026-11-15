@@ -103,7 +103,7 @@ for (const declared of engineCases().filter((profile) => profile.contracts.backg
     test.info().annotations.push({ type: 'e2e_session_id', description: sessionId });
     test.info().annotations.push({ type: 'engine_kind', description: profile.engine_kind });
     await api.waitForSessionReady(sessionId);
-    // The reported Codex conversation used its normal workspace-write mode;
+    // The reported Codex conversation ran in workspace-write mode;
     // the previous eight lifecycle cases all selected danger-full-access.
     if (profile.engine_kind === 'codex') {
       expect(profile.modes.alternate).toBe('workspace-write');

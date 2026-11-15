@@ -22,6 +22,9 @@ export type AssistantExtensionCatalog = Schemas['AssistantExtensionCatalog'];
 export type AssistantDefaults = Schemas['AssistantDefaults'];
 export type AssistantDefaultsFields = Schemas['AssistantDefaultsFields'];
 export type AssistantDefaultsExtensionCatalog = Schemas['AssistantDefaultsExtensionCatalog'];
+export type AssistantRuntimeSurface = Schemas['AssistantRuntimeSurface'];
+export type AssistantOwnerSecretStatus = Schemas['AssistantOwnerSecretStatus'];
+export type AssistantPanel = Schemas['AssistantPanel'];
 
 export type AssistantWorkspaceState =
   | 'NOT_MATERIALIZED'
@@ -57,6 +60,15 @@ export interface AssistantRecord {
   main_session_id?: string | null;
   /** What the deployment's Assistant defaults provide, read-only. */
   inherited?: Schemas['InheritedExtensions'] | null;
+  /** How its runtime serves the owner; null when the engine is not installed. */
+  runtime?: AssistantRuntimeSurface | null;
+  /**
+   * Detail reads only, after the workspace's last start failed: what only the
+   * owner can do to unblock it, e.g. set a credential the runtime asks for.
+   */
+  workspace_action?: { status: string; message: string; url?: string | null } | null;
+  /** Detail reads only, after the last start failed for another reason. */
+  workspace_error?: string | null;
   created_at?: string;
   updated_at?: string;
 }

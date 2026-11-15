@@ -22,6 +22,7 @@ Each command below includes its purpose, parameters/options, examples, and opera
 | `run` | **Run an Agent**: Send a task and stream the reply. | Use an Agent from a terminal or script. |
 | `status` | **View status**: Probe the deployment's health and readiness endpoints. | Monitor a local or remote deployment. |
 | `destroy` | **Clean up resources**: Delete the Agents declared in a file. | Remove declared Agents with explicit confirmation. |
+| `model-account` | **Keep model accounts**: Sign in to a ChatGPT account and link it to your user, add an Anthropic API key, list your accounts, or share a ChatGPT account with your team. | Let conversations you start spend your ChatGPT plan or your Anthropic API key. |
 | `up` | **Start locally**: Start the maintained Compose deployment. | Run AstraBox from a source checkout. |
 | `down` | **Stop locally**: Stop the maintained Compose deployment. | Stop services or delete their volumes. |
 | `logs` | **View local logs**: Read or follow Compose service logs. | Diagnose a local deployment. |
@@ -826,6 +827,85 @@ astrabox destroy -f astrabox.yaml --yes --output json
 3. **Ambiguous names fail**: If several stored Agents share the declared name, the command exits with a conflict instead of choosing one.
 4. **RuntimeProfile deletion is not supported**: RuntimeProfiles remain on the deployment.
 5. **Keep a recoverable declaration**: Store the reviewed file in version control if you may need to recreate the Agent later.
+
+---
+
+## `astrabox model-account`
+
+`astrabox model-account` keeps the model accounts that pay for your model requests on your AstraBox user: ChatGPT accounts, linked through OpenAI's Sign in with ChatGPT, and Anthropic API keys. The deployment keeps each account's tokens or key; `list` never shows them. See [Use a ChatGPT plan](../models.md#use-a-chatgpt-plan) and [Use your own Anthropic API key](../models.md#anthropic-api-key).
+
+### Usage
+
+```bash
+astrabox model-account login chatgpt [--account <account_id>] [--timeout <seconds>] [options]
+astrabox model-account add anthropic [--label <label>] [--account <account_id>] [options]
+astrabox model-account list [options]
+astrabox model-account share <account_id> [options]
+astrabox model-account unshare <account_id> [options]
+```
+
+### Parameter Description
+
+| Option | Description | Default |
+| :--- | :--- | :--- |
+| `chatgpt` | The account's vendor (`login` only). | Required |
+| `anthropic` | The account's vendor (`add` only). | Required |
+| `--account` | `login`: sign in to this linked account again instead of linking another. `add`: replace this account's key instead of adding an account. | None |
+| `--label` | How the added account is named (`add` only). | `Anthropic API key …` and the key's last four characters |
+| `<account_id>` | The ChatGPT account to share with your team's pool, or to stop sharing (`share` and `unshare`). | Required |
+| `--timeout` | Seconds to wait for the browser to return (`login` only). | `600` |
+| `--endpoint` | Deployment base URL. | `ASTRABOX_ENDPOINT`, then `http://127.0.0.1:$ASTRABOX_SERVER_HOST_PORT` |
+| `--token` | Bearer token. | `ASTRABOX_TOKEN`, then OAuth client credentials |
+| `--output`, `-o` | Output format: `table` or `json`. | `table` |
+
+### How `login` works
+
+OpenAI returns the browser to `http://127.0.0.1:<port>/auth/callback`, which reaches the computer running the browser. Run `login` on that computer, against your deployment's address:
+
+1. The command listens on a free port of `127.0.0.1`.
+2. It asks the deployment to start a sign-in for that address and opens the returned OpenAI page in your browser. It also prints the address, for a browser that does not open by itself.
+3. You approve the account and its plan usage at OpenAI. The browser returns to the listener and shows a page you can close.
+4. The command hands the browser's return to the deployment, which exchanges the code, validates the sign-in, and stores the account. The command prints the linked account.
+
+A started sign-in can be completed once, within ten minutes. Your first linked ChatGPT account becomes your default ChatGPT account.
+
+### How `add` works
+
+`add anthropic` prompts for the key without echoing it, or reads the first line of standard input when that is not a terminal, so the key never appears on the command line or in your shell history. The deployment checks the key by reading Anthropic's model list with it, and keeps it only when Anthropic accepts it; otherwise the command fails with `MODEL_ACCOUNT_API_KEY_REJECTED`. Your first key becomes your default Anthropic API key.
+
+### Share an account with your team
+
+`share` lets other members' conversations spend the account's ChatGPT plan once their own accounts reach their plan usage limit; `unshare` takes it back from their next response. The deployment's team pool must be on (`ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED`); otherwise `share` fails with `MODEL_ACCOUNT_POOL_DISABLED`. Only a ChatGPT account can be shared: sharing an Anthropic API key fails with `MODEL_ACCOUNT_NOT_SHAREABLE`. `list` shows `shared`, when the pool last gave the account to a teammate (`pool_last_used_at`), and until when a reported usage limit holds it back (`usage_limited_until`). See [Share accounts with the team](../models.md#share-accounts-with-the-team).
+
+### Usage Examples
+
+```bash
+# Example 1: link a ChatGPT account to your user on a remote deployment
+astrabox model-account login chatgpt --endpoint https://astrabox.example.com
+
+# Example 2: sign in again to an account whose status is sign_in_required
+astrabox model-account login chatgpt --account mact_0123456789abcdef0123456789abcdef
+
+# Example 3: add an Anthropic API key, typed at the prompt
+astrabox model-account add anthropic --label "Personal key"
+
+# Example 4: replace an account's key from a password manager's output
+op read "op://Private/Anthropic/credential" | astrabox model-account add anthropic --account mact_0123456789abcdef0123456789abcdef
+
+# Example 5: list your accounts
+astrabox model-account list
+
+# Example 6: machine-readable list
+astrabox model-account list --output json
+
+# Example 7: share a ChatGPT account with your team's pool, then stop sharing it
+astrabox model-account share mact_0123456789abcdef0123456789abcdef
+astrabox model-account unshare mact_0123456789abcdef0123456789abcdef
+```
+
+### Output
+
+`login` prints the linked account and `list` prints every linked account, with the columns `LABEL`, `EMAIL`, `STATUS`, `IS_DEFAULT` and `ACCOUNT_ID`. `STATUS` is `active`, or `sign_in_required` once OpenAI refused to renew the account's access token for good. A declined sign-in exits with code 5 and the deployment's `MODEL_ACCOUNT_AUTHORIZATION_DECLINED`.
 
 ---
 

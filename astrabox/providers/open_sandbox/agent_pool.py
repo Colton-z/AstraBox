@@ -15,12 +15,14 @@ import hashlib
 import os
 import socket
 import threading
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
-from opensandbox import Sandbox, SandboxPoolAsync
+from opensandbox import Sandbox, SandboxManager, SandboxPoolAsync
 from opensandbox.async_redis_pool_store import AsyncRedisPoolStateStore
+from opensandbox.config import ConnectionConfig
 from opensandbox.exceptions import (
     PoolAcquireFailedException,
     PoolDestroyedException,
@@ -36,6 +38,11 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.providers.open_sandbox import _config
+from astrabox.providers.open_sandbox.execd_access import (
+    execd_access_headers,
+    execd_access_required,
+    with_execd_access,
+)
 from astrabox.seams.sandbox import (
     SandboxClientPoolCreator,
     SandboxClientPoolMember,
@@ -52,10 +59,6 @@ logger = get_logger(__name__)
 # would be too long here.
 _POOL_TOMBSTONE_TTL = timedelta(minutes=5)
 
-# The SDK replenishes on its reconcile tick and offers no public way to start
-# one, so a claimed member is replaced within one interval.
-_RECONCILE_SECONDS = 2
-
 # Members prepared concurrently per pool. A refill of a large pool starts this
 # many creates at once instead of all of them, so one Agent's refill cannot
 # exhaust a single Docker host or node. The SDK creates at most the deficit, and
@@ -63,14 +66,19 @@ _RECONCILE_SECONDS = 2
 # derived from the size the pool started with.
 _WARMUP_CONCURRENCY_LIMIT = 8
 
-# The replica that replenishes a pool holds the SDK's primary lock, which the
-# SDK renews only between commits. A lock long enough to outlast one create and
-# its preparation left a pool unreplenished that long after its holder died, so
-# a heartbeat renews the lock while this process holds it and the lock outlasts
-# only the heartbeat. It stays above the SDK's warmup ready timeout, which the
-# SDK requires of it.
-_PRIMARY_LOCK_HEARTBEAT_SECONDS = 10
+# The replica that replenishes a pool holds the SDK's primary lock. The SDK
+# renews it on its own heartbeat while this process holds it and fences
+# in-flight warmups when a renewal fails, and warns unless the lock outlasts its
+# warmup ready timeout, so the lock is that timeout plus this margin.
 _PRIMARY_LOCK_TTL_MARGIN_SECONDS = 30
+
+# How long a pool waits after a member fails before the next one, doubling with
+# each consecutive failure: the kubelet's container restart back-off (10 s,
+# doubling, at most five minutes). The supplier pool replaces a failed member on
+# its next reconcile tick, about a second later, so without it a cause that
+# persists creates and destroys a box for as long as it lasts.
+_MEMBER_RETRY_FIRST_SECONDS = 10.0
+_MEMBER_RETRY_MAX_SECONDS = 300.0
 
 _POOL_ACQUIRE_FAILURES = (
     PoolAcquireFailedException,
@@ -100,6 +108,80 @@ def _pool_unavailable(
         ),
         status_code=503,
     )
+
+
+class _MemberSandbox(Sandbox):
+    """How the SDK pool connects a member it hands out: with that member's execd credential.
+
+    The pool connects an acquired member with the pool's own connection
+    config, which carries no member's credential, and then checks the
+    member's execd through it. A member whose execd requires one would answer
+    that check 401 and be discarded. The pool's ``sandbox_factory`` is the
+    SDK's place to change how a member is connected; this one reads the
+    member's credential from its metadata (:mod:`.execd_access`), as
+    :meth:`OpenSandboxSandboxProvider.connect` does.
+    """
+
+    #: The HTTP transport of the registry that made this factory
+    #: (:func:`_member_sandbox_factory`); None is the default one.
+    transport: Any = None
+
+    @classmethod
+    async def connect(
+        cls,
+        sandbox_id: str,
+        connection_config: ConnectionConfig | None = None,
+        health_check: Callable[[Sandbox], Awaitable[bool]] | None = None,
+        connect_timeout: timedelta = timedelta(seconds=30),
+        health_check_polling_interval: timedelta = timedelta(milliseconds=200),
+        skip_health_check: bool = False,
+    ) -> Sandbox:
+        config = connection_config or ConnectionConfig()
+        manager = await SandboxManager.create(connection_config=config)
+        try:
+            info = await manager.get_sandbox_info(str(sandbox_id))
+        finally:
+            await manager.close()
+        sandbox = await super().connect(
+            sandbox_id,
+            connection_config=with_execd_access(
+                config, execd_access_headers(getattr(info, "metadata", None))
+            ),
+            health_check=health_check,
+            connect_timeout=connect_timeout,
+            health_check_polling_interval=health_check_polling_interval,
+            skip_health_check=skip_health_check,
+        )
+        if execd_access_required(load_astrabox_settings()):
+            # Every prepared member is handed out through here, so a member that
+            # does not hold its execd to its own credential is refused here,
+            # whatever made it: one prepared before the deployment required the
+            # credential, or one whose create check never finished. The pool
+            # removes and destroys a member this refuses and tries the next.
+            from astrabox.providers.open_sandbox.executor import (
+                require_open_sandbox_execd_access,
+            )
+            from astrabox.providers.open_sandbox.sandbox import (
+                OpenSandboxHandle,
+                OpenSandboxSandboxProvider,
+            )
+
+            try:
+                await require_open_sandbox_execd_access(
+                    OpenSandboxSandboxProvider(transport=cls.transport),
+                    OpenSandboxHandle(sandbox),
+                )
+            except BaseException:
+                with contextlib.suppress(Exception):
+                    await sandbox.close()
+                raise
+        return sandbox
+
+
+def _member_sandbox_factory(transport: Any) -> type[_MemberSandbox]:
+    """The member factory of one registry, with its HTTP transport."""
+
+    return type("_MemberSandbox", (_MemberSandbox,), {"transport": transport})
 
 
 def _client_pool_session_id(pool_name: str) -> str:
@@ -134,8 +216,12 @@ class OpenSandboxClientPoolRegistry:
         self._pool_factory = pool_factory
         self._pools: dict[str, Any] = {}
         self._sizes: dict[str, int] = {}
-        self._heartbeats: dict[str, asyncio.Task[None]] = {}
         self._lock = asyncio.Lock()
+        # Per pool: why its last member failed, how many failed in a row, and
+        # the event that ends a back-off when the pool is retired or stopped.
+        self._member_failures: dict[str, str] = {}
+        self._failure_streaks: dict[str, int] = {}
+        self._closing: dict[str, asyncio.Event] = {}
         # Stable across restarts of this process on the same host, so a restart
         # takes back the lock it held instead of waiting for it to expire; the
         # SDK grants the primary lock again to the owner that already holds it.
@@ -206,14 +292,15 @@ class OpenSandboxClientPoolRegistry:
                 creation_spec=PoolCreationSpec(image=spec.creation_image),
                 warmup_concurrency=_WARMUP_CONCURRENCY_LIMIT,
                 primary_lock_ttl=lock_ttl,
-                reconcile_interval=timedelta(seconds=_RECONCILE_SECONDS),
                 warmup_ready_timeout=timedelta(seconds=int(settings.sandbox_ready_timeout_seconds)),
                 warmup_skip_health_check=True,
                 warmup_sandbox_preparer=self._preparer(spec, preparer),
                 idle_timeout=timedelta(seconds=int(spec.idle_timeout_seconds)),
                 drain_timeout=timedelta(seconds=30),
                 sandbox_creator=self._creator(spec, creator),
+                sandbox_factory=_member_sandbox_factory(self._transport),
             )
+            self._closing[spec.pool_name] = asyncio.Event()
             try:
                 await pool.start()
             except asyncio.CancelledError:
@@ -250,45 +337,11 @@ class OpenSandboxClientPoolRegistry:
                 ) from exc
             self._pools[spec.pool_name] = pool
             self._sizes[spec.pool_name] = int(spec.max_idle)
-            self._heartbeats[spec.pool_name] = asyncio.create_task(
-                self._renew_primary_lock(spec.pool_name, state_store, lock_ttl),
-                name=f"client-pool-lock-heartbeat-{spec.pool_name}",
-            )
 
         logger.info(
             "OpenSandbox client-pool scheduler started: pool=%s",
             spec.pool_name,
         )
-
-    async def _renew_primary_lock(
-        self, pool_name: str, state_store: Any, ttl: timedelta
-    ) -> None:
-        """Keep the primary lock alive while this process holds it.
-
-        Renewal succeeds only for the current holder, so a replica that is not
-        primary renews nothing and takes nothing over.
-        """
-
-        while True:
-            await asyncio.sleep(_PRIMARY_LOCK_HEARTBEAT_SECONDS)
-            try:
-                await state_store.renew_primary_lock(pool_name, self._owner_id, ttl)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning(
-                    "OpenSandbox client-pool lock renewal failed: pool=%s error=%s",
-                    pool_name,
-                    _error_detail(exc),
-                )
-
-    async def _stop_heartbeat(self, pool_name: str) -> None:
-        task = self._heartbeats.pop(pool_name, None)
-        if task is None:
-            return
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
 
     def _creator(
         self,
@@ -324,7 +377,7 @@ class OpenSandboxClientPoolRegistry:
 
         async def create(context: Any) -> Sandbox:
             try:
-                return await create_unchecked(context)
+                sandbox = await create_unchecked(context)
             except asyncio.CancelledError:
                 logger.warning(
                     "OpenSandbox client-pool member creation cancelled: pool=%s",
@@ -338,6 +391,7 @@ class OpenSandboxClientPoolRegistry:
                     exc.code,
                     _error_detail(exc),
                 )
+                await self._member_failed(spec.pool_name, exc)
                 raise
             except Exception as exc:
                 logger.error(
@@ -347,13 +401,43 @@ class OpenSandboxClientPoolRegistry:
                     type(exc).__name__,
                     _error_detail(exc),
                 )
-                raise _pool_unavailable(
-                    spec.pool_name,
-                    "create a member",
-                    exc,
-                ) from exc
+                failure = _pool_unavailable(spec.pool_name, "create a member", exc)
+                await self._member_failed(spec.pool_name, failure)
+                raise failure from exc
+            return sandbox
 
         return create
+
+    async def _member_failed(self, pool_name: str, failure: APIError) -> None:
+        """Record why a member failed, then hold the pool's next attempt back.
+
+        Waiting here, before the failure reaches the supplier pool, keeps this
+        warmup in flight, so the pool starts no other until it ends. Each
+        consecutive failure doubles the wait (:data:`_MEMBER_RETRY_FIRST_SECONDS`
+        up to :data:`_MEMBER_RETRY_MAX_SECONDS`); a member that succeeds resets
+        it, and retiring or stopping the pool ends it.
+        """
+        self._member_failures[pool_name] = f"{failure.code}: {failure.message}"
+        streak = self._failure_streaks.get(pool_name, 0) + 1
+        self._failure_streaks[pool_name] = streak
+        closing = self._closing.get(pool_name)
+        if closing is None:
+            return
+        delay = min(_MEMBER_RETRY_FIRST_SECONDS * 2 ** (streak - 1), _MEMBER_RETRY_MAX_SECONDS)
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(closing.wait(), timeout=delay)
+
+    def _member_succeeded(self, pool_name: str) -> None:
+        self._member_failures.pop(pool_name, None)
+        self._failure_streaks.pop(pool_name, None)
+
+    def _end_backoff(self, pool_name: str) -> None:
+        """End a stopping pool's back-off, so its in-flight warmup does not hold the stop."""
+        closing = self._closing.pop(pool_name, None)
+        if closing is not None:
+            closing.set()
+        self._member_failures.pop(pool_name, None)
+        self._failure_streaks.pop(pool_name, None)
 
     def _preparer(
         self,
@@ -383,7 +467,14 @@ class OpenSandboxClientPoolRegistry:
                     type(exc).__name__,
                     _error_detail(exc),
                 )
+                await self._member_failed(
+                    spec.pool_name,
+                    exc
+                    if isinstance(exc, APIError)
+                    else _pool_unavailable(spec.pool_name, "prepare a member", exc),
+                )
                 raise
+            self._member_succeeded(spec.pool_name)
 
         return prepare
 
@@ -497,7 +588,7 @@ class OpenSandboxClientPoolRegistry:
                 failure_count=0,
                 backoff_active=False,
                 in_flight_operations=0,
-                last_error=False,
+                last_error=None,
             )
 
         try:
@@ -519,7 +610,7 @@ class OpenSandboxClientPoolRegistry:
             failure_count=int(getattr(snapshot, "failure_count", 0) or 0),
             backoff_active=bool(getattr(snapshot, "backoff_active", False)),
             in_flight_operations=int(getattr(snapshot, "in_flight_operations", 0) or 0),
-            last_error=bool(getattr(snapshot, "last_error", None)),
+            last_error=self._member_failures.get(name),
             idle_sandbox_ids=tuple(
                 str(entry.sandbox_id) for entry in idle_entries
             ),
@@ -538,7 +629,7 @@ class OpenSandboxClientPoolRegistry:
         async with self._lock:
             pool = self._pools.pop(name, None)
             self._sizes.pop(name, None)
-        await self._stop_heartbeat(name)
+            self._end_backoff(name)
         if pool is not None:
             try:
                 await pool.shutdown(graceful=True)
@@ -588,8 +679,8 @@ class OpenSandboxClientPoolRegistry:
             pools = dict(self._pools)
             self._pools.clear()
             self._sizes.clear()
-        for name in pools:
-            await self._stop_heartbeat(name)
+            for name in list(self._closing):
+                self._end_backoff(name)
         await asyncio.gather(
             *(pool.shutdown(graceful=True) for pool in pools.values()),
             return_exceptions=True,

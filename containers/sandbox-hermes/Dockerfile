@@ -83,6 +83,15 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
 RUN chmod 0644 /opt/hermes/source/tools/facts.json && \
     rm -f "${HERMES_VENV}/.lock" /opt/hermes/source/pm-runtime/.lock
 
+# Hermes runs from its editable source tree, which the install leaves without
+# bytecode, and the profile account cannot write __pycache__ there: every
+# gateway, bridge and mirror start compiled each module it imported, on the
+# box's one CPU while the Assistant waited. Hash-checked bytecode stays valid
+# whatever timestamps the image export writes.
+RUN "${HERMES_VENV}/bin/python" -m compileall -q -j 0 --invalidation-mode checked-hash \
+      -x '(/uv-cache/|/tests?/|/node_modules/|/skills/|/optional-skills/|/website/|/docs/|/evals/)' \
+      /opt/hermes/source
+
 # astrabox-hermes-config-merge installs plugin dependencies with Hermes' own
 # installer, and the profile setup writes the owner's configuration to its
 # managed scope; a Hermes that moved either fails here, not in a box.
@@ -133,7 +142,7 @@ COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/astrabox-hermes-serve /usr/lo
 # Hermes seeds these defaults into each writable profile and keeps user edits
 # through its native bundled-skill manifest, including across image updates.
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/skills/ /opt/hermes/source/skills/astrabox-platform/
-COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_transport.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_gateway_bridge.py containers/sandbox-hermes/hermes_gateway_platforms.py containers/sandbox-hermes/hermes_gateway_prepare.py /opt/astrabox/hermes/
+COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/assistant-state/astrabox_state_transport.py astrabox/core/service/orchestrator/runtime/assistant-state/astrabox_state_gate.py astrabox/core/service/orchestrator/runtime/assistant-state/astrabox_state_mirror.py containers/sandbox-hermes/hermes_native_store.py containers/sandbox-hermes/hermes_profile_state.py containers/sandbox-hermes/hermes_state_bootstrap.py containers/sandbox-hermes/hermes_state_mirror.py containers/sandbox-hermes/hermes_gateway_bridge.py containers/sandbox-hermes/hermes_gateway_platforms.py containers/sandbox-hermes/hermes_gateway_prepare.py /opt/astrabox/hermes/
 COPY --chmod=u=rwX,go=rX astrabox/core/service/orchestrator/runtime/astrabox-transcript-mirror /usr/local/bin/astrabox-transcript-mirror
 COPY --chmod=u=rwX,go=rX containers/sandbox-hermes/supervisord.hermes.conf /opt/gem/supervisord/supervisord.hermes.conf
 RUN set -eux; \
@@ -142,7 +151,7 @@ RUN set -eux; \
     bash -n /usr/local/bin/astrabox-hermes-serve; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; [ast.parse(p.read_text()) for p in pathlib.Path("/opt/astrabox/hermes").glob("*.py")]'; \
     "${HERMES_VENV}/bin/python" -c 'import ast, pathlib; ast.parse(pathlib.Path("/usr/local/bin/astrabox-transcript-mirror").read_text())'; \
-    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import hermes_native_store, hermes_profile_state, hermes_state_transport, hermes_state_bootstrap, hermes_state_mirror, hermes_gateway_bridge, hermes_gateway_platforms, hermes_gateway_prepare'; \
+    PYTHONPATH=/opt/astrabox/hermes "${HERMES_VENV}/bin/python" -c 'import astrabox_state_transport, astrabox_state_gate, astrabox_state_mirror, hermes_native_store, hermes_profile_state, hermes_state_bootstrap, hermes_state_mirror, hermes_gateway_bridge, hermes_gateway_platforms, hermes_gateway_prepare'; \
     supervisord --version
 
 # Bootstrap only the base sandbox services; the gateway above is supervised.
@@ -156,15 +165,6 @@ RUN set -eux; \
     chmod +x /usr/local/bin/astrabox-hermes-bootstrap
 
 WORKDIR /home/conversations
-
-# execd keeps each command's event stream open for a fixed drain after the
-# command completes, and the SDK reads a foreground command to the end of that
-# stream, so every command the platform runs here costs the drain on top of
-# its own time; preparing a conversation's profile runs about twenty. The
-# pinned execd (v1.1.0) drains for 1s. EXECD_API_GRACE_SHUTDOWN is execd's
-# documented override, and 200ms is the default execd's source took after
-# v1.1.0, which no released execd image carries yet.
-ENV EXECD_API_GRACE_SHUTDOWN=200ms
 
 # Image-owned static previews use nginx's expiring links and no-symlink file opens.
 COPY --chmod=u=rwX,go=rX containers/workspace-viewer/nginx.conf /opt/astrabox/workspace-viewer/nginx.conf

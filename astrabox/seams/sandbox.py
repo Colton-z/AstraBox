@@ -157,6 +157,27 @@ class SandboxNetworkPolicy:
             raise ValueError("unrestricted sandbox networking cannot carry allowed_hosts")
 
 
+@dataclass(frozen=True, slots=True)
+class SandboxSharedMount:
+    """One host path or named volume a RuntimeProfile mounts into its boxes.
+
+    ``source`` is an absolute host path (it starts with ``/``) or the name of a
+    volume of the sandbox host; either one the deployment allows
+    (``ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS``,
+    ``ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES``). ``target`` is where the box sees
+    it. Unlike a workspace mount the storage outlives every box and is shared
+    by every box that mounts it.
+    """
+
+    source: str
+    target: str
+    read_only: bool = True
+
+    @property
+    def is_host_path(self) -> bool:
+        return self.source.startswith("/")
+
+
 #: How long a confirmed destruction may wait for an ACCEPTED delete to settle.
 #: Kubernetes deletes a workload asynchronously — the record stays visible
 #: until pod teardown completes — so the second observation re-asks within
@@ -325,7 +346,9 @@ class SandboxClientPoolStatus:
     failure_count: int | None = None
     backoff_active: bool | None = None
     in_flight_operations: int | None = None
-    last_error: bool | None = None
+    #: Why the pool's last member failed to be created or prepared, as
+    #: ``"<code>: <message>"``; None when the last one succeeded.
+    last_error: str | None = None
     idle_sandbox_ids: tuple[str, ...] = ()
 
 
@@ -456,6 +479,21 @@ class SandboxCreateSpec:
     network policy, it is a security contract rather than a hint: a provider
     maps it to its create primitive or refuses it before returning a box.
 
+    ``container_engine`` is the RuntimeProfile's requested in-box engine
+    (:data:`SANDBOX_CONTAINER_ENGINES`). Its boot switch for the image travels
+    in ``env`` like every other boot value; this field is what the provider
+    reads to give the box the grants and the per-box storage the engine needs,
+    and to prove the engine answers before returning the box. A provider that
+    has not declared the engine in
+    :attr:`SandboxProvider.supported_container_engines` refuses it.
+
+    ``networks`` names the host networks the RuntimeProfile joins its boxes to
+    and ``shared_mounts`` the host paths and named volumes it mounts into them,
+    each already checked against the deployment's allowlists. They give a box
+    reach beyond its own sandbox, so a provider that has not declared
+    :attr:`SandboxProvider.supports_network_attachment` or
+    :attr:`SandboxProvider.supports_shared_mounts` refuses a non-empty value.
+
     ``metadata`` carries opaque platform facts that must stay attached to this
     physical box across a client-pool handoff. Providers transport these values
     without interpreting them and preserve them when runtime ownership is
@@ -505,6 +543,9 @@ class SandboxCreateSpec:
     death_callback_url: str | None = None
     network_policy: SandboxNetworkPolicy | None = None
     permission_level: str = "default"
+    container_engine: str = "none"
+    networks: tuple[str, ...] = ()
+    shared_mounts: tuple[SandboxSharedMount, ...] = ()
     credential_proxy_enabled: bool = False
     vault_write: SandboxEgressCredentialPlan | None = field(
         default=None,
@@ -847,9 +888,11 @@ SANDBOX_TENANCIES = (SANDBOX_TENANCY_CONVERSATION, SANDBOX_TENANCY_AGENT)
 #:     its ``workspace-write`` mode with it, and without this level that
 #:     enforcement silently degrades into asking a person instead.
 #: ``privileged``
-#:     The container-as-VM case — docker-in-docker and the like. Named here
-#:     because the tier exists and refusing an unknown value is better than
-#:     accepting one; a deployment that wants it says so deliberately.
+#:     The container-as-VM case. Named here because the tier exists and
+#:     refusing an unknown value is better than accepting one; a deployment
+#:     that wants it says so deliberately. A container engine in the box does
+#:     not need it: :data:`SANDBOX_CONTAINER_ENGINE_DOCKER` runs rootless at
+#:     ``advanced``.
 #:
 #: How a provider delivers and proves a level is its own contract. A provider
 #: must refuse a level it cannot attest rather than creating a box with less
@@ -863,6 +906,28 @@ SANDBOX_PERMISSION_LEVELS = (
     SANDBOX_PERMISSION_LEVEL_ADVANCED,
     SANDBOX_PERMISSION_LEVEL_PRIVILEGED,
 )
+
+
+#: A container engine the box runs for its Agent, a RuntimeProfile property
+#: like the two above.
+#:
+#: ``none``
+#:     The default: no engine.
+#: ``docker``
+#:     A rootless Docker Engine started by the image at boot as the workload
+#:     account, so the Agent can ``docker build``, ``docker run`` and ``docker
+#:     compose``. Its inner containers reach the network through a user-mode
+#:     stack, as ordinary sockets of the box, so the box's egress policy
+#:     applies to them. It needs ``advanced``, and a box of its own per
+#:     conversation: published inner ports and the box's CPU, memory and disk
+#:     belong to one conversation.
+#:
+#: A provider declares the engines it can create boxes for in
+#: :attr:`SandboxProvider.supported_container_engines`, and must prove the
+#: engine answers before it returns such a box.
+SANDBOX_CONTAINER_ENGINE_NONE = "none"
+SANDBOX_CONTAINER_ENGINE_DOCKER = "docker"
+SANDBOX_CONTAINER_ENGINES = (SANDBOX_CONTAINER_ENGINE_NONE, SANDBOX_CONTAINER_ENGINE_DOCKER)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1166,6 +1231,24 @@ class SandboxProvider(ABC):
     #: can only fail at sandbox start is not offered as working configuration.
     #: Registration validates the values against ``SANDBOX_PERMISSION_LEVELS``.
     supported_permission_levels: tuple[str, ...] = (SANDBOX_PERMISSION_LEVEL_DEFAULT,)
+    #: In-box container engines (:data:`SANDBOX_CONTAINER_ENGINES` other than
+    #: ``none``) this backend can create boxes for, grants and per-box engine
+    #: storage included. The write path refuses a RuntimeProfile that asks for
+    #: an engine the selected backend does not declare; a backend whose answer
+    #: depends on its deployment narrows it further in
+    #: :meth:`validate_runtime_profile_configuration`.
+    supported_container_engines: tuple[str, ...] = ()
+    #: Whether creates join a box to the host networks its RuntimeProfile names
+    #: (:attr:`SandboxCreateSpec.networks`), so it reaches services there while
+    #: its egress policy still governs everything else. The write path refuses
+    #: a RuntimeProfile naming networks on a backend that does not declare it;
+    #: a backend whose answer depends on its deployment narrows it further in
+    #: :meth:`validate_runtime_profile_configuration`.
+    supports_network_attachment: bool = False
+    #: Whether creates mount the host paths and named volumes a RuntimeProfile
+    #: names (:attr:`SandboxCreateSpec.shared_mounts`), with the read-only flag
+    #: each carries. Refused and narrowed like the flag above.
+    supports_shared_mounts: bool = False
     #: Whether creates honour a RuntimeProfile's provider-neutral
     #: ``network_policy`` by creating the box under it.
     #:
@@ -1188,6 +1271,12 @@ class SandboxProvider(ABC):
     #: conversation that comes back to an empty box. The caller refuses on the
     #: backend's behalf, naming it, rather than discovering this per session.
     supports_pause: bool = False
+    #: The longest a pause this backend accepted can stay undecided, in seconds:
+    #: within it the control plane reports the box paused, or running again
+    #: because the pause failed. A box this backend still reports running when
+    #: that time has passed since its pause was requested did not pause.
+    #: Meaningful only when :attr:`supports_pause` is True.
+    pause_verdict_seconds: float = 0.0
     #: Whether this backend exposes a maintained client-side pool that can
     #: coordinate ready sandboxes across platform replicas.  The platform
     #: supplies complete create and preparation callbacks; the provider owns
@@ -1431,6 +1520,19 @@ class SandboxProvider(ABC):
             f"sandbox provider {self.name!r} must identify its unclaimed inventory"
         )
 
+    async def unclaimed_sandbox_refusal(self, descriptor: SandboxDescriptor) -> str | None:
+        """Why a resource :meth:`owns_unclaimed_sandbox` keeps must never be handed out, or None.
+
+        A box whose create or hand-out was interrupted (the process died, or
+        its destruction could not be confirmed) is in no idle inventory and no
+        session's, so neither the provider's preparation nor orphan
+        reclamation would ever remove it. A provider that can tell such a box
+        will never be handed out says why, and reclamation destroys it. Only a
+        definite verdict refuses; a box the provider cannot ask about is kept.
+        Default: none.
+        """
+        return None
+
     def runtime_defaults(self) -> SandboxRuntimeDefaults:
         """Deploy-time defaults (seed image / agent command). Default: no opinion."""
         return SandboxRuntimeDefaults()
@@ -1608,9 +1710,13 @@ class SandboxProvider(ABC):
         filesystem snapshot, not a suspend-to-disk, so anything the box was
         running is gone and the next turn starts fresh against the same files.
 
-        As with ``kill``, the boolean is evidence rather than acknowledgement: a
-        pause the backend accepted but did not confirm is False, because a caller
-        that believes a box is paused will not renew its lease.
+        As with ``kill``, the boolean is evidence rather than acknowledgement:
+        True only once the backend reports the box paused, because a caller
+        that believes a box is paused will not renew its lease. False means
+        the pause ended without pausing — the box runs on, or it is gone. A
+        pause the backend has not decided within :attr:`pause_verdict_seconds`
+        raises ``SANDBOX_UNREACHABLE``: the box is neither running nor gone,
+        and the caller must keep treating it as parked.
         """
         _ = sandbox_id
         raise APIError(
@@ -2115,10 +2221,11 @@ class SandboxProvider(ABC):
         Events use the terminal-neutral ``stdout`` / ``stderr`` vocabulary and
         finish with one ``__done__`` event carrying ``exit_code``. Cancelling
         the consumer must close the provider stream. Providers do not promise
-        that a cancelled run leaves its stateful shell reusable: OpenSandbox
-        v1.1.0 cannot do that reliably. A caller that needs a deterministic
-        interrupt must put disposable work in a separate isolated session and
-        delete that session after cancellation.
+        that a cancelled run leaves its stateful shell reusable: OpenSandbox's
+        execd interrupts the run but kills the whole session when the command
+        ignores the interrupt. A caller that needs a deterministic interrupt
+        must put disposable work in a separate isolated session and delete that
+        session after cancellation.
 
         This is deliberately separate from the box-level PTY face. A provider
         must never implement it by silently falling back to a shell in the
@@ -2492,6 +2599,16 @@ def register_sandbox(provider: SandboxProvider) -> None:
             f"sandbox provider {name!r} declares the advanced permission level "
             "but does not override read_isolation_capability to attest it"
         )
+    container_engines = getattr(provider, "supported_container_engines", ())
+    if (
+        not isinstance(container_engines, tuple)
+        or any(engine not in SANDBOX_CONTAINER_ENGINES for engine in container_engines)
+        or SANDBOX_CONTAINER_ENGINE_NONE in container_engines
+    ):
+        raise RuntimeError(
+            f"sandbox provider {name!r} capability supported_container_engines must be "
+            f"a tuple drawn from {SANDBOX_CONTAINER_ENGINES[1:]!r}"
+        )
     profile_exclusive = getattr(provider, "sandbox_is_profile_exclusive", False)
     if not isinstance(profile_exclusive, bool):
         raise RuntimeError(
@@ -2775,6 +2892,7 @@ __all__ = [
     "SandboxClientPoolSpec",
     "SandboxClientPoolStatus",
     "SandboxCreateSpec",
+    "SandboxSharedMount",
     "SandboxDescriptor",
     "SandboxDiagnostics",
     "ConversationIdentity",

@@ -145,6 +145,9 @@ RUN chmod 0755 "${DSH_PREFIX}/serve.sh" "${DSH_PREFIX}/forward.sh" \
 # before an image can publish a ready TCP port in a real deployment.
 # Launcher flags (--patch) precede app flags (--no-open): the first app flag
 # ends launcher parsing in the vendor's command grammar.
+# A first start in a build step loads the harness cold, so on a shared builder
+# it takes from seconds to over a minute. The wait ends as soon as the harness
+# answers or exits; the deadline only bounds one that runs without answering.
 RUN set -eu; \
     probe_home="$(mktemp -d /tmp/astrabox-dsh-web.XXXXXX)"; \
     HOME="$probe_home" DSH_HOME="$probe_home/.dsh" \
@@ -155,12 +158,21 @@ RUN set -eu; \
     vendor_pid=$!; \
     trap 'kill "$vendor_pid" 2>/dev/null || true; wait "$vendor_pid" 2>/dev/null || true; rm -rf "$probe_home"' EXIT; \
     ready=0; \
-    for attempt in $(seq 1 120); do \
-      if HOME="$probe_home" python3 "${DSH_PREFIX}/web.py" probe 44781; then ready=1; break; fi; \
+    deadline=$(( $(date +%s) + 300 )); \
+    while [ "$(date +%s)" -lt "$deadline" ]; do \
+      if HOME="$probe_home" python3 "${DSH_PREFIX}/web.py" probe 44781 2>"$probe_home/probe.log"; then ready=1; break; fi; \
       kill -0 "$vendor_pid" 2>/dev/null || break; \
       sleep 0.2; \
     done; \
-    if [ "$ready" != 1 ]; then cat "$probe_home/boot.log"; exit 1; fi
+    if [ "$ready" != 1 ]; then \
+      cat "$probe_home/boot.log" "$probe_home/probe.log"; \
+      if kill -0 "$vendor_pid" 2>/dev/null; then \
+        echo "the harness was still running without answering after 300 s" >&2; \
+      else \
+        echo "the harness exited before its API answered" >&2; \
+      fi; \
+      exit 1; \
+    fi
 
 # The base's workload-account contract, asserted at BUILD time.
 #
@@ -215,10 +227,6 @@ ENV ASTRABOX_WORKLOAD_USER=agent \
     WORKSPACE=/workspace
 
 WORKDIR /workspace
-
-# Foreground commands wait for execd to drain their SSE stream. Match the
-# supplier's 200ms drain without changing command execution timeouts.
-ENV EXECD_API_GRACE_SHUTDOWN=200ms
 
 # Image-owned static previews use nginx's expiring links and no-symlink file opens.
 COPY --chmod=u=rwX,go=rX containers/workspace-viewer/nginx.conf /opt/astrabox/workspace-viewer/nginx.conf

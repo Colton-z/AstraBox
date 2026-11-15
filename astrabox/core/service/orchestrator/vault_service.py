@@ -49,13 +49,11 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
-from sqlalchemy.ext.asyncio import AsyncConnection
 
 from astrabox.persistence.repository.vault_repository import (
     CredentialKeyTaken,
@@ -70,8 +68,9 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso, utcnow
 from astrabox.common.utils.user_context import UserContext, default_org_id
-from astrabox.providers.secret_store import EncryptedCollectionSecretStore
+from astrabox.core.service.secret_changes import SecretStoreChange, prepare_secret_change
 from astrabox.seams.egress_credentials import (
+    ACCESS_TOKEN_RENEWAL_WINDOW_S,
     DELIVERY_HEADER,
     DELIVERY_SUBSTITUTION,
     EgressCredential,
@@ -103,8 +102,11 @@ _EGRESS_AUTH_TYPES = (AUTH_TYPE_ENVIRONMENT_VARIABLE, AUTH_TYPE_HTTP_BASIC)
 #: OAuth refresh auth methods.
 _REFRESH_AUTH_METHODS = ("client_secret_basic", "client_secret_post", "none")
 
-#: Seconds of clock skew under which an access token counts as expired.
-_EXPIRY_SKEW_SECONDS = 60
+#: The grants an ``environment_variable`` credential can obtain its value by.
+_TOKEN_GRANT_TYPES = ("password", "client_credentials")
+
+#: Seconds before its expiry at which an access token is renewed.
+_EXPIRY_SKEW_SECONDS = ACCESS_TOKEN_RENEWAL_WINDOW_S
 
 #: Bound on one token-endpoint exchange, connection included.
 _REFRESH_TIMEOUT_S = 30.0
@@ -149,7 +151,7 @@ _SECRET_FIELDS = {
     AUTH_TYPE_MCP_OAUTH: ("access_token", "refresh_token", "client_secret"),
     AUTH_TYPE_STATIC_BEARER: ("token",),
     AUTH_TYPE_MCP_STATIC_HEADER: ("value",),
-    AUTH_TYPE_ENVIRONMENT_VARIABLE: ("secret_value",),
+    AUTH_TYPE_ENVIRONMENT_VARIABLE: ("secret_value", "access_token", "password", "client_secret"),
     AUTH_TYPE_HTTP_BASIC: ("password",),
 }
 
@@ -198,47 +200,6 @@ def _expired(expires_at: str | None) -> bool:
     return parse_iso(expires_at) <= utcnow() + timedelta(seconds=_EXPIRY_SKEW_SECONDS)
 
 
-@dataclass(frozen=True)
-class _SecretChange:
-    """The secret-store side of one metadata change; built by :meth:`VaultService._secret_change`.
-
-    :meth:`apply` runs inside the metadata change's transaction, after its
-    statements have succeeded. ``put`` holds sealed values when the store keeps
-    its values in the platform database and plain values otherwise.
-    """
-
-    store: SecretStore
-    scope: str
-    put: Mapping[str, str]
-    remove: tuple[str, ...]
-    purge: bool
-
-    async def apply(self, conn: AsyncConnection) -> None:
-        if isinstance(self.store, EncryptedCollectionSecretStore):
-            await self.store.apply(
-                conn, scope=self.scope, put=self.put, remove=self.remove, purge=self.purge
-            )
-            return
-        if self.purge:
-            await self.store.purge_scope(scope=self.scope)
-        for key in self.remove:
-            await self.store.delete(scope=self.scope, key=key)
-        for key, value in self.put.items():
-            await self.store.put(scope=self.scope, key=key, value=value)
-
-    async def discard(self) -> None:
-        """Remove what :meth:`apply` stored for a change whose transaction did not commit.
-
-        Only a store outside the database needs it: there the values were
-        written before the commit failed. Callers use it for new keys only,
-        which held nothing before the change.
-        """
-        if isinstance(self.store, EncryptedCollectionSecretStore):
-            return
-        for key in self.put:
-            await self.store.delete(scope=self.scope, key=key)
-
-
 class VaultService:
     """Vault + credential CRUD, and credential resolution for the proxies."""
 
@@ -271,7 +232,7 @@ class VaultService:
         put: Mapping[str, str] | None = None,
         remove: Sequence[str] = (),
         purge: bool = False,
-    ) -> _SecretChange:
+    ) -> SecretStoreChange:
         """The secret-store writes that go with one metadata change of ``vault_id``.
 
         A store that keeps its values in the platform database writes them on
@@ -285,18 +246,10 @@ class VaultService:
         limit, a Vault still in use) never reaches the store, and a store write
         that fails rolls the metadata back. Only a commit that fails after the
         store writes leaves the two apart; a create then discards its values
-        (:meth:`_SecretChange.discard`), and an archive or delete can be repeated.
+        (:meth:`SecretStoreChange.discard`), and an archive or delete can be repeated.
         """
-        store = self._store()
-        scope = self._scope(vault_id)
-        values = dict(put or {})
-        if isinstance(store, EncryptedCollectionSecretStore):
-            values = {
-                key: await store.seal(scope=scope, key=key, value=value)
-                for key, value in values.items()
-            }
-        return _SecretChange(
-            store=store, scope=scope, put=values, remove=tuple(remove), purge=purge
+        return await prepare_secret_change(
+            self._store(), self._scope(vault_id), put=put, remove=remove, purge=purge
         )
 
     # ── vaults ──────────────────────────────────────────────────────────────
@@ -629,9 +582,6 @@ class VaultService:
             raise _invalid("target_type must be 'agent' or 'assistant'")
         cleaned = self._distinct_ids(vault_ids)
         vaults = {vault["vault_id"]: vault for vault in await self._repo.get_vaults(cleaned)}
-        outbound = (
-            await self._first_outbound_credentials(cleaned) if target_type == "assistant" else {}
-        )
         org_id = self._org_id(user)
         for vault_id in cleaned:
             vault = vaults.get(vault_id)
@@ -639,18 +589,6 @@ class VaultService:
                 raise _not_found("vault", vault_id)
             if vault["archived_at"]:
                 raise _invalid(f"vault '{vault_id}' is archived and cannot be bound")
-            credential = outbound.get(vault_id)
-            if credential is not None:
-                raise APIError(
-                    code="ASSISTANT_VAULT_CREDENTIAL_UNSUPPORTED",
-                    message=(
-                        f"vault '{vault_id}' contains an outbound "
-                        f"credential of type '{credential['auth']['type']}'. Assistants "
-                        "reuse a long-running workspace, so only MCP credentials "
-                        "can be bound to an Assistant."
-                    ),
-                    status_code=400,
-                )
         return cleaned
 
     async def describe_binding(
@@ -681,7 +619,6 @@ class VaultService:
         backend_name: str,
         backend_supports_egress_injection: bool,
         backend_supports_header_credentials: bool,
-        egress_injection_unsupported_reason: str | None = None,
     ) -> list[str]:
         """Validate current managed bindings when a Session is created.
 
@@ -692,10 +629,7 @@ class VaultService:
         the way it is configured. A header-delivery ``environment_variable``
         credential needs ``backend_supports_header_credentials`` alone; every
         other outbound credential needs ``ASTRABOX_SANDBOX_CREDENTIAL_VAULT``
-        and ``backend_supports_egress_injection``. A non-empty
-        ``egress_injection_unsupported_reason`` replaces the message of either
-        backend refusal, for a Session that cannot carry outbound credentials
-        whatever its backend supports.
+        and ``backend_supports_egress_injection``.
         """
         from astrabox.common.utils.settings import load_astrabox_settings
 
@@ -727,7 +661,6 @@ class VaultService:
                     vault_enabled=vault_enabled,
                     backend_supports_egress_injection=backend_supports_egress_injection,
                     backend_supports_header_credentials=backend_supports_header_credentials,
-                    unsupported_reason=egress_injection_unsupported_reason,
                 )
         return cleaned
 
@@ -740,7 +673,6 @@ class VaultService:
         vault_enabled: bool,
         backend_supports_egress_injection: bool,
         backend_supports_header_credentials: bool,
-        unsupported_reason: str | None,
     ) -> None:
         """Refuse one outbound credential the Session's backend cannot deliver."""
         auth = dict(credential.get("auth") or {})
@@ -752,13 +684,10 @@ class VaultService:
                 raise APIError(
                     code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
                     message=(
-                        unsupported_reason
-                        or (
-                            f"managed credential vault '{vault_id}' contains a "
-                            "header-delivery environment_variable credential, but "
-                            f"sandbox backend '{backend_name}' cannot replace a "
-                            "placeholder inside a named request header."
-                        )
+                        f"managed credential vault '{vault_id}' contains a "
+                        "header-delivery environment_variable credential, but "
+                        f"sandbox backend '{backend_name}' cannot replace a "
+                        "placeholder inside a named request header."
                     ),
                     status_code=400,
                 )
@@ -778,13 +707,10 @@ class VaultService:
             raise APIError(
                 code="VAULT_ENV_CREDENTIAL_UNSUPPORTED",
                 message=(
-                    unsupported_reason
-                    or (
-                        f"managed credential vault '{vault_id}' contains "
-                        f"outbound credential of type '{auth.get('type')}', but "
-                        f"sandbox backend '{backend_name}' cannot keep its real "
-                        "value outside the sandbox."
-                    )
+                    f"managed credential vault '{vault_id}' contains "
+                    f"outbound credential of type '{auth.get('type')}', but "
+                    f"sandbox backend '{backend_name}' cannot keep its real "
+                    "value outside the sandbox."
                 ),
                 status_code=400,
             )
@@ -794,17 +720,6 @@ class VaultService:
         """``vault_ids`` stripped, without blanks or repeats, in first-seen order."""
         stripped = (str(raw or "").strip() for raw in vault_ids)
         return list(dict.fromkeys(vault_id for vault_id in stripped if vault_id))
-
-    async def _first_outbound_credentials(
-        self, vault_ids: list[str]
-    ) -> dict[str, dict[str, Any]]:
-        """Each Vault's earliest active outbound (egress-delivered) credential, by Vault id."""
-        first: dict[str, dict[str, Any]] = {}
-        for credential in await self._repo.list_credentials(
-            vault_ids, active_only=True, auth_types=_EGRESS_AUTH_TYPES
-        ):
-            first.setdefault(str(credential["vault_id"]), credential)
-        return first
 
     # ── egress-side resolution ──────────────────────────────────────────────
 
@@ -898,9 +813,13 @@ class VaultService:
                     status_code=409,
                 )
             claimed[secret_name] = credential_id
-            secret_value = await self._store().get(
-                scope=self._scope(vault_id), key=f"{credential_id}/secret_value"
-            )
+            expires_at: str | None = None
+            if auth.get("oauth"):
+                secret_value, expires_at = await self._granted_access_token(vault_id, credential)
+            else:
+                secret_value = await self._store().get(
+                    scope=self._scope(vault_id), key=f"{credential_id}/secret_value"
+                )
             if not secret_value:
                 raise APIError(
                     code="VAULT_CREDENTIAL_UNAVAILABLE",
@@ -924,6 +843,7 @@ class VaultService:
                     allowed_requests=dict(auth.get("allowed_requests") or {}),
                     delivery=self._env_delivery(auth),
                     header_name=str(auth.get("header_name") or ""),
+                    expires_at=expires_at,
                 )
             )
         return resolved
@@ -1018,8 +938,34 @@ class VaultService:
             )
         return {"Authorization": f"Bearer {token}"}
 
+    async def _granted_access_token(
+        self, vault_id: str, credential: dict[str, Any]
+    ) -> tuple[str, str]:
+        """The access token an ``environment_variable`` credential's grant gives, and its expiry.
+
+        The token is obtained on first use and again once it is inside the
+        renewal window, under the same claim as an ``mcp_oauth`` refresh, so
+        every replica and conversation using the credential shares one token.
+        """
+        credential_id = str(credential["credential_id"])
+        expires_at = (credential.get("auth") or {}).get("expires_at")
+        if not expires_at or _expired(expires_at):
+            await self._refresh_once(vault_id, credential)
+            current = await self._repo.get_credential(credential_id)
+            expires_at = ((current or {}).get("auth") or {}).get("expires_at")
+        token = await self._store().get(
+            scope=self._scope(vault_id), key=f"{credential_id}/access_token"
+        )
+        if not token or not expires_at:
+            raise APIError(
+                code="VAULT_CREDENTIAL_UNAVAILABLE",
+                message=f"vault credential '{credential_id}' has no access token",
+                status_code=502,
+            )
+        return token, str(expires_at)
+
     async def _refresh_once(self, vault_id: str, credential: dict[str, Any]) -> None:
-        """Refresh an expired ``mcp_oauth`` access token, once across every replica.
+        """Renew an access token that needs it, once across every replica.
 
         A provider may rotate the refresh token on each use and revoke the whole
         grant when a used one comes back, so two replicas must never refresh the
@@ -1035,7 +981,8 @@ class VaultService:
         """
         credential_id = str(credential["credential_id"])
         auth = dict(credential.get("auth") or {})
-        if not str((auth.get("refresh") or {}).get("token_endpoint") or "").strip():
+        endpoint = auth.get("refresh") or auth.get("oauth") or {}
+        if not str(endpoint.get("token_endpoint") or "").strip():
             raise APIError(
                 code="VAULT_CREDENTIAL_EXPIRED",
                 message=(
@@ -1044,7 +991,8 @@ class VaultService:
                 ),
                 status_code=502,
             )
-        observed = str(auth["expires_at"])
+        # ``None`` for a granted token not yet obtained.
+        observed = auth.get("expires_at")
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _REFRESH_CLAIM_S
         while True:
@@ -1087,9 +1035,13 @@ class VaultService:
         credential_id = str(credential["credential_id"])
         claim = str(credential["refresh_claimed_until"])
         try:
-            access_token, rotated_refresh, expires_at = await self._exchange_refresh_token(
-                vault_id, credential
-            )
+            if (credential.get("auth") or {}).get("oauth"):
+                access_token, expires_at = await self._exchange_grant(vault_id, credential)
+                rotated_refresh = ""
+            else:
+                access_token, rotated_refresh, expires_at = await self._exchange_refresh_token(
+                    vault_id, credential
+                )
             put = {f"{credential_id}/access_token": access_token}
             if rotated_refresh:
                 put[f"{credential_id}/refresh_token"] = rotated_refresh
@@ -1132,10 +1084,8 @@ class VaultService:
         """
         credential_id = str(credential["credential_id"])
         refresh = dict((credential.get("auth") or {}).get("refresh") or {})
-        token_endpoint = str(refresh.get("token_endpoint") or "").strip()
-        scope_key = self._scope(vault_id)
         refresh_token = await self._store().get(
-            scope=scope_key, key=f"{credential_id}/refresh_token"
+            scope=self._scope(vault_id), key=f"{credential_id}/refresh_token"
         )
         if not refresh_token:
             raise APIError(
@@ -1144,11 +1094,68 @@ class VaultService:
                 status_code=502,
             )
 
-        auth_method = str(refresh.get("auth_method") or "none").strip()
-        client_id = str(refresh.get("client_id") or "").strip()
-        data: dict[str, str] = {"grant_type": "refresh_token", "refresh_token": refresh_token}
-        if str(refresh.get("scope") or "").strip():
-            data["scope"] = str(refresh["scope"]).strip()
+        payload, expires_at = await self._token_request(
+            vault_id,
+            credential_id,
+            refresh,
+            {"grant_type": "refresh_token", "refresh_token": refresh_token},
+        )
+        return payload["access_token"], str(payload.get("refresh_token") or "").strip(), expires_at
+
+    async def _exchange_grant(
+        self, vault_id: str, credential: dict[str, Any]
+    ) -> tuple[str, str]:
+        """Run an ``environment_variable`` credential's grant; the access token and its expiry.
+
+        The grant is run again for every renewal. A refresh token the endpoint
+        returns is not kept: it would be a second, rotating secret to keep in
+        step across replicas for a token the stored grant already obtains.
+        """
+        credential_id = str(credential["credential_id"])
+        oauth = dict((credential.get("auth") or {}).get("oauth") or {})
+        data = {"grant_type": str(oauth["grant_type"])}
+        if oauth["grant_type"] == "password":
+            password = await self._store().get(
+                scope=self._scope(vault_id), key=f"{credential_id}/password"
+            )
+            if not password:
+                raise APIError(
+                    code="VAULT_CREDENTIAL_UNAVAILABLE",
+                    message=f"vault credential '{credential_id}' has no password payload",
+                    status_code=502,
+                )
+            data["username"] = str(oauth["username"])
+            data["password"] = password
+        payload, expires_at = await self._token_request(vault_id, credential_id, oauth, data)
+        if expires_at is None:
+            raise APIError(
+                code="VAULT_CREDENTIAL_REFRESH_FAILED",
+                message=(
+                    f"vault credential '{credential_id}' token endpoint returned no expires_in, "
+                    "so the token cannot be renewed before it expires"
+                ),
+                status_code=502,
+            )
+        return payload["access_token"], expires_at
+
+    async def _token_request(
+        self,
+        vault_id: str,
+        credential_id: str,
+        endpoint: Mapping[str, Any],
+        data: dict[str, str],
+    ) -> tuple[dict[str, Any], str | None]:
+        """Post ``data`` to a credential's token endpoint as its client.
+
+        Returns the response, which carries a non-empty ``access_token``, and
+        the expiry its ``expires_in`` gives, if any.
+        """
+        token_endpoint = str(endpoint.get("token_endpoint") or "").strip()
+        scope_key = self._scope(vault_id)
+        auth_method = str(endpoint.get("auth_method") or "none").strip()
+        client_id = str(endpoint.get("client_id") or "").strip()
+        if str(endpoint.get("scope") or "").strip():
+            data["scope"] = str(endpoint["scope"]).strip()
         request_auth = None
         if auth_method == "client_secret_basic":
             client_secret = await self._store().get(
@@ -1186,7 +1193,7 @@ class VaultService:
                 status_code=502,
             )
         payload = response.json()
-        access_token = str(payload.get("access_token") or "").strip()
+        access_token = str(payload.get("access_token") or "").strip() if isinstance(payload, dict) else ""
         if not access_token:
             raise APIError(
                 code="VAULT_CREDENTIAL_REFRESH_FAILED",
@@ -1197,7 +1204,7 @@ class VaultService:
         expires_at = None
         if isinstance(expires_in, (int, float)) and expires_in > 0:
             expires_at = (utcnow() + timedelta(seconds=int(expires_in))).isoformat()
-        return access_token, str(payload.get("refresh_token") or "").strip(), expires_at
+        return {**payload, "access_token": access_token}, expires_at
 
     # ── payload shaping / validation ────────────────────────────────────────
 
@@ -1344,7 +1351,7 @@ class VaultService:
                 "header_name": header_name,
                 "networking": self._validate_header_networking(networking),
             }
-            _take_secret("secret_value", required=True)
+            self._take_environment_value(auth, meta, secrets, partial=partial)
             return meta, secrets
         if str(auth.get("header_name") or "").strip():
             raise _invalid("auth.header_name applies only to delivery=header")
@@ -1373,8 +1380,78 @@ class VaultService:
             if not isinstance(allow_insecure_http, bool):
                 raise _invalid("auth.allow_insecure_http must be a boolean")
             meta["allow_insecure_http"] = allow_insecure_http
-        _take_secret("secret_value", required=True)
+        self._take_environment_value(auth, meta, secrets, partial=partial)
         return meta, secrets
+
+    @staticmethod
+    def _take_environment_value(
+        auth: Mapping[str, Any], meta: dict[str, Any], secrets: dict[str, str], *, partial: bool
+    ) -> None:
+        """An ``environment_variable`` credential's value: stored, or obtained by a grant.
+
+        ``auth.oauth`` names an OAuth2 token endpoint and a grant. The platform
+        then obtains the access token there and renews it before it expires;
+        that token is the value the egress boundary substitutes. Saving the
+        grant forgets the token obtained under the previous configuration.
+        """
+        oauth = auth.get("oauth")
+        value = auth.get("secret_value")
+        if oauth is None:
+            if value is None or str(value) == "":
+                if not partial:
+                    raise _invalid("auth.secret_value is required for type=environment_variable")
+                return
+            secrets["secret_value"] = str(value)
+            return
+        if value is not None and str(value) != "":
+            raise _invalid(
+                "auth.secret_value and auth.oauth are alternatives: a credential's value is "
+                "stored or obtained by a grant. Create a new credential to change which"
+            )
+        if not isinstance(oauth, dict):
+            raise _invalid("auth.oauth must be an object")
+        grant_type = str(oauth.get("grant_type") or "").strip()
+        if grant_type not in _TOKEN_GRANT_TYPES:
+            raise _invalid(f"auth.oauth.grant_type must be one of {list(_TOKEN_GRANT_TYPES)}")
+        auth_method = str(oauth.get("auth_method") or "none").strip()
+        if auth_method not in _REFRESH_AUTH_METHODS:
+            raise _invalid(f"auth.oauth.auth_method must be one of {list(_REFRESH_AUTH_METHODS)}")
+        token_endpoint = str(oauth.get("token_endpoint") or "").strip()
+        endpoint = urlsplit(token_endpoint)
+        if endpoint.scheme not in ("https", "http") or not endpoint.hostname or endpoint.fragment:
+            raise _invalid("auth.oauth.token_endpoint must be an http(s) URL")
+        client_id = str(oauth.get("client_id") or "").strip()
+        if not client_id:
+            raise _invalid("auth.oauth.client_id is required")
+        confidential = auth_method in ("client_secret_basic", "client_secret_post")
+        if grant_type == "client_credentials" and not confidential:
+            raise _invalid(
+                "auth.oauth.auth_method must be client_secret_basic or client_secret_post "
+                "for grant_type=client_credentials: the client's secret is the credential"
+            )
+        username = str(oauth.get("username") or "").strip()
+        if grant_type == "password" and not username:
+            raise _invalid("auth.oauth.username is required for grant_type=password")
+        if grant_type != "password" and (username or oauth.get("password")):
+            raise _invalid("auth.oauth.username and password apply only to grant_type=password")
+        meta["oauth"] = {
+            "token_endpoint": token_endpoint,
+            "client_id": client_id,
+            "auth_method": auth_method,
+            "scope": str(oauth.get("scope") or "").strip() or None,
+            "grant_type": grant_type,
+            "username": username or None,
+        }
+        meta["expires_at"] = None
+        for field, required in (
+            ("password", grant_type == "password"),
+            ("client_secret", confidential),
+        ):
+            given = oauth.get(field)
+            if given is not None and str(given) != "":
+                secrets[field] = str(given)
+            elif required and not partial:
+                raise _invalid(f"auth.oauth.{field} is required")
 
     @staticmethod
     def _validate_networking(networking: Any) -> dict[str, Any]:
@@ -1595,6 +1672,16 @@ class VaultService:
                 key: refresh.get(key)
                 for key in ("token_endpoint", "client_id", "auth_method", "scope")
                 if refresh.get(key) is not None
+            }
+        oauth = auth.get("oauth")
+        if isinstance(oauth, dict):
+            # The expiry is the last token's, renewed on use: not a date the
+            # credential stops working on.
+            view_auth.pop("expires_at", None)
+            view_auth["oauth"] = {
+                key: oauth.get(key)
+                for key in ("token_endpoint", "client_id", "auth_method", "scope", "grant_type", "username")
+                if oauth.get(key) is not None
             }
         return {
             "credential_id": doc.get("credential_id"),

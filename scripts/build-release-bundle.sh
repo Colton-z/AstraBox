@@ -29,6 +29,7 @@ readonly bundle_files=(
   LICENSE
   NOTICE
   containers/compose.yaml
+  containers/settings.reference.env
   containers/postgres/init-databases.sh
   containers/sandbox-edge/default.conf.template
   containers/sandbox-edge/dns-edge.nginx.conf

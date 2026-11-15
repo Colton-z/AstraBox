@@ -1,4 +1,4 @@
-"""Transport opaque Hermes snapshots through the platform-issued capability."""
+"""Transport opaque Assistant runtime-state snapshots through the platform-issued capability."""
 
 from __future__ import annotations
 

@@ -123,7 +123,7 @@ AstraBox 凭证计划会保留目标地址、方法、路径、transport 和安�
 Vault 分配保持 RuntimeProfile 记录原样。RuntimeProfile 网络配置与 Vault 记录生命周期相互
 独立。移除分配会从新沙箱策略中移除它管理的地址授权。
 
-OpenSandbox egress v1.1.7 支持在 HTTPS 443 上拦截凭证；凭证明示允许不安全传输时也支持
+OpenSandbox egress（1.2.1 版本）支持在 HTTPS 443 上拦截凭证；凭证明示允许不安全传输时也支持
 HTTP 80，并且要求 `dns+nft`。它还会校验每个运行时 binding 地址明确可达。因此 adapter
 会把每个已附加的 binding 地址渲染为精确允许规则。该规则在 `unrestricted` 下是冗余项；
 在 `limited` 下则是 Vault 分配携带的地址授权。RuntimeProfile 允许列表无需重复填写。

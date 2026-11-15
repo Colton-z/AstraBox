@@ -131,6 +131,21 @@ async def send_input(session_id: str, request: Request, payload: dict[str, Any] 
     # The inbound half of the platform's delay starts here (see the reader's "input delivered").
     logger.info("input received session=%s at=%.3f", session_id, time.time())
     user = await _resolve_user(request)
+    # A field this route does not take would otherwise be dropped with a 200,
+    # and the caller would believe it took effect: a permission mode sent with
+    # the message changes nothing, since a mode is the Session's, set through
+    # its own route.
+    unknown = sorted(set(payload) - {"content", "client_message_id"})
+    if unknown:
+        raise APIError(
+            code="INVALID_REQUEST",
+            message=(
+                f"unsupported fields: {', '.join(unknown)}; a message takes content and "
+                "client_message_id (set a permission mode with POST "
+                "/api/v1/sessions/{session_id}/permission-mode)"
+            ),
+            status_code=400,
+        )
     content, content_blocks = read_turn_input_content(payload.get("content") or "")
     if turn_input_is_empty(content, content_blocks):
         raise APIError(code="INVALID_REQUEST", message="content is required", status_code=400)

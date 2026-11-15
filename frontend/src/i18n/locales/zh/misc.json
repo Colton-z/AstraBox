@@ -29,6 +29,7 @@
     "queue_sending": "发送中",
     "queue_failed": "发送失败",
     "queue_waiting": "等待发送",
+    "cancelled": "发送方在 Agent 处理前取消了这条消息",
     "retry": "重试",
     "send_again": "重新发送",
     "retry_disabled": "当前会话不可重试",
@@ -170,7 +171,13 @@
     "sandbox_unavailable": "沙箱不可用",
     "sandbox_terminated": "沙箱已终止",
     "sandbox_did_not_receive": "沙箱未接收到该消息",
-    "workspace_hibernated": "沙箱超时后，工作区已暂停；下次打开时会自动恢复。"
+    "workspace_hibernated": "沙箱超时后，工作区已暂停；下次打开时会自动恢复。",
+    "model_account_required": "你还没有默认的 ChatGPT 账号。请在你自己的电脑上运行 `astrabox model-account login chatgpt` 关联一个，或在 控制台 → 模型账号 中选择默认账号。",
+    "model_account_no_owner": "这个对话没有可以使用其 ChatGPT 账号的所有者。使用 ChatGPT 订阅的运行配置只运行已登录用户发起的对话。",
+    "model_account_sign_in_required": "ChatGPT 账号 {{account}} 需要重新登录（{{reason}}）。请在你自己的电脑上运行 `astrabox model-account login chatgpt --account {{account_id}}`；控制台 → 模型账号 中有完整命令。",
+    "model_account_required_anthropic": "你还没有默认的 Anthropic API key。请在 控制台 → 模型账号 中添加，或运行 `astrabox model-account add anthropic`。",
+    "model_account_no_owner_anthropic": "这个对话没有可以使用其 Anthropic API key 的所有者。使用 Anthropic API key 的运行配置只运行已登录用户发起的对话。",
+    "claude_login_required": "这个对话沙箱中的 Claude Code 尚未登录 Claude 账号。请在对话的终端中登录：运行 `{{login}}`，在浏览器中打开它输出的地址并登录，复制页面显示的代码；然后用该代码运行 `{{code}}`。显示登录成功后，重新发送你的消息。登录只保存在这个沙箱中，换用新沙箱后需要重新登录。"
   },
   "prompt_input": {
     "stopping": "停止中",
@@ -263,7 +270,9 @@
       "model": {
         "label": "模型",
         "manage_gateway": "在 {{name}} 管理模型",
-        "help": "填写所选运行配置的模型服务连接所提供的模型 ID"
+        "help": "填写所选运行配置的模型服务连接所提供的模型 ID",
+        "help_chatgpt_plan": "使用 ChatGPT 订阅：所选 ChatGPT 账号可用的模型。对话消耗该账号的订阅额度，而不是模型网关。",
+        "help_anthropic_api_key": "使用你的 Anthropic API key：所选 key 可用的模型。对话消耗该 key，而不是模型网关。"
       },
       "system": {
         "label": "系统提示词",
@@ -307,6 +316,15 @@
       "runtime_profile_name": {
         "label": "运行配置",
         "help": "选择已经保存的运行设置，其中包含 Agent 程序、沙箱设置、网络访问和模型连接。Credential Vault（凭证库）需要另行分配。"
+      },
+      "model_account_id": {
+        "label": "ChatGPT 账号",
+        "help": "你与这个 Agent 的对话使用你已关联的哪个 ChatGPT 账号。其他人的对话使用他们各自的默认账号。",
+        "default": "我的默认账号",
+        "default_named": "我的默认账号（{{account}}）",
+        "needs_sign_in": "{{account}}（需重新登录）",
+        "label_anthropic_api_key": "Anthropic API key",
+        "help_anthropic_api_key": "你与这个 Agent 的对话使用你的哪个 Anthropic API key。其他人的对话使用他们各自的默认 key。"
       },
       "exposure_mode": {
         "label": "使用入口",

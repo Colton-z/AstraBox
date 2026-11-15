@@ -110,7 +110,7 @@ Session 启动时，AstraBox 不会安装通用依赖列表，也不会执行通
 `/opt/gem/run.sh`，配合镜像中安装的 Supervisor 服务。只修改派生镜像的 Docker
 `ENTRYPOINT` 不会改变这条由平台提供的命令。
 
-每个内置镜像还带有 OpenSandbox 的执行服务 execd `v1.1.0`，位于
+每个内置镜像还带有 OpenSandbox 的执行服务 execd（OpenSandbox `1.2.1` 版），位于
 `/opt/astrabox/opensandbox/execd`，旁边是 OpenSandbox 的 `bootstrap.sh` 启动脚本和
 镜像自带的隔离策略 `isolation.toml`。AstraBox 通过端口 `44772` 上的 execd 访问沙箱内的
 文件、命令和长驻进程（例如终端的 shell 和 Pi 程序）：OpenSandbox 会在它创建的每个沙箱中

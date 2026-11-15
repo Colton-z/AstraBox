@@ -439,50 +439,8 @@ async def resolve_agent_mcp_credential_plan(
     )
 
 
-def mcp_credential_refresher(
-    platform: Any,
-    *,
-    session_id: str,
-    template: Any,
-    backend_adapter: Any,
-    sandbox: Any,
-    initial_credential_plan: SandboxEgressCredentialPlan,
-    vault_enabled: bool,
-) -> Callable[[], Awaitable[None]]:
-    """Return the per-root-turn refresh for one running sandbox sidecar."""
-
-    managed_binding_names = {
-        item.name
-        for item in initial_credential_plan.mcp
-        if item.name.startswith("astrabox-mcp-")
-    }
-
-    async def refresh() -> None:
-        plan = await resolve_mcp_credential_plan(
-            platform,
-            session_id=session_id,
-            template=template,
-            vault_enabled=vault_enabled,
-        )
-        if vault_enabled and plan is not None and not plan.is_empty:
-            await backend_adapter.apply_credential_vault(
-                sandbox,
-                vault_write=plan,
-                managed_binding_names=tuple(sorted(managed_binding_names)),
-                create_if_missing=False,
-            )
-            managed_binding_names.update(
-                item.name
-                for item in plan.mcp
-                if item.name.startswith("astrabox-mcp-")
-            )
-
-    return refresh
-
-
 __all__ = [
     "mcp_vault_scope_id",
-    "mcp_credential_refresher",
     "resolve_agent_mcp_credential_plan",
     "resolve_mcp_credential_plan",
 ]

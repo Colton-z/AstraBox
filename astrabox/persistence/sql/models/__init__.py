@@ -18,6 +18,7 @@ from astrabox.persistence.sql.models import (  # noqa: F401 - registration
     artifacts,
     mcp,
     vaults,
+    model_accounts,
     sandboxes,
     sessions,
     satori,

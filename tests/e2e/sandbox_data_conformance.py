@@ -54,7 +54,7 @@ async def run(image: str, engine_kind: str) -> None:
     )
 
     provider = OpenSandboxSandboxProvider()
-    limits, requests = provider.fit_resources(*sandbox_create_resources(shared=False))
+    limits, requests = provider.fit_resources(*sandbox_create_resources(None, shared=False))
     handle = await create_open_sandbox_box(
         environment_name="astrabox",
         session_id=f"e2e-data-contract-{uuid4().hex}",

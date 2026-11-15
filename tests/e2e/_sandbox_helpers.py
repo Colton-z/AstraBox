@@ -740,9 +740,22 @@ def running_sandbox_image(*, endpoint: str) -> str:
     # BatchSandbox records in `sandbox.opensandbox.io/endpoints`; resolving the
     # same record finds the Pod the gateway serves.
     route = [segment for segment in parsed.path.split("/") if segment]
-    if len(route) < 2 or not route[1].isdigit():
+    if len(route) >= 2 and route[1].isdigit():
+        return seen.get(_gateway_route_pod_address(route[0], kubeconfig, namespace), "")
+    # In wildcard mode the route is the hostname's first label instead:
+    # `<sandbox id>-<port>` (or, signed, `<sandbox id>-<port>-<expiry>-<signature>`)
+    # under the gateway's parent domain.
+    wildcard = _WILDCARD_ROUTE_LABEL.match(host.split(".", 1)[0])
+    if wildcard is None:
         return ""
-    return seen.get(_gateway_route_pod_address(route[0], kubeconfig, namespace), "")
+    return seen.get(_gateway_route_pod_address(wildcard.group(1), kubeconfig, namespace), "")
+
+
+#: The first hostname label of an OpenSandbox wildcard gateway route: a sandbox
+#: id (a UUID), its port, then the expiry and signature of a signed route.
+_WILDCARD_ROUTE_LABEL = re.compile(
+    r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})-\d+(?:-[0-9a-z]+-[0-9a-z]+)?$"
+)
 
 
 def _gateway_route_pod_address(sandbox_id: str, kubeconfig: str, namespace: str) -> str:
@@ -1357,7 +1370,6 @@ def send_input(
     content: str | list,
     *,
     client_message_id: str | None = None,
-    permission_mode: str | None = None,
     duplicate: bool = False,
 ) -> dict:
     """Send one message as the console does and return the platform's receipt.
@@ -1366,8 +1378,6 @@ def send_input(
     a new input, the same one again is the earlier input's receipt.
     """
     body: dict = {"content": content, "client_message_id": client_message_id or str(uuid.uuid4())}
-    if permission_mode is not None:
-        body["permission_mode"] = permission_mode
     receipt = data(client.post(f"/api/v1/sessions/{sid}/inputs", json=body))
     assert receipt.get("session_id") == sid and receipt.get("input_id"), (
         f"the input receipt names no input of this session: {receipt}"
@@ -1508,7 +1518,6 @@ def send_and_follow(
     *,
     until: str = "pause",
     client_message_id: str | None = None,
-    permission_mode: str | None = None,
     timeout: float | None = None,
     allow_refusal: bool = False,
 ) -> Reply:
@@ -1520,9 +1529,7 @@ def send_and_follow(
     """
     stream = SessionStream(sid, cursor=output_position(client, sid))
     sent_at, sent_wall = time.monotonic(), time.time()
-    receipt = send_input(
-        client, sid, content, client_message_id=client_message_id, permission_mode=permission_mode
-    )
+    receipt = send_input(client, sid, content, client_message_id=client_message_id)
     reply = Reply(
         session_id=sid,
         input_id=str(receipt["input_id"]),

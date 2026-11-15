@@ -16,6 +16,7 @@ import {
 import type { AssistantExtensionCatalog, AssistantRecord } from '@/assistant/types';
 
 import { ErrorNote } from '@/components/shell';
+import { AssistantOwnerSecretsCard } from './AssistantOwnerSecretsCard';
 import { CatalogExtensionField, sameIds } from './CatalogExtensionField';
 import { ConnectorsCard } from './ConnectorsCard';
 import {
@@ -41,6 +42,7 @@ import {
   assistantEngineLabel,
   assistantHibernatable,
   assistantMaterializing,
+  assistantMissingSecrets,
   assistantStateLabel,
   assistantStateTone,
   assistantWakeable,
@@ -338,6 +340,12 @@ export default function AssistantDetailPage() {
   const state = String(record.workspace_state || 'NOT_MATERIALIZED');
   const notStarted = state === 'NOT_MATERIALIZED';
   const draftRecord = draft as unknown as Record<string, unknown> | undefined;
+  const ownerSecrets = record.runtime?.owner_secrets ?? [];
+  // Connected apps reach the runtime as MCP servers, so a program that declares
+  // no MCP transport has no use for them. The RuntimeProfile list answers
+  // administrators only; without it the page cannot tell and keeps the card.
+  const offersConnectors = environment?.extensions === undefined
+    || environment.extensions.mcp_transports.length > 0;
 
   return (
     <ConsoleRecordPage
@@ -351,7 +359,9 @@ export default function AssistantDetailPage() {
               {t('manage:assistants.materializing')}
             </span>
           )}
-          {assistantWakeable(state) && (
+          {/* The server refuses to start a runtime missing a credential it
+              declares; the Credentials card below is where the owner sets it. */}
+          {assistantWakeable(state) && assistantMissingSecrets(record).length === 0 && (
             <Button
               disabled={actionBusy}
               onClick={() => void runAction(() => wakeAssistantWorkspace(record.assistant_id))}
@@ -432,6 +442,13 @@ export default function AssistantDetailPage() {
           onRemove={() => void removeCatalogSelection()}
         />
       )}
+      {ownerSecrets.length > 0 && (
+        <AssistantOwnerSecretsCard
+          assistantId={record.assistant_id}
+          secrets={ownerSecrets}
+          onSaved={load}
+        />
+      )}
       <ConsoleEditSections
         sections={sections}
         renderField={(field, customField) => {
@@ -479,7 +496,7 @@ export default function AssistantDetailPage() {
           onRevert: () => revertSection(section.fields),
         })}
       />
-      <ConnectorsCard kind="assistant" targetId={record.assistant_id} />
+      {offersConnectors && <ConnectorsCard kind="assistant" targetId={record.assistant_id} />}
     </ConsoleRecordPage>
   );
 }

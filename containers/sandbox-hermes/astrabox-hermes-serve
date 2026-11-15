@@ -53,6 +53,17 @@ DEADLINE_SECONDS="${ASTRABOX_HERMES_PROFILE_WAIT_SECONDS:-1800}"
 # supervisord's restarts would stand in for a wait.
 profile_ready() {
   local env_file="$1"
+  # Until platform provisioning publishes the box's initialization marker
+  # (LAYOUT.marker in hermes_state_bootstrap.py), and for the mirror until the
+  # daemon's restore writes its receipt beside the env file (RECEIPT_NAME in
+  # astrabox_state_gate.py), the checks below can only answer "not yet".
+  # Testing for the files first keeps this wait from starting interpreters
+  # every second in each of the three services while the box boots on its one
+  # CPU.
+  [ -e /run/astrabox-hermes/profile-ready.json ] || return 1
+  if [ "$mode" = mirror ]; then
+    [ -e "$(dirname "$env_file")/astrabox-runtime-state-restored.json" ] || return 1
+  fi
   "${HERMES_VENV}/bin/python" /opt/astrabox/hermes/hermes_state_bootstrap.py \
     ready --profile-env "$env_file" || return $?
   if [ "$mode" = mirror ]; then

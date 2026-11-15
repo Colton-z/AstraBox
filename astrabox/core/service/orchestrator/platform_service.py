@@ -701,9 +701,14 @@ class AgentPlatformService:
         *,
         limit: int = 50,
         cursor: str | None = None,
+        agent_ids: list[str] | None = None,
+        runtime_statuses: list[str] | None = None,
     ) -> dict[str, Any]:
         await self._ensure_session_list_bootstrap()
-        return await self.session_reads.sessions_page(user, limit=limit, cursor=cursor)
+        return await self.session_reads.sessions_page(
+            user, limit=limit, cursor=cursor,
+            agent_ids=agent_ids, runtime_statuses=runtime_statuses,
+        )
 
     async def get_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
@@ -811,6 +816,13 @@ class AgentPlatformService:
         control_ref = await self.session_reads.child_run_stop_control(user, session_id, child_run_id)
         receipt = await self.session_runtime.stop_child_run(user, session_id, control_ref)
         return {**receipt, "child_run_id": child_run_id}
+
+    async def stop_session_background_task(
+        self, user: UserContext, session_id: str, task_id: str
+    ) -> dict[str, Any]:
+        """Hand a background task's stop to the runtime through the session's reader."""
+        await self.ensure_bootstrap()
+        return await self.session_runtime.stop_background_task(user, session_id, task_id)
 
     # ── Session sharing (delegated to session_share_service) ─────────────────
     async def create_session_share(

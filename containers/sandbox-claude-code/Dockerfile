@@ -262,10 +262,6 @@ ENV IS_SANDBOX=1 \
 # owns making that mount writable by uid 1000, which is why the uid is fixed.
 WORKDIR /workspace
 
-# Foreground commands wait for execd to drain their SSE stream. Match the
-# supplier's 200ms drain without changing command execution timeouts.
-ENV EXECD_API_GRACE_SHUTDOWN=200ms
-
 # Image-owned static previews use nginx's expiring links and no-symlink file opens.
 COPY --chmod=u=rwX,go=rX containers/workspace-viewer/nginx.conf /opt/astrabox/workspace-viewer/nginx.conf
 COPY --chmod=0555 containers/workspace-viewer/astrabox-workspace-viewer /usr/local/bin/astrabox-workspace-viewer
@@ -274,3 +270,65 @@ RUN apt-get update && apt-get install -y --no-install-recommends nginx-extras &&
     rm -rf /var/lib/apt/lists/* && \
     nginx -V 2>&1 | grep -q -- --with-http_secure_link_module && \
     python3 -c "import ast; ast.parse(open('/usr/local/bin/astrabox-workspace-viewer').read())"
+
+# ── container engine ──────────────────────────────────────────────────────
+#
+# Rootless Docker Engine with its CLI, BuildKit (buildx) and Compose, for a
+# RuntimeProfile that sets sandbox_container_engine to docker. The image's own
+# supervisord program starts it at boot, and only when the create set
+# ASTRABOX_CONTAINER_ENGINE=docker (containers/container-engine). Every package
+# is pinned to an exact version from Docker's apt repository, whose signing key
+# is checked by fingerprint; uidmap supplies the setuid newuidmap/newgidmap the
+# engine maps its id range with, slirp4netns its user-mode network, and
+# dnsmasq-base the resolver its containers ask, which knows the box's
+# /etc/hosts names.
+ARG DOCKER_VERSION=29.9.3
+ARG CONTAINERD_VERSION=2.4.2-4
+ARG DOCKER_BUILDX_VERSION=0.39.0-1
+ARG DOCKER_COMPOSE_VERSION=5.7.1-1
+RUN set -eux; \
+    . /etc/os-release; \
+    suffix="~ubuntu.${VERSION_ID}~${VERSION_CODENAME}"; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg uidmap slirp4netns iptables dnsmasq-base; \
+    install -d -m 0755 /etc/apt/keyrings; \
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc; \
+    keyring="$(mktemp -d)"; \
+    GNUPGHOME="${keyring}" gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc \
+      | grep -qx 'fpr:::::::::9DC858229FC7DD38854AE2D88D81803C0EBFCD88:'; \
+    rm -rf "${keyring}"; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable" \
+      > /etc/apt/sources.list.d/docker.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      "docker-ce=5:${DOCKER_VERSION}-1${suffix}" \
+      "docker-ce-cli=5:${DOCKER_VERSION}-1${suffix}" \
+      "docker-ce-rootless-extras=5:${DOCKER_VERSION}-1${suffix}" \
+      "containerd.io=${CONTAINERD_VERSION}${suffix}" \
+      "docker-buildx-plugin=${DOCKER_BUILDX_VERSION}${suffix}" \
+      "docker-compose-plugin=${DOCKER_COMPOSE_VERSION}${suffix}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    docker --version | grep -F " ${DOCKER_VERSION},"; \
+    dockerd --version | grep -F " ${DOCKER_VERSION},"; \
+    docker buildx version; \
+    docker compose version; \
+    for tool in dockerd-rootless.sh rootlesskit slirp4netns unshare mountpoint dnsmasq nsenter ss; do command -v "${tool}"; done; \
+    test -u /usr/bin/newuidmap; \
+    test -u /usr/bin/newgidmap; \
+    ! getent passwd 1000; \
+    ! getent group 1000; \
+    install -d -o 1000 -g 1000 -m 0700 /var/lib/astrabox/container-engine
+COPY --chmod=0555 containers/container-engine/astrabox-container-engine /usr/local/bin/astrabox-container-engine
+COPY --chmod=u=rwX,go=rX containers/container-engine/supervisord.container-engine.conf \
+     /opt/gem/supervisord/supervisord.container-engine.conf
+# The engine's boot strips every setuid and setgid bit but the two id-mapping
+# helpers (astrabox-container-engine, "serve"). Finding them means walking the
+# whole root filesystem, which takes over a minute in a 1 CPU box and is the
+# same answer for every box of this image, so it is done once here. This must
+# stay the last step that can add a file to the image.
+RUN bash -n /usr/local/bin/astrabox-container-engine && \
+    find / -xdev -type f -perm /6000 \
+        ! -path /usr/bin/newuidmap ! -path /usr/bin/newgidmap -print0 \
+        > /opt/astrabox/container-engine-setuid-files && \
+    chmod 0444 /opt/astrabox/container-engine-setuid-files && \
+    test -u /usr/bin/newuidmap && test -u /usr/bin/newgidmap

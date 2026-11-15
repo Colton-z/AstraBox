@@ -122,6 +122,11 @@ class Session(Base):
 
     permission_mode: Mapped[str | None] = mapped_column(payload_text())
     model_name: Mapped[str | None] = mapped_column(payload_text())
+    #: The model account whose access token the sandbox spends, on a model
+    #: endpoint paid by the conversation's owner (the ChatGPT plan). The
+    #: platform changes it only between responses, so it names the account the
+    #: last response spent.
+    model_account_id: Mapped[str | None] = mapped_column(payload_text())
     slash_commands: Mapped[list[Any] | None]
     slash_command_details: Mapped[list[Any] | None]
     engine_capabilities: Mapped[dict[str, Any] | None]
@@ -135,6 +140,9 @@ class Session(Base):
     last_output_at: Mapped[datetime | None]
     runtime_status: Mapped[str | None] = mapped_column(payload_text())
     runtime_status_at: Mapped[datetime | None]
+    #: The background tasks the runtime reported with ``runtime_status``: each
+    #: ``task_id``, the engine's ``kind`` and its ``description``.
+    runtime_background_tasks: Mapped[list[dict[str, Any]] | None] = mapped_column(payload_json())
 
     # The box this conversation runs in.
     sandbox_backend: Mapped[str | None] = mapped_column(payload_text())
@@ -163,6 +171,10 @@ class Session(Base):
     runtime_unavailable: Mapped[bool] = mapped_column(server_default=text("false"))
     recovery_reason: Mapped[str | None] = mapped_column(payload_text())
     last_error: Mapped[str | None] = mapped_column(payload_text())
+    #: The registered error code of ``last_error``, when the failure had one
+    #: (a failed start always does). Written with it: the repository clears it
+    #: whenever ``last_error`` is written without one.
+    last_error_code: Mapped[str | None] = mapped_column(payload_text())
     startup_progress: Mapped[str | None] = mapped_column(payload_text())
     startup_user_action: Mapped[dict[str, Any] | None]
     runtime_recovery_owner: Mapped[str | None] = mapped_column(payload_text())
@@ -332,7 +344,8 @@ class SessionControl(Base):
 
     control_id: Mapped[str] = mapped_column(KeyText(128), primary_key=True)
     session_id: Mapped[str] = mapped_column(ForeignKey(_SESSION_FK, ondelete="CASCADE"))
-    #: ``interrupt`` or ``stop_child`` (``target`` is the runtime's sub-agent handle).
+    #: ``interrupt``, ``cancel_input``, ``stop_child`` (``target`` is the runtime's
+    #: sub-agent handle) or ``stop_background`` (``target`` is a background task's id).
     kind: Mapped[str] = mapped_column(payload_text())
     target: Mapped[str | None] = mapped_column(payload_text())
     reader_generation: Mapped[int] = mapped_column(BigInteger)

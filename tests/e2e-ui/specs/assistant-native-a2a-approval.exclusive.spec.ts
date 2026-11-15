@@ -151,6 +151,9 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   sessions.push(targetId);
   const before = await getTask(request, taskId, remaining());
   evidence.before = before;
+  // What names the task. Its conversation's title is not part of that: the
+  // platform retitles the conversation once its response ends (docs/a2a.md).
+  const { session_title: _title, ...identity } = before.metadata as Record<string, unknown>;
   expect(before.status.state).toBe('TASK_STATE_INPUT_REQUIRED');
   const pending = interaction(before);
   expect(pending.presentation).toBe('decision');
@@ -179,7 +182,7 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
     const task = await getTask(request, taskId, remaining());
     expect(task.status.state).toBe('TASK_STATE_INPUT_REQUIRED');
     expect(interaction(task).interaction_id).toBe(interactionId);
-    expect(task.metadata).toMatchObject(before.metadata);
+    expect(task.metadata).toMatchObject(identity);
     const absent = await request.get(apiPath(`/sessions/${targetId}/files/download?path=${encodeURIComponent(path)}`),
       { timeout: Math.min(10_000, remaining()) });
     expect(absent.status(), 'the requested file must not exist until the native authorization is answered').toBe(404);
@@ -242,7 +245,7 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   evidence.after = after;
   expect(after.id).toBe(before.id);
   expect(after.contextId).toBe(before.contextId);
-  expect(after.metadata).toMatchObject(before.metadata);
+  expect(after.metadata).toMatchObject(identity);
   expect(await api.downloadFileText(targetId, path, Math.min(10_000, remaining()))).toBe(marker);
   const answered = sessionInteractionRows(targetId).find((row) => row.interaction_id === interactionId)!;
   expect(answered, 'the one-time authorization answered the response that asked')

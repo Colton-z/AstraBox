@@ -102,7 +102,7 @@ function quotaBackend(overrides: Partial<AdminSandboxQuotaBackend> = {}): AdminS
       concurrent_creates: 2,
       sources: {
         boxes: 'configured',
-        memory: 'derived: host memory 15.6Gi less 4Gi for the platform and the host',
+        memory: 'derived from host memory',
         cpu: 'unlimited (unset)',
         concurrent_creates: 'configured',
       },
@@ -300,11 +300,12 @@ describe('the quota card', () => {
     expect(within(sandboxes).getByText('5 / 5')).toBeTruthy();
     expect(within(sandboxes).getByText('Configured')).toBeTruthy();
     // Five sandboxes of 1Gi + 128Mi against the ceiling derived from host
-    // memory; how it was derived is the quota's own account, quoted as given.
+    // memory, which no operator chose: the card says what it is and what it
+    // leaves out, because the host may run other software it does not count.
     const memory = reading(card, 'Memory');
     expect(within(memory).getByText('5.6 Gi / 11.6 Gi')).toBeTruthy();
     expect(
-      within(memory).getByText('derived: host memory 15.6Gi less 4Gi for the platform and the host'),
+      within(memory).getByText(/this host's whole memory less 4 GiB.*ASTRABOX_SANDBOX_QUOTA_MEMORY/),
     ).toBeTruthy();
     const creates = reading(card, 'Concurrent creates');
     expect(within(creates).getByText('1 / 2')).toBeTruthy();

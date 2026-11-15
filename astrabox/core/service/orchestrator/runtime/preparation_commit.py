@@ -15,7 +15,7 @@ from astrabox.common.utils.user_context import (
 )
 from astrabox.core.service.orchestrator.agent_access import can_manage_agent
 from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
-from astrabox.core.service.orchestrator.assistant.assistant_layers import LAYER_RUNTIME_FIELDS
+from astrabox.core.service.orchestrator.assistant.assistant_layers import layers_for_engine
 from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.agent_repository import _GENERATION_FENCE
 from astrabox.persistence.repository.preparation_subject_repository import (
@@ -30,13 +30,16 @@ def _owner(subject: PreparationSubject, state: PreparationSubjectState) -> str:
     return str(state.definition["owner_id" if subject.kind == "assistant" else "created_by"])
 
 
-def _revision(subject: PreparationSubject, state: PreparationSubjectState) -> str:
+async def _revision(subject: PreparationSubject, state: PreparationSubjectState) -> str:
+    """The revision as the runtime view resolves it, from the locked rows."""
     if subject.kind == "agent":
         return str(state.definition["version"])
-    return AgentConfigService._assistant_revision(
-        state.definition, state.environment,
-        layers=[{key: layer.get(key) for key in LAYER_RUNTIME_FIELDS} for layer in state.layers],
+    layers = await layers_for_engine(
+        [("", layer) for layer in state.layers],
+        str(state.environment.get("engine_kind") or "").strip(),
+        state.runtime_profiles,
     )
+    return AgentConfigService._assistant_revision(state.definition, state.environment, layers=layers)
 
 
 def _authorize(
@@ -85,10 +88,13 @@ class _CommitGuard:
         if await connection.get_isolation_level() != "READ COMMITTED":
             raise ValueError("preparation guard requires READ COMMITTED isolation")
         state = await lock_subject(connection, self.subject)
-        self._validate_state(state)
+        await self._validate_state(state)
 
-    def _validate_state(self, state: PreparationSubjectState) -> None:
-        if _owner(self.subject, state) != self.owner_user_id or _revision(self.subject, state) != self.revision:
+    async def _validate_state(self, state: PreparationSubjectState) -> None:
+        if (
+            _owner(self.subject, state) != self.owner_user_id
+            or await _revision(self.subject, state) != self.revision
+        ):
             raise subject_conflict()
         if self.requester is not None:
             _authorize(self.subject, state, *self.requester)
@@ -168,8 +174,8 @@ async def issue_preparation_commit_guard(*, subject: PreparationSubject) -> Prep
         state = await lock_subject(connection, subject)
         _authorize(subject, state, *requester)
         guard = _CommitGuard(
-            subject=subject, owner_user_id=_owner(subject, state), revision=_revision(subject, state),
+            subject=subject, owner_user_id=_owner(subject, state), revision=await _revision(subject, state),
             requester=requester,
         )
-        guard._validate_state(state)
+        await guard._validate_state(state)
         return guard

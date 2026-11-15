@@ -125,6 +125,10 @@ def _column_values(values: Mapping[str, Any]) -> dict[str, Any]:
         if key not in _COLUMNS:
             raise KeyError(f"sessions has no column {key!r}")
         stored[key] = from_iso(value) if key in _TIME_COLUMNS else value
+    # The code names the error the message describes, so a message written
+    # without its code must not keep the previous error's.
+    if "last_error" in stored and "last_error_code" not in stored:
+        stored["last_error_code"] = None
     return stored
 
 
@@ -603,8 +607,15 @@ class SessionRepository:
     async def list_user_sessions_page(
         self, user_id: str, *, limit: int = 50, cursor: str | None = None,
         agent_ids: list[str] | None = None, query: str = "",
+        runtime_statuses: list[str] | None = None,
     ) -> dict[str, Any]:
-        """One page of the user's visible sessions, newest activity first."""
+        """One page of the user's visible sessions, newest activity first.
+
+        ``agent_ids`` and ``runtime_statuses`` each keep the sessions of one of
+        the given Agents, or whose runtime last reported one of the given
+        statuses; a session whose runtime has reported nothing counts as
+        ``idle``.
+        """
         page_limit = max(1, min(int(limit or 50), 100))
         conditions: list[ColumnElement[bool]] = [
             _SESSIONS.c.user_id == user_id,
@@ -615,6 +626,10 @@ class SessionRepository:
             conditions.append(_SESSIONS.c.agent_id.in_(agent_ids))
         if query.strip():
             conditions.append(_SESSIONS.c.title.icontains(query.strip(), autoescape=True))
+        if runtime_statuses is not None:
+            conditions.append(
+                func.coalesce(_SESSIONS.c.runtime_status, "idle").in_(runtime_statuses)
+            )
         position = _decode_session_list_cursor(cursor)
         if position is not None:
             at = from_iso(position["updated_at"])
@@ -731,6 +746,14 @@ class SessionRepository:
             .limit(limit)
         )
 
+    async def find_agent_conversations_holding_boxes(self, agent_id: str) -> list[dict[str, Any]]:
+        """The Agent's conversations whose row still names a box."""
+        return await _many(
+            _selected().where(
+                _live(), _SESSIONS.c.agent_id == agent_id, _SESSIONS.c.sandbox_id.isnot(None)
+            )
+        )
+
     async def list_assistant_conversations(self, user_id: str, assistant_id: str) -> list[dict[str, Any]]:
         """The owner's visible conversations with one Assistant."""
         return await _many(
@@ -741,6 +764,20 @@ class SessionRepository:
                 _live(),
             )
         )
+
+    async def latest_workspace_starter(self, assistant_id: str) -> dict[str, Any] | None:
+        """The newest hidden Session that started one Assistant's workspace."""
+        rows = await _many(
+            _selected()
+            .where(
+                _SESSIONS.c.owner_type == "assistant_workspace",
+                _SESSIONS.c.owner_id == assistant_id,
+                _SESSIONS.c.hidden.is_(True),
+            )
+            .order_by(_SESSIONS.c.created_at.desc())
+            .limit(1)
+        )
+        return rows[0] if rows else None
 
     async def list_agent_runtime_references(
         self, agent_ids: list[str], *, connection: AsyncConnection | None = None

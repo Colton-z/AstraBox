@@ -33,9 +33,15 @@ container runtime, or cluster network described there.
 ## Run sandboxes on Kubernetes
 
 Install the OpenSandbox controller and CRDs, then create the namespace where
-sandbox Pods will run. AstraBox checks that the namespace, selected workload
-CRD, Kubernetes API access, and required permissions are available; it does not
-create cluster-scoped resources or namespaces.
+sandbox Pods will run. AstraBox's bundled lifecycle server is opensandbox-server
+1.2.1, and OpenSandbox ships its server, controller, CRDs, ingress Gateway and
+images as one release, so install them from the same release: render the charts
+under `manifests/charts/` at the `release-1.2.1` tag and use the
+`opensandbox/<component>:release-1.2.1` images. The `agent-sandbox` workload
+type needs Agent Sandbox 1.0 (`agents.x-k8s.io/v1beta1`). AstraBox checks that
+the namespace, selected workload CRD, Kubernetes API access, and required
+permissions are available; it does not create cluster-scoped resources or
+namespaces.
 
 The maintained Compose overlay runs AstraBox outside the cluster and creates
 sandbox Pods inside it. Copy a kubeconfig to a location readable by the
@@ -97,6 +103,21 @@ service is exposed beyond a trusted loopback network. The bundled lifecycle
 service listens only inside the AstraBox container and does not need a second
 public endpoint.
 
+On Kubernetes, set `terminationGracePeriodSeconds: 1` under
+`spec.template.spec` in the service's BatchSandbox template
+(`kubernetes.batchsandbox_template_file`). AstraBox counts a sandbox as
+destroyed only once the service no longer lists it, and waits up to 20 seconds
+for that. OpenSandbox 1.2.1 deletes a BatchSandbox with foreground
+propagation, so the sandbox stays listed until its Pod is gone. Under the
+Kubernetes default of 30 seconds, the Pod waits for the image's services to
+stop, about 15 seconds for the Hermes image, and every deletion or Assistant
+hibernation waits with it; a slower stop fails a session deletion with
+`SESSION_SANDBOX_DESTRUCTION_UNCONFIRMED`. AstraBox saves what it keeps from a
+box before it deletes the box, so nothing in the Pod needs a graceful stop.
+The bundled lifecycle service writes this setting into the template it
+renders. With the `agent-sandbox` workload provider it renders no template, and
+Pods keep the default.
+
 Persistent workspaces (`ASTRABOX_SANDBOX_WORKSPACE_VOLUME`) with an existing
 service require its Kubernetes runtime. OpenSandbox's Docker runtime mounts a
 volume sub-path by binding that directory under the volume's Docker mount
@@ -133,14 +154,18 @@ workspace layout. The deployment selects CPU and memory limits and scheduling
 requests through `ASTRABOX_SANDBOX_*` for conversation-owned boxes,
 `ASTRABOX_SHARED_SANDBOX_*` for Agent-shared boxes, and
 `ASTRABOX_ASSISTANT_SANDBOX_*` for Assistant workspace boxes. See the defaults in
-[Configuration](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md). Each kind uses its one recipe for cold,
-prepared, and replacement creation; these are not RuntimeProfile fields. The
-provider-fitted limits and requests are part of an Agent's prepared generation,
-so a resource change retires unclaimed capacity without resizing Session-owned
-boxes. When the bundled lifecycle server runs sandboxes on this host's Docker,
-the CPU limit is lowered to the host's CPU count, because Docker refuses a limit
-above it; on Kubernetes, and with an existing OpenSandbox service, the recipe is
-sent as is. Disk, GPU access, and cluster admission remain OpenSandbox deployment
+[Configuration](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md). A RuntimeProfile's
+`sandbox_cpu` and `sandbox_memory` replace those limits for every box of the
+profile ([Sandbox size](../runtime-profiles.md#sandbox-size)). Each box uses
+one recipe for cold, prepared, and replacement creation, and both runtimes
+receive it the same way: limits as the create's `resource` and requests as its
+`resource_requests`. The provider-fitted limits and requests are part of an
+Agent's prepared generation, so a resource change retires unclaimed capacity
+without resizing Session-owned boxes. When the bundled lifecycle server runs
+sandboxes on this host's Docker, a CPU limit above the host's CPU count is
+lowered to that count, because Docker refuses a limit above it, and saving a
+RuntimeProfile whose CPU would be lowered is refused; on Kubernetes, and with
+an existing OpenSandbox service, the recipe is sent as is. Disk, GPU access, and cluster admission remain OpenSandbox deployment
 concerns.
 
 ## Use prewarmed capacity
@@ -177,6 +202,13 @@ its own Linux user and workspace, but the conversations share a container and
 network namespace. It therefore requires the advanced sandbox permission level
 and an OpenSandbox deployment configured for isolated sessions.
 
+The advanced level asks OpenSandbox for its execd-isolation extension. On
+Docker, OpenSandbox creates such a sandbox with `SYS_ADMIN`, without seccomp
+and AppArmor confinement, and with no masked or read-only paths under `/proc`
+and `/sys`, so that each isolated session can mount its own `/proc`. A process
+that gains root in such a sandbox can change kernel settings of the Docker
+host; give this level only to trusted teams.
+
 Every bundled Agent program runs each conversation under its own account in
 shared-sandbox mode. AstraBox refuses a claimed sandbox that cannot attest
 isolated-session support; it does not fall back to unisolated execution.
@@ -187,7 +219,8 @@ A RuntimeProfile can pause an idle sandbox instead of terminating it when the
 OpenSandbox deployment supports snapshots. Pause commits the sandbox root
 filesystem to an OCI image and releases its compute. Resume keeps the sandbox
 ID and restores the files, but starts new processes; ordinary process memory is
-not restored.
+not restored. A sandbox with a [container engine](#container-engine-kubernetes)
+cannot be paused on Kubernetes.
 
 The supported Kubernetes path requires:
 
@@ -203,9 +236,25 @@ for production RuntimeProfiles:
 astrabox verify-opensandbox-snapshots
 ```
 
-For Linux overlayfs nodes, the optional
-[snapshot differ](opensandbox-snapshot-differ.md) avoids scanning unchanged
-parent image files when creating snapshots.
+A pause lasts as long as its commit, and the box is frozen meanwhile.
+containerd's default differ compares the box with its image file by file and
+reads the content of every file whose timestamp has whole-second precision,
+which includes every file unpacked from an image layer. The commit therefore
+reads the whole image, however little the box changed, at the speed of the
+node's disk. OpenSandbox gives each commit `--commit-job-timeout` (Helm value
+`controller.snapshot.commitJobTimeout`, ten minutes by default) and returns
+the box to Running, files intact, when that runs out. A node that cannot read
+the Agent image within it never pauses; the verification above, run with
+`--image` set to the Agent image, shows whether the default deadline is enough.
+AstraBox waits for the controller's outcome: a
+conversation whose box is still pausing keeps it, and its next message resumes
+the box once the commit completes.
+
+When the commit does not fit, either raise the commit timeout or, on Linux
+overlayfs nodes, install AstraBox's
+[snapshot differ](opensandbox-snapshot-differ.md), which builds the layer from
+the container's writable layer instead of reading the image. OpenSandbox does
+not ship a differ of its own.
 
 Apply a retention policy to the snapshot registry. Deleting OpenSandbox
 snapshot metadata does not by itself garbage-collect the OCI image data. See
@@ -246,6 +295,14 @@ to the SDK. AstraBox does not configure a deployment-wide egress token. See
 [Protect credentials used by Agents](../egress-credential-injection.md) for
 the supported request matches and verification flow.
 
+The deployment's sidecar image (`ASTRABOX_SANDBOX_EGRESS_IMAGE`) is, by
+default, the release's `egress` image: OpenSandbox egress 1.2.1 with one addon,
+loaded through its `OPENSANDBOX_EGRESS_MITMPROXY_SCRIPT` hook, that decrypts
+HTTPS only to hosts a credential is bound to in that sandbox
+(`containers/egress/decrypt_bound_hosts.py`). OpenSandbox's own image decrypts
+every HTTPS connection, which breaks any client that does not trust its
+certificate authority, such as a container the Agent runs in its sandbox.
+
 OpenSandbox does not offer
 [header delivery](../egress-credential-injection.md#header-delivery) for
 environment-variable credentials. Its credential substitution names whole
@@ -266,6 +323,376 @@ descendants, and `GET`, `HEAD`, or `POST`. Credentials are not injected into
 other repository paths. This is an authentication method, not a Git-specific
 engine capability. See the [Vault configuration example](../credentials.md#2-add-a-credential)
 and OpenSandbox's [native Git credential guide](https://github.com/opensandbox-group/OpenSandbox/blob/2f03f68c25644a68fee31d0759915de0b104b4ca/docs/guides/credential-vault.md#git-and-curl-with-vault-injected-credentials).
+
+## Run a container engine in sandboxes {#container-engine}
+
+A RuntimeProfile whose `sandbox_container_engine` is `docker` gets a rootless
+Docker Engine in each sandbox ([RuntimeProfiles](../runtime-profiles.md#container-engine)).
+Only the bundled lifecycle server creates such a sandbox, on either of its
+runtimes; an existing OpenSandbox service is refused when the RuntimeProfile
+is saved. The create carries the `advanced` level's execd-isolation extension
+and a create metadata entry `astrabox.container-engine=docker`, which
+OpenSandbox copies onto the container or Pod as a label. A hook of the bundled
+server keyed on that label grants the engine what it needs, to that sandbox
+only; every other sandbox is created as before. The sandbox is returned once
+`astrabox-container-engine ready` succeeds in it; otherwise it is deleted and
+the create fails with `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` and the sandbox's
+own diagnosis.
+
+The engine's containers resolve names through a resolver of the engine's
+own. `astrabox-container-engine` starts `dnsmasq` with the daemon, in the
+network namespace the containers share, and names it to `dockerd` as their
+DNS server: a container on the default bridge finds it in `resolv.conf`, and
+Docker's embedded server forwards to it for a container on a user-defined
+network. It answers from the sandbox's `/etc/hosts`, which holds the names of
+the [host networks](#join-docker-networks) the sandbox joined, and forwards
+every other name to the sandbox's nameservers. That query leaves through the
+sandbox's network namespace, where the egress sidecar redirects it to its DNS
+proxy as it redirects the sandbox's own, so the RuntimeProfile's network
+access rules still decide which names resolve. The resolver keeps no cache:
+every lookup reaches the proxy, which admits the addresses it answers for. It
+cannot run in the sandbox's own namespace, where the sidecar redirects every
+packet to port 53, whatever its address, to that proxy, which serves no host
+records. If the resolver stops, the engine stops with it and starts again.
+On Kubernetes, where a sandbox joins no host networks, its `/etc/hosts`
+holds the Pod's own entries and every other name goes to the Pod's
+nameservers.
+
+### On Docker {#container-engine-docker}
+
+The create also carries a Docker volume of its own mounted at
+`/var/lib/astrabox/container-engine` with `deleteOnSandboxTermination`, where
+the engine keeps its images, containers and build cache. A hook of the bundled
+server (`name_container_engine_volumes`) names it
+`astrabox-container-engine-<sandbox id>`. OpenSandbox deletes it with the
+sandbox, and it is reclaimed with OpenSandbox's own
+`opensandbox-runtime-<sandbox id>` volume when the sandbox's container was
+removed outside the lifecycle server, as by `docker rm -f`: when the sandbox
+expires, when it is deleted through the lifecycle API, or when the server
+starts and finds its egress sidecar without it.
+
+A sandbox whose container and egress sidecar were both removed while the
+lifecycle server was not running, or before a server restart, reaches none of
+those, and both volumes stay. List the volumes the server created whose
+sandbox no longer exists, check the list, then remove them:
+
+```bash
+for v in $(docker volume ls -q --filter label=opensandbox.io/volume-managed-by=server); do
+  case "$v" in
+    astrabox-container-engine-*) id=${v#astrabox-container-engine-} ;;
+    opensandbox-runtime-*) id=${v#opensandbox-runtime-} ;;
+    *) continue ;;
+  esac
+  [ -z "$(docker ps -aq --filter "label=opensandbox.io/id=$id")" ] && echo "$v"
+done
+# then: docker volume rm <volume> ...
+```
+
+A sandbox being created holds its volumes for a moment before its container
+exists, so remove only volumes still listed when you run the loop again a
+minute later. On a Docker daemon shared with another AstraBox installation the
+list includes that installation's volumes too, with the same rule.
+
+OpenSandbox's Docker runtime creates every sandbox that carries the
+execd-isolation extension with empty `MaskedPaths` and `ReadonlyPaths`, which
+the engine's inner containers need to mount their own `/proc`. It has no create
+field for `no-new-privileges`, so a hook of the bundled server
+(`grant_container_engine_boxes` in `astrabox/deploy/sandbox_server.py`) removes
+that option from a container carrying the label, refuses one created without
+execd isolation, and checks at startup that the server still empties both path
+lists.
+
+### On Kubernetes {#container-engine-kubernetes}
+
+The hook (`grant_container_engine_pods` in `astrabox/deploy/sandbox_server.py`)
+edits the BatchSandbox the server builds for a sandbox carrying the label:
+
+- `hostUsers: false`. The Pod runs in a user namespace of its own, so its root
+  and every id the engine maps are unprivileged ids of the node.
+- `procMount: Unmasked` on the sandbox container. Each inner container mounts
+  its own `/proc`, which the kernel refuses while any part of the sandbox's
+  `/proc` is covered; Kubernetes accepts `Unmasked` only with
+  `hostUsers: false`.
+- An `emptyDir` at `/var/lib/astrabox/container-engine` for images, containers
+  and build cache. It has no size limit, because AstraBox has no per-sandbox
+  disk setting to derive one from; the node's kubelet storage and its
+  ephemeral-storage eviction bound it.
+- The tun device node `ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH` names,
+  at `/dev/net/tun`, for the engine's user-mode network.
+
+The `advanced` level's grants stay: `SYS_ADMIN`, which `newuidmap` needs to
+write the engine's id map, seccomp and AppArmor unconfined, and the dropped
+`NET_ADMIN` and `NET_RAW`. The egress sidecar and execd's privileged init
+container run in the Pod's user namespace too, and the sidecar's rules apply
+to every inner container's traffic. Only the `batchsandbox` workload provider
+runs the hook; with `agent-sandbox`, a RuntimeProfile with the engine is
+refused.
+
+Root in such a sandbox is root of the Pod's user namespace only. Its `/proc` is
+unmasked, but writing a host-wide kernel setting such as
+`/proc/sys/kernel/sysrq`, or reading `/proc/kcore`, is refused.
+
+Each Pod gets its own range of node ids, but the kubelet mounts its volumes
+idmapped, so a file the sandbox writes to [RuntimeProfile storage](#kubernetes-mounts)
+is owned on the node by the id it has in the sandbox: 1000 for the bundled
+images' workload account, also for a file an inner container writes as its
+root, which the rootless engine maps to that account. A later sandbox reads
+and writes the file with the same id.
+
+Such a sandbox cannot be paused, so a RuntimeProfile with the engine must set
+`idle_action` to `terminate`; `pause` is refused when it is saved. A pause
+commits the sandbox's writable layer with its files owned by the node ids of
+the Pod's user namespace, and the kubelet gives the resumed Pod a different
+range: every file written before the pause comes back owned by an unmapped id
+(shown as 65534), the restored egress sidecar cannot start, and OpenSandbox
+fails the resume. Neither OpenSandbox's committer nor AstraBox's
+[snapshot differ](opensandbox-snapshot-differ.md) maps the ids back.
+
+The cluster must meet these prerequisites before the variable is set:
+
+| Prerequisite | Why |
+|---|---|
+| Kubernetes 1.33 or later with user namespaces (`UserNamespacesSupport`) | `hostUsers: false` and the kubelet's `userNamespaces.idsPerPod`, which 1.33 added. |
+| containerd 2.0 and runc 1.2, or later | The CRI and OCI runtimes that support Pod user namespaces. CRI-O 1.25 and crun 1.9 support them too; they are not tested with this capability. |
+| Linux 6.3 or later | The kubelet mounts every volume of a user-namespaced Pod idmapped, and tmpfs, which Secrets use, supports that from 6.3. |
+| Linux 6.12 or later, with a workspace volume | A sandbox mounts its workspace from `ASTRABOX_SANDBOX_WORKSPACE_VOLUME` through a [mergerfs view](../deploy.md#where-conversation-workspaces-live), which is a FUSE mount. The kernel idmaps a FUSE mount from 6.12, and only when its server allows it with kernel permission checks on; the helper's mergerfs does both by default (`allow-idmap`, `kernel-permissions-check`). On an earlier kernel the sandbox's Pod does not start. This combination is not tested. |
+| An idmap-capable filesystem for `/var/lib/kubelet` and for every volume such a sandbox mounts | ext4, xfs, btrfs, tmpfs and overlayfs support idmapped mounts; NFS does not, so RuntimeProfile storage on NFS cannot be mounted into these sandboxes. A workspace volume is not mounted directly; the previous row applies to it. |
+| kubelet `userNamespaces.idsPerPod: 262144` | The engine maps its containers onto the sandbox user's subordinate ids 100000 to 165535, which the default 65536 ids per Pod do not hold. |
+| A tun device node on every node that runs sandboxes | Below. |
+
+Set `idsPerPod` in the kubelet's configuration. On k3s, which reads drop-ins
+from its kubelet configuration directory:
+
+```bash
+sudo tee /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-astrabox-userns.conf <<'EOF'
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+userNamespaces:
+  idsPerPod: 262144
+EOF
+sudo systemctl restart k3s
+```
+
+Elsewhere, set the same field in the kubelet's configuration file or a
+`--config-dir` drop-in and restart the kubelet. Two constraints of the kubelet
+decide the value and the timing:
+
+- With no `kubelet` entry in `/etc/subuid`, the kubelet takes Pod ids from
+  `idsPerPod` up to 2^32 and refuses to start unless that range divides by
+  `idsPerPod`, so the value must be a power-of-two multiple of 65536, such as
+  262144. With a `kubelet` entry, its start and length must be multiples of
+  `idsPerPod` and the length at least `idsPerPod` times the node's `maxPods`.
+- The kubelet refuses to start while a user-namespaced Pod with a different
+  number of ids runs on the node, so remove such Pods first. Other Pods keep
+  running while k3s restarts.
+
+Create the tun device node on every node that runs sandboxes, on a filesystem
+that supports idmapped mounts, and name it in the AstraBox server's
+environment:
+
+```bash
+sudo install -d -m 0755 /var/lib/astrabox/dev
+sudo mknod -m 0666 /var/lib/astrabox/dev/net-tun c 10 200
+```
+
+```bash
+ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH=/var/lib/astrabox/dev/net-tun
+```
+
+The node's own `/dev/net/tun` cannot be used: `/dev` is devtmpfs, which does
+not support idmapped mounts, and the Pod would fail to start with
+`failed to set MOUNT_ATTR_IDMAP on /dev/net/tun: invalid argument`. A sandbox
+in a user namespace cannot create the device itself. The node is a file on
+disk and survives reboots; its mode matches the node's own `/dev/net/tun`, and
+opening it creates a tun interface only in a network namespace the opener
+holds `CAP_NET_ADMIN` over. Kubernetes checks the path when it starts the Pod,
+so a node without it does not start the sandbox. Without the variable, a
+RuntimeProfile with the engine is refused when it is saved.
+
+## Join host networks and mount host storage {#host-networks-and-storage}
+
+A RuntimeProfile's `sandbox_mounts`
+([RuntimeProfiles](../runtime-profiles.md#host-networks-and-storage)) are
+mounted by the lifecycle server bundled with AstraBox on both of its runtimes;
+its `sandbox_networks` are joined only on the Docker runtime. A Kubernetes
+sandbox reaches services through its RuntimeProfile's networking instead
+([Reach services from a Kubernetes sandbox](#reach-cluster-services)). An
+existing OpenSandbox service is refused both when the RuntimeProfile is saved:
+it checks host paths against its own `storage.allowed_host_paths`, and its
+Lifecycle API does not report which runtime it uses, so AstraBox cannot tell
+what a source names there.
+
+Storage uses OpenSandbox's own create `volumes`. AstraBox creates every box of
+a RuntimeProfile, cold, prepared, shared by an Agent's conversations or
+replacing a lost one, with the same standard create, which never carries
+`extensions.poolRef`: OpenSandbox refuses a Pool reference together with
+`volumes`, and together with the network policy every box carries. Prepared
+capacity therefore has the same mounts as a cold box. A host directory is a
+`host` volume. AstraBox sends only a path that
+`ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS` names exactly, and renders the same
+list as the server's `storage.allowed_host_paths`. A named volume is a `pvc`
+volume with `createIfNotExists` and `deleteOnSandboxTermination` off, so the
+server neither creates nor deletes it.
+
+On Docker, OpenSandbox checks a host path by resolving it, and creating it
+when missing, in the lifecycle server's own filesystem; the bundled server
+runs in AstraBox's container, where the host's paths are absent, so a hook
+(`mount_volumes_through_docker` in `astrabox/deploy/sandbox_server.py`)
+accepts only a path the list names exactly and hands it to Docker as a bind
+mount, which Docker refuses when the source does not exist. A named volume is
+a Docker named volume, which must exist.
+
+### Mount storage on Kubernetes {#kubernetes-mounts}
+
+On the Kubernetes runtime OpenSandbox mounts each volume into the sandbox
+container of the box's Pod, and the two lists name cluster storage:
+
+- A host path is a `hostPath` volume of type `DirectoryOrCreate` on the node
+  that runs the Pod. The server compares it with `storage.allowed_host_paths`
+  as a lexical prefix and does not resolve it; AstraBox's exact match is what
+  keeps out a sub-directory. The directory belongs to the node: sandboxes on
+  different nodes see different directories, and a missing one is created by
+  the kubelet, owned by root with mode 0755, which the sandbox's workload
+  account (uid 1000 in the bundled images) cannot write. Create it with the
+  ownership the sandboxes need on every node that can run them. Pod Security
+  Admission's `baseline` and `restricted` levels forbid `hostPath` volumes, so
+  the sandbox namespace must not enforce either of them while host paths are
+  listed.
+- A named volume is the PersistentVolumeClaim of that name in the sandbox
+  namespace (`ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE`), which the operator
+  creates. Its access mode decides which sandboxes can mount it at once:
+  `ReadWriteMany`, or `ReadOnlyMany` for read-only mounts, for sandboxes on
+  any node; `ReadWriteOnce` for sandboxes on one node; `ReadWriteOncePod` for
+  one sandbox. The server reads each claim before it creates a box, to refuse
+  one that another sandbox owns, so its Kubernetes identity needs `get` on
+  `persistentvolumeclaims` in that namespace; without it every create that
+  mounts a claim fails. A claim that does not exist, or that the Pod cannot
+  attach on its node, keeps the Pod from starting: the create fails when
+  `ASTRABOX_SANDBOX_SERVER_KUBE_CREATE_TIMEOUT_SECONDS` runs out, with the
+  Pod's scheduling reason in the error.
+
+Pausing a box commits only its root filesystem: files in a mounted volume are
+not in the snapshot and stay wherever the volume keeps them. Resume creates the
+Pod again from the same template, volumes included, possibly on another node,
+where a host path names that node's directory. See OpenSandbox's
+[Pause and Resume](https://open-sandbox.ai/guides/pause-resume) guide.
+
+AstraBox's check and the server's apply to the boxes AstraBox creates. To also
+enforce the host-path list for every Pod in the sandbox namespace, add a
+Kubernetes `ValidatingAdmissionPolicy` that rejects a Pod whose `hostPath`
+volumes are not on the list; AstraBox does not ship one.
+
+### Join host networks on Docker {#join-docker-networks}
+
+OpenSandbox has no create field for a second network: one
+`docker.network_mode` applies to every sandbox, and it refuses a network
+policy with a user-defined network because the egress sidecar runs on the
+default bridge. A sandbox shares its sidecar's network namespace, so the
+create carries one metadata entry per network (`astrabox.network.<n>`) and a
+hook of the bundled server (`attach_allowlisted_networks`) connects the
+sidecar to each before the sandbox is created.
+
+Docker gives a container's default route, and the target of its published
+ports, to the endpoint with the highest `GwPriority`, and breaks a tie by
+network name, the first in sort order winning (Engine API v1.48). At the
+default priority a joined network named before `bridge` takes both, so the
+sidecar's published execd, file and egress-API ports stop answering and every
+connection leaves through the joined network's gateway. The hook joins with the
+lowest priority, which needs Docker Engine 28.0 (API 1.48), compares the
+sidecar's default route before and after, and checks that its published egress
+API still answers; otherwise it disconnects the networks and fails the create.
+
+Connecting a user-defined network also points the namespace's `resolv.conf` at
+Docker's embedded DNS server, whose NAT rule precedes the sidecar's DNS
+redirect, so names would no longer pass the egress proxy. The hook therefore:
+
+- writes back the `resolv.conf` the sidecar had, so names keep resolving
+  through the egress proxy and its upstream;
+- adds an nftables table of its own that drops traffic to `127.0.0.11` and
+  new connections from the joined subnets, beside the egress sidecar's table,
+  which a policy change replaces without touching this one;
+- writes the network's single-label container names and aliases to
+  `/etc/hosts`, which the sandbox's processes read, and a container engine's
+  containers through the [engine's resolver](#container-engine);
+- adds an allow rule for each joined subnet through the sidecar's
+  `PATCH /policy`, sent with the OpenSandbox SDK's egress client to the
+  published egress-API port the lifecycle server's readiness wait uses.
+
+A daemon older than API 1.48, or a network that is not allowed, missing,
+IPv6-enabled, or inside a network the sidecar's policy denies, refuses the
+create, and the sidecar is removed with
+it. Removing the sidecar disconnects it from the networks.
+
+### Reach services from a Kubernetes sandbox {#reach-cluster-services}
+
+A sandbox Pod is on the cluster network and has no other network to join, so
+`sandbox_networks` is refused on the Kubernetes runtime. What a sandbox may
+reach is its RuntimeProfile's networking, which the egress sidecar enforces in
+the Pod. Under `Limited` networking, add the Service's name to the allowed
+hosts:
+
+```json
+{"networking": {"type": "limited", "allowed_hosts": ["postgres.data.svc.cluster.local"]}}
+```
+
+The sidecar resolves an allowed name through the cluster's DNS service and
+admits the addresses in the answer, so the sandbox reaches the Service's
+ClusterIP, or a headless Service's Pod addresses, on every port. Use the
+Service's full name, `<service>.<namespace>.svc.<cluster domain>` (the domain
+is `cluster.local` unless the cluster sets another), and connect by that name:
+the sidecar answers a name that is not allowed with no address. An IP address
+or CIDR in the allowed hosts admits that address directly, but a Service's
+ClusterIP changes when the Service is recreated.
+
+Under `Unrestricted` networking a sandbox reaches every Service, Pod and node
+address the cluster routes, except `169.254.0.0/16` and the networks in
+`ASTRABOX_SANDBOX_EGRESS_DENY_CIDRS`, which nothing fills in on Kubernetes: it
+is empty unless the operator sets it. The sidecar drops a denied address
+before it consults any allow rule, so a Service whose ClusterIP lies in a
+denied range cannot be allowed by name; keep the ClusterIPs of the Services
+sandboxes may use out of the denied ranges, for example by giving those
+Services addresses from a reserved block with `spec.clusterIP`.
+
+For a service outside the cluster, such as one on a node's host network or on
+another machine, create a Service without a selector and an EndpointSlice that
+names the service's address, then allow the Service's name as above:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: build-cache
+  namespace: shared-services
+spec:
+  ports:
+    - name: http
+      port: 80
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: build-cache-host
+  namespace: shared-services
+  labels:
+    kubernetes.io/service-name: build-cache
+addressType: IPv4
+ports:
+  - name: http
+    port: 8080
+    protocol: TCP
+endpoints:
+  - addresses: ["10.0.1.7"]
+    conditions:
+      ready: true
+```
+
+The sandbox connects to `build-cache.shared-services.svc.cluster.local:80`,
+and the cluster forwards it to `10.0.1.7:8080`, the EndpointSlice port of the
+same name. Kubernetes does not route a Service to a loopback or link-local
+endpoint address; for a service on a node itself, use an address of the node
+the service listens on. A `NetworkPolicy` that selects the target's Pods must admit
+traffic from sandbox Pods; the one AstraBox ships for sandboxes
+([below](#sandbox-network-policy)) restricts only traffic into them.
 
 ## Select a sandbox runtime
 
@@ -295,7 +722,8 @@ Lifecycle API to relay HTTP, SSE, and WebSocket traffic
 deployment connects directly: its bundled Lifecycle API runs in the AstraBox
 container and publishes sandbox ports on the Docker bridge gateway, which
 AstraBox reaches from the same container. Use the relay only when AstraBox
-cannot reach the sandbox endpoints. The relay removes `Cookie` and
+cannot reach the sandbox endpoints; OpenSandbox keeps it in maintenance mode
+and directs new deployments to its ingress Gateway. The relay removes `Cookie` and
 `Authorization` headers and replaces `Host` on every request, so the DeepSeek
 Harness and Hermes engines cannot authenticate to their in-box services
 through it.
@@ -324,9 +752,10 @@ Install the official OpenSandbox ingress Gateway in `opensandbox-system`, with
 `gateway.secureAccess.existingSecret` naming a Secret in that namespace. Its
 `keys` entry contains `a=<base64-encoded-secret>`; key ID `a` must match the
 server configuration. Keep the Secret and the lifecycle server's key private.
-The [official chart](https://github.com/opensandbox-group/OpenSandbox/tree/c806a49c62ee1fc3baa036165e9044e7b0efd97f/manifests/charts/ingress-gateway)
-at commit `c806a49c62ee1fc3baa036165e9044e7b0efd97f` has chart and image version
-1.1.1. With that checkout and a provisioned signing Secret, install it using:
+The [official chart](https://github.com/opensandbox-group/OpenSandbox/tree/release-1.2.1/manifests/charts/ingress-gateway)
+at tag `release-1.2.1` has chart and image version 1.2.1, the release of the
+bundled lifecycle server. With that checkout and a provisioned signing Secret,
+install it using:
 
 ```bash
 helm upgrade --install opensandbox-ingress \
@@ -369,15 +798,19 @@ Header routing cannot be used by an ordinary browser link. When connecting an
 external lifecycle service, configure its native `[ingress]` settings with the
 same topology; AstraBox's `ASTRABOX_SANDBOX_SERVER_*` settings configure only
 the bundled server. See the vendor's
-[Secure Access guide](https://github.com/opensandbox-group/OpenSandbox/blob/c806a49c62ee1fc3baa036165e9044e7b0efd97f/docs/guides/secure-access.md).
+[Secure Access guide](https://github.com/opensandbox-group/OpenSandbox/blob/release-1.2.1/docs/guides/secure-access.md).
 
 Enable Secure Access before creating the sandboxes that will use it; changing
 the server configuration does not enable it on existing boxes. Check the
 Gateway's `/status.ok` endpoint and TLS certificate for deployment health.
 Acceptance still requires opening HTML resources and controlling the Browser
-from the actual console origin. Local Docker requires its published execd
-endpoint to be reachable by the user's browser; Kubernetes Gateway settings
-do not configure the Docker runtime.
+from the actual console origin. On local Docker a browser opens these through
+the sandbox's published execd, which must be reachable from the user's
+browser and must answer without a credential. A sandbox created with
+`ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` has an execd that requires a
+per-sandbox token a browser cannot send, and refuses these features
+([Deploy](../deploy.md#sandbox-execd-authentication)). Kubernetes Gateway
+settings do not configure the Docker runtime.
 
 ### Isolate sandbox Pods from the rest of the cluster {#sandbox-network-policy}
 
@@ -391,8 +824,11 @@ accepts ingress only from the platform, not from other Pods.
 
 The control runner and the Codex backend forwarder also refuse a connection
 that does not carry a credential derived from the deployment's own secret, so
-reaching those two ports is not enough to use them. The policy is what keeps
-other Pods from reaching the rest.
+reaching those two ports is not enough to use them. AstraBox can give execd an
+access token only on the bundled Docker runtime
+([Deploy](../deploy.md#sandbox-execd-authentication)); a Kubernetes sandbox's
+execd answers any caller that reaches the Pod. The policy is what keeps other
+Pods from reaching it and the rest.
 
 AstraBox ships one at
 [`containers/kubernetes/sandbox-ingress-networkpolicy.yaml`](https://github.com/colton-z/astrabox/blob/main/containers/kubernetes/sandbox-ingress-networkpolicy.yaml).

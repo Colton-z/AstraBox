@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.14"
+version = "0.1.15"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -45,11 +45,12 @@ dependencies = [
   "cryptography==46.0.7",
   # OpenSandbox lifecycle CLIENT: the sandbox handle/manager the open_sandbox
   # backend drives, plus the request/response models the runtime speaks
-  # (execd commands, filesystem writes, network policy). Stay on the compatible
-  # 0.1 contract. Client-side pool coordination is OpenSandbox's maintained
-  # Redis-backed capability; the lifecycle SERVER is the separate
-  # `sandbox-server` extra below.
-  "opensandbox[pool-redis]==0.1.17.dev0",
+  # (execd commands, filesystem writes, network policy). OpenSandbox ships the
+  # server, SDKs, execd and egress as one release line, so this pin moves with
+  # the `sandbox-server` extra below and the execd and egress images.
+  # Client-side pool coordination is OpenSandbox's maintained Redis-backed
+  # capability.
+  "opensandbox[pool-redis]==1.2.1",
   # MCP (the Claude Agent SDK and AstraBox share this protocol implementation)
   "mcp==2.1.1",
   # Official A2A HTTP transport; tasks project the existing Session/turn ledger.
@@ -85,11 +86,11 @@ aws-kms = ["aws-encryption-sdk[MPL]==4.0.6"]
 # OTEL_EXPORTER_OTLP_ENDPOINT-driven tracing (BYO Langfuse / any OTLP backend).
 # OFF unless OTEL_EXPORTER_OTLP_ENDPOINT is set (see astrabox/observability/tracing.py).
 otel = [
-  "opentelemetry-api==1.45.1",
-  "opentelemetry-sdk==1.45.1",
-  "opentelemetry-exporter-otlp==1.45.1",
+  "opentelemetry-api==1.45.2",
+  "opentelemetry-sdk==1.45.2",
+  "opentelemetry-exporter-otlp==1.45.2",
   # FastAPI request-span instrumentation — the tracing foundation's span source.
-  "opentelemetry-instrumentation-fastapi==0.66b1",
+  "opentelemetry-instrumentation-fastapi==0.66b2",
 ]
 # The OpenSandbox lifecycle API server, run as AstraBox's own sandbox control
 # plane by `python -m astrabox.deploy.sandbox_server` (the container image
@@ -106,7 +107,7 @@ otel = [
 # service methods) that have no configuration field behind them. Every rebind
 # verifies itself and fails loud, but one reproducible server release must be
 # what development, CI, and images run.
-sandbox-server = ["opensandbox-server==0.2.3"]
+sandbox-server = ["opensandbox-server==1.2.1"]
 dev = [
   "pytest==9.2.0",
   "pytest-asyncio==1.4.1",
@@ -124,7 +125,7 @@ dev = [
   # both CI (installs `.[dev]`, runs `python -m ruff`/`python -m mypy`) and local
   # `make test`. The lint/type gate is calibrated to these versions, so a float
   # could silently change lint/type output between a laptop and CI. Bump both here.
-  "ruff==0.17.3",
+  "ruff==0.17.4",
   "mypy==2.4.1",
 ]
 # Live end-to-end smoke (tests/e2e/): drives a real turn against a real Docker
@@ -183,6 +184,10 @@ assistant = "astrabox.core.service.orchestrator.engine.hermes:HermesEngineAdapte
 # the same /api gateway its own browser client uses: unary calls plus one
 # downlink socket carrying events, approvals and questions.
 deepseek_harness = "astrabox.core.service.orchestrator.engine.deepseek_harness:DeepSeekHarnessEngineAdapter"
+# The dsh_superagent engine is an Assistant runtime with no conversations: one
+# DeepSeek Harness per Assistant running the dsh-superagent bundle, which the
+# owner supervises in the bundle's own panel.
+dsh_superagent = "astrabox.core.service.orchestrator.engine.dsh_superagent:DshSuperagentEngineAdapter"
 # The pi engine drives earendil-works/pi through its documented headless
 # surface, `pi --mode rpc`: JSON lines on stdin/stdout over the same execd
 # pipe. Pi ships no permission system of its own — it recommends containment
@@ -201,6 +206,9 @@ codex = "astrabox.core.service.orchestrator.engine.codex:CodexEngineAdapter"
 # bundled `direct` passthrough — see the reasoning in astrabox/providers/model.py.
 [project.entry-points."astrabox.providers.model"]
 litellm = "astrabox.providers.model:LiteLLMModelEndpointProvider"
+chatgpt_plan = "astrabox.providers.model_chatgpt_plan:ChatGPTPlanModelEndpointProvider"
+anthropic_api_key = "astrabox.providers.model_anthropic:AnthropicAPIKeyModelEndpointProvider"
+claude_login = "astrabox.providers.model_anthropic:ClaudeLoginModelEndpointProvider"
 
 [project.entry-points."astrabox.providers.skills"]
 git = "astrabox.providers.skill_git:GitSkillContentProvider"
@@ -248,7 +256,8 @@ dbos = "astrabox.providers.scheduler_dbos:DbosSchedulerProvider"
 
 # Environment authorization is independent of authentication and resource ACLs.
 [project.entry-points."astrabox.environment.entry"]
-members = "astrabox.providers.environment_entry:MembersEnvironmentEntryPolicy"
+authenticated = "astrabox.providers.environment_entry:AuthenticatedEnvironmentEntryPolicy"
+members ="astrabox.providers.environment_entry:MembersEnvironmentEntryPolicy"
 
 # One web identity seam covers the browser, JSON API, and public MCP transport.
 [project.entry-points."astrabox.web.identity"]

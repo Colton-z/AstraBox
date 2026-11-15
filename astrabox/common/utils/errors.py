@@ -225,6 +225,59 @@ for _code, _status, _category, _retryable, _owner in (
     # raise site gives the status (400 for a bad response, 502 for an
     # unreachable or failing server).
     ("CONNECTOR_AUTHORIZATION_FAILED", 502, "auth", True, "platform"),
+    # A conversation that spends its owner's model account (a ChatGPT plan or
+    # an Anthropic API key) found none of that vendor, or none chosen as the
+    # owner's default; the owner adds one or chooses a default
+    # (astrabox/core/service/model_accounts/service.py).
+    ("MODEL_ACCOUNT_REQUIRED", 409, "state", False, "client"),
+    # OpenAI refused for good to renew the account's access token (its refresh
+    # token expired, was revoked or was reused); the owner signs in again.
+    ("MODEL_ACCOUNT_SIGN_IN_REQUIRED", 409, "auth", False, "client"),
+    # Renewing the access token failed with no verdict on the sign-in: the
+    # token endpoint was unreachable or answered 5xx. A refusal that is not a
+    # sign-in verdict, such as invalid_client, is raised with retryable=False.
+    ("MODEL_ACCOUNT_REFRESH_FAILED", 502, "auth", True, "platform"),
+    ("MODEL_ACCOUNT_NOT_FOUND", 404, "request", False, "client"),
+    # The sign-in is not the caller's, was already completed, or expired; the
+    # caller starts a new one.
+    ("MODEL_ACCOUNT_AUTHORIZATION_NOT_FOUND", 404, "request", False, "client"),
+    # The owner declined consent at OpenAI.
+    ("MODEL_ACCOUNT_AUTHORIZATION_DECLINED", 409, "request", False, "client"),
+    # The sign-in could not be completed, and it is used up, so the caller
+    # starts a new one. The raise site gives the status: 400 for a callback
+    # that does not match its sign-in, 409 for a different ChatGPT account than
+    # the one being signed in to again, 502 when OpenAI's endpoints failed,
+    # refused the code exchange, or answered with an ID token that does not
+    # validate.
+    ("MODEL_ACCOUNT_AUTHORIZATION_FAILED", 400, "auth", False, "client"),
+    # OpenAI granted the sign-in without ChatGPT plan usage (the scope
+    # chatgpt.tokens.use.direct); the owner signs in again and allows it.
+    ("MODEL_ACCOUNT_PLAN_USAGE_NOT_ENABLED", 409, "auth", False, "client"),
+    # OpenAI's list of the models an account can use could not be read: the
+    # API was unreachable or answered 5xx. A refusal or an answer without a
+    # model list is raised with retryable=False.
+    ("MODEL_ACCOUNT_MODELS_UNAVAILABLE", 502, "model", True, "platform"),
+    # The plan usage limit of the ChatGPT account a conversation spends was
+    # reached: a response fails with it, and so does an input when the team
+    # pool has no other account to offer. The account's owner waits for the
+    # limit to reset or manages usage in ChatGPT; with the team pool on, the
+    # conversation's next response spends another account.
+    ("MODEL_PLAN_USAGE_LIMIT", 429, "model", False, "client"),
+    # An account was to be shared while the deployment's team pool of model
+    # accounts is off; an administrator sets ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED.
+    ("MODEL_ACCOUNT_POOL_DISABLED", 409, "configuration", False, "platform"),
+    # Anthropic refuses an API key (401 or 403) that is being added, replacing
+    # another, or listing models; the owner stores a key Anthropic accepts
+    # (astrabox/core/service/model_accounts/service.py).
+    ("MODEL_ACCOUNT_API_KEY_REJECTED", 409, "auth", False, "client"),
+    # An account other than a ChatGPT account was to be shared with the team
+    # pool, which pools ChatGPT plans only; the owner shares a ChatGPT account.
+    ("MODEL_ACCOUNT_NOT_SHAREABLE", 409, "request", False, "client"),
+    # A response of a Claude Code that signs in inside its sandbox (endpoint
+    # provider claude_login) ended because Claude Code had no login there that
+    # Anthropic accepts; the conversation's user signs in from its terminal
+    # (astrabox/core/service/orchestrator/engine/claude_runtime_client.py).
+    ("CLAUDE_LOGIN_REQUIRED", 409, "auth", False, "client"),
     # An ASGI host mounted AstraBox at a path other than
     # ASTRABOX_PUBLIC_PATH_PREFIX; the operator sets the variable to the mount
     # path (astrabox/web/public_path_middleware.py).
@@ -260,6 +313,33 @@ for _code, _status, _category, _retryable, _owner in (
         False,
         "runtime",
     ),
+    # A RuntimeProfile naming a container engine the platform does not define;
+    # the same owner and reason as the permission-level refusal above.
+    ("UNSUPPORTED_SANDBOX_CONTAINER_ENGINE", 409, "state", False, "template"),
+    # A box created for a container engine could not prove the engine answers:
+    # a grant missing from the box, the host's user-namespace restriction, or
+    # an image without the engine. The message carries the box's own diagnosis.
+    # Not retryable: the next box of the same RuntimeProfile on the same host
+    # gets the same grants.
+    (
+        "SANDBOX_CONTAINER_ENGINE_UNAVAILABLE",
+        409,
+        "sandbox.container_engine",
+        False,
+        "runtime",
+    ),
+    # A RuntimeProfile names a host network the deployment does not let a
+    # sandbox join (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS), or one its sandbox
+    # service cannot join. Raised when the RuntimeProfile is saved and when a
+    # sandbox is created, since the allowlist can shrink in between; the
+    # operator widens the list or an administrator edits the RuntimeProfile.
+    ("SANDBOX_NETWORK_NOT_ALLOWED", 409, "configuration", False, "template"),
+    # A RuntimeProfile mounts a host path or named volume the deployment does
+    # not allow (ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS,
+    # ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES), mounts one over a directory the
+    # platform or the system owns in the sandbox, or uses a sandbox service
+    # that cannot mount it. Raised at save and at create, like the above.
+    ("SANDBOX_MOUNT_NOT_ALLOWED", 409, "configuration", False, "template"),
     (
         "CHANNEL_CREDENTIALS_UNAVAILABLE",
         503,
@@ -341,8 +421,10 @@ for _code, _status, _category, _retryable, _owner in (
     # client_message_id answers this again; a new message starts a new turn.
     # Recorded on an input the platform still held when its conversation ended.
     ("CONVERSATION_ENDED", 409, "state", False, "session"),
-    # A message whose replacement runtime failed to start; sending it again
-    # starts another attempt.
+    # A conversation's runtime failed to start for a reason without a code of
+    # its own: the session records it as last_error_code, and the messages
+    # waiting for that start fail with it. Sending a message again starts
+    # another attempt.
     ("RUNTIME_START_FAILED", 502, "runtime", False, "runtime"),
     # Same class of 409 as the row above — the resource's current state refuses
     # the operation — so it carries the same category rather than an auth one:
@@ -414,6 +496,15 @@ for _code, _status, _category, _retryable, _owner in (
     # No RuntimeProfile for Assistants yet: an administrator sets one in the
     # Assistant defaults, so the user's retry cannot change the answer.
     ("ASSISTANT_DEFAULTS_UNAVAILABLE", 409, "configuration.runtime_profile", False, "template"),
+    # The Assistant's runtime serves its owner through its own panel rather
+    # than through conversations, so no retry or input can start one.
+    ("ASSISTANT_CONVERSATIONS_UNSUPPORTED", 409, "request", False, "client"),
+    # The owner has not supplied a credential the runtime declares; setting it
+    # in the Assistant's settings is the only thing that changes the answer.
+    ("ASSISTANT_PANEL_UNSUPPORTED", 409, "request", False, "client"),
+    # The deployment's sandbox gateway routes by path prefix; only an operator
+    # switching it to wildcard routes changes the answer.
+    ("ASSISTANT_PANEL_ROUTE_UNSUPPORTED", 409, "configuration.sandbox", False, "platform"),
     ("RUNTIME_PROFILE_IN_USE", 409, "configuration.runtime_profile", False, "template"),
     # The row names a stored credential that is absent from the secret store.
     ("RUNTIME_PROFILE_SECRET_MISSING", 500, "configuration.runtime_profile", False, "platform"),
@@ -437,6 +528,12 @@ for _code, _status, _category, _retryable, _owner in (
     # the reader reconnects can succeed.
     ("INTERRUPT_UNAVAILABLE", 409, "state", True, "session"),
     ("PENDING_INPUTS_NOT_CANCELLED", 409, "state", False, "session"),
+    # Cancelling one input's work: the reader could not stop it without
+    # stopping another sender's message or a message its runtime keeps.
+    ("CANCEL_REFUSED", 409, "state", False, "session"),
+    # Stopping a background task: none with that id runs, or no reader is live.
+    ("BACKGROUND_TASK_NOT_FOUND", 404, "request", False, "session"),
+    ("BACKGROUND_TASK_CONTROL_UNAVAILABLE", 409, "state", False, "session"),
     # The conversation's Agent was deleted; its history stays readable.
     ("AGENT_DELETED", 409, "state", False, "session"),
     ("SESSION_READ_ONLY", 409, "state", False, "session"),
@@ -566,8 +663,10 @@ for _code, _status, _category, _retryable, _owner in (
     ("BROWSER_TENANCY_UNSUPPORTED", 409, "runtime.sandbox", False, "runtime"),
     ("BROWSER_UNAVAILABLE", 502, "runtime.sandbox", False, "runtime"),
     ("FILE_PREVIEW_UNAVAILABLE", 502, "runtime.sandbox", False, "runtime"),
-    # A transport failure to the box: it proves nothing about whether the box
-    # exists, and the same request may succeed once the box answers again.
+    # The box does not answer now: a transport failure, or a control plane that
+    # is pausing, holding paused or resuming it. Either proves nothing about
+    # whether the box exists, and the same request may succeed once the box
+    # answers again.
     ("SANDBOX_UNREACHABLE", 503, "runtime.sandbox", True, "runtime"),
     # The box answered a probe in a form its provider cannot read; repeating
     # the request reads the same answer.
@@ -590,6 +689,15 @@ for _code, _status, _category, _retryable, _owner in (
     # the earlier execution made a box is unknown. The same command is never
     # retried; starting the conversation again is a new command.
     ("SANDBOX_CREATE_INTERRUPTED", 409, "runtime.startup", False, "platform"),
+    # A new Docker sandbox's execd did not prove that it admits only its
+    # per-sandbox credential, so the sandbox was destroyed rather than used.
+    # The next sandbox comes from the same execd image and fails the same way
+    # until the operator names AstraBox's execd build.
+    ("SANDBOX_EXECD_ACCESS_UNVERIFIED", 502, "runtime.startup", False, "platform"),
+    # The sandbox's execd requires a credential that a browser cannot send, and
+    # on the Docker runtime every browser route to an in-box port passes
+    # through execd. The deployment, not the request, decides this.
+    ("SANDBOX_BROWSER_ROUTE_UNAVAILABLE", 409, "configuration", False, "platform"),
     # Port 8080 is the sandbox's control API, not an application preview.
     ("EXPOSE_PORT_RESERVED", 400, "request", False, "client"),
     ("AGENT_RUNTIME_GENERATION_CONFLICT", 409, "state", True, "platform"),

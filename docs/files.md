@@ -115,7 +115,11 @@ inside a sandboxed frame. Refresh reloads the page and its resources; the
 viewer also refreshes when the Agent finishes responding.
 
 HTML preview requires an updated bundled sandbox image and browser-reachable
-OpenSandbox endpoints. The image starts a separate nginx service on port 8002;
+OpenSandbox endpoints. On the Docker runtime a sandbox created with
+`ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` refuses preview, the Browser panel
+and exposed ports: its execd requires a credential a browser cannot send
+([Deploy](deploy.md#sandbox-execd-authentication)). The image starts a
+separate nginx service on port 8002;
 the AIO gateway and its API key are not exposed. Preview links are bearer
 credentials for the current Files root and expire after at most 20 minutes.
 Select **Refresh** to obtain a new link. Each resource request checks the

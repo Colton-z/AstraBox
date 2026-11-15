@@ -72,7 +72,7 @@ async def run(image: str) -> None:
 
     async def creator(member: SandboxClientPoolMember):
         members.append(member)
-        limits, requests = provider.fit_resources(*sandbox_create_resources(shared=False))
+        limits, requests = provider.fit_resources(*sandbox_create_resources(None, shared=False))
         return await create_open_sandbox_box(
             environment_name="astrabox",
             session_id=member.session_id, assignment_id=member.assignment_id,

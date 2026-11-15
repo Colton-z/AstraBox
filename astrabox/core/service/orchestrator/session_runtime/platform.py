@@ -4,13 +4,15 @@
   :class:`~astrabox.core.service.orchestrator.runtime_ensure.RuntimeEnsure`.
 * :func:`reader_hooks` gives a reader what it needs per session: the
   deployment's preparation before each engine write, the box lease renewal
-  while the runtime works, permission-mode changes, and the consumers of
-  recorded facts.
+  while the runtime works, permission-mode changes, the model account a
+  response that met its usage limit spent, and the consumers of recorded
+  facts.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -20,7 +22,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.runtime import (
-    RUNTIME_PROTOCOL_INCOMPATIBLE, RuntimeClient, RuntimeInput,
+    RUNTIME_PROTOCOL_INCOMPATIBLE, ResponseEnded, RuntimeClient, RuntimeInput,
 )
 from astrabox.core.service.orchestrator.session_lifecycle.startup import runtime_initialization_metadata
 from astrabox.core.service.orchestrator.session_runtime.host import (
@@ -48,6 +50,9 @@ from astrabox.seams.sandbox import sandbox_for_name
 
 logger = get_logger(__name__)
 
+#: Runtime statuses during which a response runs.
+_RESPONDING = frozenset({"working", "waiting"})
+
 #: How long the deployment's preparation may take before an input is refused.
 PREPARATION_TIMEOUT_S = 30.0
 
@@ -58,6 +63,23 @@ def _ended(session: dict[str, Any]) -> bool:
     return bool(session.get("archived_at")) or session.get("state") in (
         SessionState.TERMINATED.value, SessionState.DELETED.value,
     )
+
+
+def recorded_failure(session: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The error the session last recorded, as ``{code, message}``, when it has a registered code."""
+    if session is None:
+        return None
+    code = str(session.get("last_error_code") or "").strip()
+    if not code:
+        return None
+    return {"code": code, "message": str(session.get("last_error") or "")}
+
+
+#: What the inputs of a failed start get when the session's last error has no code.
+_START_FAILED = {
+    "code": "RUNTIME_START_FAILED",
+    "message": "the conversation's runtime could not be started; send the message again to retry",
+}
 
 
 def _attach_is_current(session: dict[str, Any], sandbox_id: str) -> bool:
@@ -117,7 +139,7 @@ class PlatformRuntimeConnector:
             if current is None or not _attach_is_current(current, attached):
                 await self._runtime_manager.evict_runtime_if_current(session_id, runtime)
                 if current is None or _ended(current):
-                    raise RuntimeEnded(session_id)
+                    raise RuntimeEnded(session_id, failure=recorded_failure(current))
                 raise RuntimeNotReady(session_id)
             initialization = await runtime_initialization_metadata(session_id, runtime)
             await check_lock()
@@ -138,7 +160,7 @@ class PlatformRuntimeConnector:
         """The session as its runtime may be attached now, after waking a parked box for an input."""
         session = await self._sessions.get_session(session_id)
         if session is None or _ended(session):
-            raise RuntimeEnded(session_id)
+            raise RuntimeEnded(session_id, failure=recorded_failure(session))
         if session.get("state") != SessionState.READY.value:
             raise RuntimeNotReady(session_id)
         if session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE:
@@ -151,7 +173,16 @@ class PlatformRuntimeConnector:
             # A parked box wakes for an input and for nothing else.
             if not await self._facts.undelivered_inputs(session_id):
                 raise RuntimeNotReady(session_id)
-            await self._runtime_manager.wake_parked_session(session)
+            try:
+                await self._runtime_manager.wake_parked_session(session)
+            except APIError as exc:
+                if exc.code != "SANDBOX_UNREACHABLE":
+                    raise
+                # The control plane is still pausing or restoring the box. The
+                # input stays waiting, so the host's sweep starts this reader
+                # again and the next attempt wakes the same box.
+                logger.info("session %s parked box not wakeable yet: %s", session_id, exc.message)
+                raise RuntimeNotReady(session_id) from exc
             session = await self._sessions.get_session(session_id)
             if session is None:
                 raise RuntimeNotReady(session_id)
@@ -176,7 +207,9 @@ class PlatformRuntimeConnector:
                         message=action["message"],
                         evidence={"reason": "user_action_required", "user_action": action, "session_id": session_id},
                     )
-                raise RuntimeStartFailed(session_id)
+                raise RuntimeStartFailed(
+                    session_id, failure=recorded_failure(session) or dict(_START_FAILED)
+                )
         await self._replace(session_id)
 
     async def release(self, session_id: str) -> None:
@@ -210,6 +243,9 @@ def reader_hooks(
     deliver_attachments: Callable[[dict[str, Any], RuntimeInput], Awaitable[None]],
 ) -> Callable[[str, ConnectedRuntime], ReaderHooks]:
     def build(session_id: str, connected: ConnectedRuntime) -> ReaderHooks:
+        #: The runtime's status as the reader last reported it.
+        reported: list[str | None] = [None]
+
         async def prepare(item: RuntimeInput) -> None:
             session = await sessions.get_session(session_id)
             if session is None:
@@ -218,7 +254,22 @@ def reader_hooks(
             await deliver_attachments(session, item)
             await prepare_input(session, connected, item)
             if connected.refresh is not None:
-                await connected.refresh()
+                try:
+                    # An input that arrives while a response runs queues
+                    # behind it, and the running response keeps its model
+                    # account; only an idle runtime's input may change it.
+                    await connected.refresh(choose_account=reported[0] not in _RESPONDING)
+                except APIError as exc:
+                    # A credential the turn needs could not be obtained (a
+                    # token endpoint that refuses, a model account to sign in
+                    # to again): this input fails with that reason, and the
+                    # conversation stays usable for the next one.
+                    failure: dict[str, Any] = {
+                        "code": exc.code, "message": exc.message, "status_code": exc.status_code,
+                    }
+                    if exc.evidence:
+                        failure["evidence"] = exc.evidence
+                    raise InputPreparationRefused(failure) from exc
             expiry = session.get("expires_at")
             if (
                 expiry
@@ -250,8 +301,21 @@ def reader_hooks(
             await committed(session_id, batch)
 
         async def status(value: str) -> None:
-            if value in ("working", "waiting"):
+            reported[0] = value
+            # The reader repeats the status while it holds, so a response of
+            # any length keeps its box; the renewal reaches the backend only
+            # once the lease is inside its renewal threshold. Background work
+            # runs in the box too, so it keeps the lease as a response does.
+            if value in ("working", "waiting", "background"):
                 await runtime_manager.maybe_renew_lease_on_activity(session_id)
+                # An access token the platform obtains can expire within one
+                # response; the box gets the renewed one while it works.
+                due = getattr(connected.refresh, "due", None)
+                if connected.refresh is not None and callable(due) and due():
+                    try:
+                        await connected.refresh()
+                    except Exception:
+                        logger.exception("credential renewal failed session=%s", session_id)
 
         async def permission_mode() -> None:
             session = await sessions.get_session(session_id)
@@ -260,7 +324,27 @@ def reader_hooks(
             if mode and callable(setter):
                 await setter(mode)
 
-        return ReaderHooks(prepare=prepare, committed=on_commit, status=status, permission_mode=permission_mode)
+        async def usage_limited(ended: ResponseEnded) -> ResponseEnded:
+            # The session names the model account its sandbox spends, which a
+            # running response never changes; a session on a model endpoint
+            # paid by the deployment names none, and its ending is recorded
+            # as the runtime reported it.
+            session = await sessions.get_session(session_id)
+            account_id = str((session or {}).get("model_account_id") or "").strip()
+            if not account_id:
+                return ended
+            from astrabox.core.service.model_accounts.service import get_model_account_service
+
+            reading = await get_model_account_service().record_usage_limit(account_id)
+            return dataclasses.replace(ended, error={**(ended.error or {}), **reading})
+
+        return ReaderHooks(
+            prepare=prepare,
+            committed=on_commit,
+            status=status,
+            permission_mode=permission_mode,
+            usage_limited=usage_limited,
+        )
 
     return build
 

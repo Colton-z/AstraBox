@@ -38,6 +38,7 @@
     "group_system": "System",
     "group_integrations": "Integrated services",
     "mcp_tokens": "MCP clients",
+    "model_accounts": "Model accounts",
     "connectors": "Connectors",
     "assistant_defaults": "Assistant defaults",
     "environment": "Environment"
@@ -104,6 +105,7 @@
     "allowed_domains": "Domains allowed to receive this credential",
     "expires_on": "Expires {{when}}",
     "expired_on": "Expired {{when}}",
+    "token_from": "Access token obtained from {{endpoint}} and renewed automatically",
     "expires_at": "Expires at (optional)",
     "credential_required": "Enter both the service or variable and its secret value.",
     "header_required": "Enter the request header that the MCP service expects.",
@@ -453,7 +455,19 @@
     "field_current_sandbox": "Current sandbox",
     "err_runtime_profile_required": "Select the runtime profile this assistant runs on.",
     "card_note": "Agent program and runtime profile are fixed when the Assistant is created. Everything here can change at any time.",
-    "create_title": "New assistant"
+    "create_title": "New assistant",
+    "owner_secrets_title": "Credentials",
+    "owner_secrets_intro": "What its runtime needs from you before it can start. Each value is write-only: AstraBox keeps it in the secret store and never shows it again.",
+    "owner_secret_configured": "Configured",
+    "owner_secret_missing": "Not set",
+    "owner_secret_optional_unset": "Not set, not used",
+    "owner_secret_deployment_default": "Using the deployment's shared account",
+    "owner_secret_updated": "Updated {{when}}",
+    "owner_secret_placeholder_set": "Enter the value",
+    "owner_secret_placeholder_replace": "Enter a new value to replace it",
+    "owner_secret_set": "Set",
+    "owner_secret_replace": "Replace",
+    "owner_secret_saving": "Saving…"
   },
   "assistant_form": {
     "section_basic": "Basics",
@@ -574,6 +588,7 @@
     "quota_source_configured": "Configured",
     "quota_source_unlimited": "Set to unlimited",
     "quota_source_unset": "Not set",
+    "quota_source_host_memory": "Not set: this host's whole memory less 4 GiB. Other software on the host is not counted, so sandboxes can take the memory it needs. Set ASTRABOX_SANDBOX_QUOTA_MEMORY to what they may hold.",
     "quota_in_use": "In use",
     "quota_prepared": "Prepared",
     "quota_starting": "Starting",
@@ -667,6 +682,16 @@
         "label": "Sandbox image or template",
         "help": "Leave blank to use the deployment default for the selected Agent program"
       },
+      "sandbox_cpu": {
+        "label": "Sandbox CPU",
+        "help": "The most CPU each sandbox of this runtime profile may use, as cores (2, 0.5) or millicores (500m); at least 250m. It applies to every sandbox: started on demand or prepared ahead, and, with sandbox sharing, the sandbox the Agent's conversations share. Leave blank to use the deployment's size for the kind of sandbox. A size the deployment's sandbox quota or host cannot hold is refused. Running sandboxes keep their size until they are replaced.",
+        "placeholder": "Deployment default"
+      },
+      "sandbox_memory": {
+        "label": "Sandbox memory",
+        "help": "The most memory each sandbox of this runtime profile may use, with its unit (4Gi, 1536Mi); at least 1Gi. It applies to every sandbox: started on demand or prepared ahead, and, with sandbox sharing, the sandbox the Agent's conversations share, which then holds as many conversations as its memory admits. Leave blank to use the deployment's size for the kind of sandbox. A size the deployment's sandbox quota or host cannot hold is refused. Running sandboxes keep their size until they are replaced.",
+        "placeholder": "Deployment default"
+      },
       "networking": {
         "label": "Networking",
         "type": {
@@ -706,6 +731,22 @@
           "advanced": "Advanced — separate areas inside a sandbox",
           "privileged": "Privileged — container as a virtual machine (provider support required)"
         }
+      },
+      "sandbox_container_engine": {
+        "label": "Container engine",
+        "help": "Run a container engine in each sandbox so the Agent can build images, run containers and use Docker Compose. Docker runs rootless as the sandbox's own user, and its containers reach the network through the sandbox, under this runtime profile's network policy. It requires a sandbox per conversation and the advanced permission level, and is available only with the bundled OpenSandbox server on Docker. Enable it only for teams you trust: whoever gains root in such a sandbox can affect the Docker host. Images, containers and build cache are deleted with the sandbox, and containers share the sandbox's CPU, memory and process limits.",
+        "options": {
+          "none": "None",
+          "docker": "Docker (rootless)"
+        }
+      },
+      "sandbox_networks": {
+        "label": "Host networks",
+        "help": "Docker networks of the sandbox host that each sandbox joins, so the Agent reaches services there by their container names. Only networks the deployment allows (ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS) can be named. A joined network is reachable on every port, in both network access modes; connections from it into the sandbox are refused. Available only with the bundled OpenSandbox server on Docker Engine 28.0 or later; on Kubernetes, use Limited outbound network access and add the Service's full name (service.namespace.svc.cluster.local) to Additional allowed hosts instead. Enable it only for teams you trust with every service on that network."
+      },
+      "sandbox_mounts": {
+        "label": "Host storage",
+        "help": "Host directories and named volumes mounted into each sandbox, as a list of {\"source\", \"target\", \"read_only\"}. A source starting with / is a host directory from ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS; any other is a volume from ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES. Mounts are read-only unless read_only is false. A target cannot be at, under or above /workspace, /home, /tmp or another directory the platform or system uses; mount under /mnt or /srv instead. A read-write mount lets the sandbox change those files, and every sandbox that mounts it shares them. Available only with the bundled OpenSandbox server: on Kubernetes, a host directory is a directory of the node that runs the sandbox, created if missing, and a volume is a PersistentVolumeClaim in the sandbox namespace."
       },
       "endpoint_provider": {
         "label": "Model connection",
@@ -760,6 +801,7 @@
     "search_model_placeholder": "Search models or enter a model id",
     "no_runtime_profiles": "No runtime profile can run an Agent: each is disabled, or its engine is not installed in this release.",
     "no_models": "No models were returned. Enter a model id to continue.",
+    "no_account_models": "This account lists no models. Enter a model id to continue.",
     "category_unavailable": "Unavailable category",
     "select_categories_placeholder": "Choose categories",
     "search_categories_placeholder": "Search categories",
@@ -902,6 +944,56 @@
     "empty_title": "No keys yet.",
     "empty_hint": "Issue one above, then paste the block it gives you into your MCP client."
   },
+  "model_accounts": {
+    "title": "Model accounts",
+    "meta_one": "{{count}} account",
+    "meta_other": "{{count}} accounts",
+    "description": "Your ChatGPT accounts and Anthropic API keys. A conversation on a runtime profile that spends its owner's account uses one of yours of that kind, not the deployment's model gateway.",
+    "error_title": "Couldn't load your model accounts",
+    "list_title": "Your accounts",
+    "list_intro": "Your conversations spend your default account of the kind their runtime profile uses, unless an Agent you created names another. AstraBox cannot read how much of a plan's usage remains; ChatGPT shows it.",
+    "manage_usage": "Manage usage",
+    "open_page": "Manage your model accounts",
+    "empty_title": "No model account yet.",
+    "empty_hint": "Link a ChatGPT account with the command below, run on your own computer, or add an Anthropic API key.",
+    "default_badge": "Default",
+    "shared_badge": "Shared with the team",
+    "status_active": "Active",
+    "status_sign_in_required": "Sign in again",
+    "linked_at": "Linked {{at}}",
+    "sign_in_again_intro": "OpenAI ended this account's sign-in ({{reason}}), so no conversation can spend it. Run this on your own computer to sign in again:",
+    "make_default": "Make default",
+    "share": "Share with the team",
+    "share_button": "Share {{account}} with the team",
+    "pool_note": "Your team pool is on. Sharing a ChatGPT account lets other members' conversations spend its ChatGPT plan once their own accounts reach their plan usage limit, and OpenAI counts that usage against your plan. A shared account shows when a teammate last used it. Stop sharing at any time; their conversations stop spending it from their next response. Anthropic API keys are never shared.",
+    "pool_last_used": "Last used by a teammate {{at}}",
+    "pool_never_used": "Not used by a teammate yet",
+    "usage_limited": "Usage limit reached; offered to conversations again after {{at}}",
+    "rename": "Rename",
+    "rename_button": "Rename {{account}}",
+    "rename_label": "New name for {{account}}",
+    "remove": "Remove",
+    "remove_button": "Remove {{account}}",
+    "remove_title": "Remove {{account}}?",
+    "remove_description": "AstraBox revokes this account's session at OpenAI, then deletes the account and its tokens. An Agent of yours that names it cannot start your conversations until you choose another account.",
+    "remove_default": "It is your default account of its kind: you will have none until you make another one the default.",
+    "remove_action": "Remove account",
+    "revocation_unconfirmed": "{{account}} was removed, but OpenAI did not confirm that its session ended. Disconnect AstraBox in your ChatGPT settings to end it.",
+    "link_title": "Link a ChatGPT account",
+    "link_intro": "Run this command in a terminal on your own computer. It opens OpenAI's sign-in page in your browser; allow plan usage there, and the account is linked to you.",
+    "link_note": "OpenAI sends your browser back to 127.0.0.1 on the computer that signs in, so this page cannot link an account itself. The command signs in to AstraBox with --token or ASTRABOX_TOKEN. Your first linked account becomes your default.",
+    "vendor_chatgpt_plan": "ChatGPT",
+    "vendor_anthropic_api_key": "Anthropic API key",
+    "added_at": "Added {{at}}",
+    "remove_description_api_key": "AstraBox deletes its copy of this key. It cannot revoke the key at Anthropic; revoke it in the Claude Console to stop it working everywhere. An Agent of yours that names it cannot start your conversations until you choose another key.",
+    "key_title": "Add an Anthropic API key",
+    "key_intro": "Conversations on a runtime profile that spends the owner's Anthropic API key use your key with Anthropic's API, and Anthropic bills its organization. Use a key that belongs to a workspace.",
+    "key_label": "Name",
+    "key_label_placeholder": "Optional — named after the key's last characters",
+    "key_value": "API key",
+    "key_add": "Add key",
+    "key_note": "AstraBox checks the key with Anthropic and keeps it only if Anthropic accepts it. It is stored write-only: no page shows it again. Your first key becomes your default key."
+  },
   "connectors": {
     "card_title": "Connectors",
     "card_intro": "Work apps this Assistant can use, each with your own sign-in at the vendor. An app you connect is turned on here unless you turn it off.",
@@ -960,6 +1052,9 @@
     "name_help": "Fixed when the database is first bound. Renaming the display name does not move data or running work.",
     "members": "Member accounts",
     "members_help": "Add account IDs that may use this Environment, including channel and schedule execution accounts. Agent and conversation permissions still apply. Platform administrators can manage access without membership.",
+    "entry": "Who can enter",
+    "entry_authenticated": "Every account that can sign in",
+    "entry_members": "Member accounts only",
     "lede": "This deployment’s configuration, credentials, conversations and runtime resources belong to this Environment.",
     "load_failed": "Could not load the Environment",
     "prewarm": "Agent prewarming",

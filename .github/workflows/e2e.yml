@@ -128,18 +128,16 @@ jobs:
         # path). The .env above names it as ASTRABOX_AGENT_IMAGE.
         run: make build-agent-image
 
+      - name: Build the sandbox egress sidecar image (astrabox/egress:latest)
+        # Every sandbox is created under a network policy, so its sidecar runs
+        # this image, which a checkout deployment names astrabox/egress:latest.
+        run: make build-egress-image
+
       - name: Build the source-development server image
         # The live launchers mount the checkout over this image's installed
         # package while reusing its pinned dependencies and maintained Compose
         # network/security topology.
         run: make build-server-image
-
-      - name: Pre-pull the execd image the lifecycle server injects
-        # The server injects this binary into every sandbox it creates, pulling it
-        # on first create. Pulling here turns a Docker Hub rate-limit into a clear
-        # step failure instead of a timeout in the middle of a turn. Tracks
-        # astrabox/deploy/sandbox_server.py::DEFAULT_EXECD_IMAGE.
-        run: docker pull opensandbox/execd:v1.1.0
 
       - name: Smoke — headless curl live turn (scripts/e2e_smoke.sh)
         # Boots a task-owned source-mounted Compose deployment, cold-starts an

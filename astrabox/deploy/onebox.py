@@ -331,6 +331,33 @@ def needs_sandbox_server() -> bool:
     return not _env(BASE_URL_ENV, "")
 
 
+#: Settings that only the bundled lifecycle server applies: what a
+#: RuntimeProfile may give a sandbox beyond itself.
+BUNDLED_SERVER_SANDBOX_GRANT_ENVS = (
+    "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS",
+    "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS",
+    "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES",
+)
+
+
+def warn_about_sandbox_grants_without_a_bundled_server() -> None:
+    """Say so when a sandbox-grant allowlist is set with no bundled server to apply it.
+
+    The AstraBox server refuses a RuntimeProfile that uses one unless sandboxes
+    come from the bundled server, so with an existing OpenSandbox service or
+    another backend the setting allows nothing. That server's own launcher
+    warns about host networks under its Kubernetes runtime.
+    """
+    present = [name for name in BUNDLED_SERVER_SANDBOX_GRANT_ENVS if name in os.environ]
+    if present:
+        logger.warning(
+            "%s set, but this deployment runs no bundled OpenSandbox server, so no "
+            "RuntimeProfile can use them: they apply only to sandboxes that server "
+            "creates",
+            ", ".join(present),
+        )
+
+
 def needs_litellm_gateway() -> bool:
     """Whether this container must run the embedded LiteLLM proxy.
 
@@ -1330,6 +1357,28 @@ def wait_until_healthy(child: _Child, url: str, *, timeout: float) -> None:
     )
 
 
+def _exit_description(exit_code: int) -> str:
+    """How a child ended, naming the signal when one ended it.
+
+    This supervisor sends no signal to a child it is still waiting on, so a
+    SIGKILL here came from outside the container's processes: in practice the
+    kernel, enforcing the container's memory limit. That kill is recorded in
+    the host's kernel log, not in the child's output.
+    """
+    if exit_code >= 0:
+        return f"exited with code {exit_code}"
+    try:
+        name = signal.Signals(-exit_code).name
+    except ValueError:
+        name = f"signal {-exit_code}"
+    if -exit_code == signal.SIGKILL:
+        return (
+            f"was killed by {name}, which this supervisor did not send (check the "
+            "container's memory limit and the host's kernel log for an out-of-memory kill)"
+        )
+    return f"was killed by {name}"
+
+
 def wait_until_ready(
     child: _Child, probe: Callable[[], bool], *, pending: str, timeout: float
 ) -> None:
@@ -1343,7 +1392,7 @@ def wait_until_ready(
         exit_code = child.process.poll()
         if exit_code is not None:
             raise OneBoxError(
-                f"{child.name} exited with code {exit_code} before it "
+                f"{child.name} {_exit_description(exit_code)} before it "
                 f"became healthy. Its output:\n{child.output_tail()}"
             )
         if probe():
@@ -1570,6 +1619,8 @@ def main(
     ensure_database_wiring()
 
     run_sandbox_server = needs_sandbox_server()
+    if not run_sandbox_server:
+        warn_about_sandbox_grants_without_a_bundled_server()
     run_litellm = needs_litellm_gateway()
     if _env("ASTRABOX_MODEL_GATEWAY_OIDC_CONFIG_FILE", "") and not run_litellm:
         raise OneBoxError(

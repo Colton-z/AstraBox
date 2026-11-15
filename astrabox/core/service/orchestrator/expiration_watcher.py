@@ -21,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import (
     AstraBoxRuntimeSettings,
     load_astrabox_settings,
@@ -37,9 +38,9 @@ logger = get_logger(__name__)
 # once; the remainder is picked up by the following ticks.
 _DEAD_BINDING_SCAN_LIMIT = 50
 
-# Per-tick idle budget: the conversations one tick examines, and so the most it
-# can park. Lower than the probe budget on purpose: each parking holds a commit
-# open for tens of seconds on the cluster, where a probe is one cheap read.
+# Per-tick idle budget: the conversations one tick examines, and so the most
+# parks it can start. Lower than the probe budget on purpose: each park starts a
+# commit of a whole box filesystem on the cluster, where a probe is one cheap read.
 _IDLE_SWEEP_SCAN_LIMIT = 10
 
 # The runtime statuses under which nothing runs in the box, so nothing is lost by
@@ -121,6 +122,10 @@ class ExpirationWatcher:
         # stays a candidate, so a pass that always started from the first row
         # would never reach the ones behind it.
         self._assistant_lease_cursor = KeysetCursor("assistant_id")
+        # The park in flight for each sandbox. A pause lasts as long as the
+        # control plane's commit, so each runs as its own task and a tick
+        # starts no second park for a box whose first has not ended.
+        self._parking: dict[str, asyncio.Task] = {}
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
@@ -359,11 +364,20 @@ class ExpirationWatcher:
         tick re-resolves them; a token close to expiry is refreshed by the
         connector service before it is written.
         """
+        from astrabox.core.service.orchestrator.engine.capabilities import (
+            capabilities_for_engine_kind,
+        )
+
         refreshed = 0
         failed = 0
         for runtime in self._platform._runtime_manager.live_runtimes():
             refresh = getattr(runtime, "prepare_engine_input", None)
-            if getattr(runtime, "engine_kind", None) != "assistant" or refresh is None:
+            engine_kind = str(getattr(runtime, "engine_kind", "") or "")
+            if (
+                refresh is None
+                or not engine_kind
+                or capabilities_for_engine_kind(engine_kind).assistant is None
+            ):
                 continue
             try:
                 await refresh()
@@ -546,6 +560,9 @@ class ExpirationWatcher:
                     summary["assistant_profiles_refreshed"] = (
                         summary.get("assistant_profiles_refreshed", 0) + 1
                     )
+                outcome = await self._refresh_assistant_box_credentials(row)
+                if outcome:
+                    summary[outcome] = summary.get(outcome, 0) + 1
                 continue
             summary["assistant_boxes_dead"] += 1
             convergence = await lifecycle.converge_dead_sandbox_owners(
@@ -556,6 +573,100 @@ class ExpirationWatcher:
             )
             await self._wake_assistants(convergence.converged_assistant_workspaces)
         return summary
+
+    async def _refresh_assistant_box_credentials(self, row: dict[str, Any]) -> str | None:
+        """Write a live Assistant box's protected credentials again.
+
+        An Assistant's credentials belong to its one box. A runtime this
+        process holds refreshes them before each turn, but a box may have
+        none here: a runtime that serves no conversations (dsh-superagent)
+        keeps no runtime after its box is prepared, and a restarted server
+        holds none until someone attaches. So each tick composes the
+        Assistant's current assignment under the placeholder context the
+        box's identity records and keeps what the box then delivers: a
+        rotated environment or HTTP Basic value reaches it and an archived,
+        deleted or unassigned one is withdrawn, with nobody using the
+        Assistant.
+        """
+        from astrabox.common.utils.settings import load_astrabox_settings
+        from astrabox.core.service.orchestrator.agent_config_service import AgentConfigService
+        from astrabox.core.service.orchestrator.engine.provisioning import (
+            ENVIRONMENT_CREDENTIAL_IDS,
+            ENVIRONMENT_PLACEHOLDER_CONTEXT,
+            connect_engine_sandbox,
+            reconcile_sandbox_credentials,
+        )
+        from astrabox.persistence.repository.agent_repository import AgentRepository
+        from astrabox.persistence.repository.assistant_workspace_repository import (
+            AssistantWorkspaceRepository,
+        )
+        from astrabox.persistence.repository.runtime_profile_repository import (
+            RuntimeProfileRepository,
+        )
+        from astrabox.persistence.repository.session_repository import SessionRepository
+        from astrabox.seams.sandbox import sandbox_for_name
+
+        assistant_id = str(row.get("assistant_id") or "")
+        sandbox_id = str(row.get("current_sandbox_id") or "")
+        identity = row.get("runtime_identity")
+        if not isinstance(identity, dict) or str(identity.get("sandbox_id") or "") != sandbox_id:
+            return None
+        context = str(identity.get(ENVIRONMENT_PLACEHOLDER_CONTEXT) or "").strip()
+        if not context:
+            return None
+        vault_enabled = bool(
+            getattr(load_astrabox_settings(), "sandbox_credential_vault_enabled", False)
+        )
+        try:
+            sessions = SessionRepository()
+            # Any Session on the box resolves the same plan: the Assistant's
+            # current assignment, under the box's placeholder context.
+            session = await sessions.find_session_by_sandbox_id(sandbox_id)
+            session_id = str((session or {}).get("session_id") or "").strip()
+            backend = str((session or {}).get("sandbox_backend") or "").strip().lower()
+            if not isinstance(session, dict) or not session_id or not backend:
+                return None
+            backend_adapter = sandbox_for_name(backend)
+            if not vault_enabled and not bool(
+                getattr(backend_adapter, "supports_header_placeholder_credentials", False)
+            ):
+                return None
+            template = await AgentConfigService(
+                AgentRepository(), RuntimeProfileRepository(), sessions_repo=sessions,
+            ).resolve_session_harness(session)
+            platform = self._platform._runtime_manager
+            sandbox = await connect_engine_sandbox(platform, sandbox_id=sandbox_id, template=template)
+            delivered = {str(item) for item in identity.get(ENVIRONMENT_CREDENTIAL_IDS) or ()}
+            now, _bindings, _token_expiry = await reconcile_sandbox_credentials(
+                platform,
+                session_id=session_id,
+                template=template,
+                backend_adapter=backend_adapter,
+                sandbox=sandbox,
+                placeholder_context=context,
+                delivered=delivered,
+                bindings=set(),
+                vault_enabled=vault_enabled,
+                # MCP bindings follow each conversation's own Vault scope and
+                # are refreshed by its runtime before each turn.
+                with_mcp=False,
+            )
+            if now != delivered:
+                await AssistantWorkspaceRepository().record_credential_delivery(
+                    assistant_id,
+                    sandbox_id=sandbox_id,
+                    record={ENVIRONMENT_CREDENTIAL_IDS: sorted(now)},
+                )
+        except Exception as exc:  # noqa: BLE001 — the next tick retries
+            logger.warning(
+                "expiration_watcher: assistant box credential refresh failed "
+                "assistant=%s sandbox=%s: %s",
+                assistant_id,
+                sandbox_id,
+                exc,
+            )
+            return "assistant_box_credential_refresh_failed"
+        return "assistant_box_credentials_refreshed"
 
     async def _refresh_assistant_profile(self, row: dict[str, Any]) -> bool:
         from astrabox.common.utils.user_context import UserContext
@@ -626,6 +737,11 @@ class ExpirationWatcher:
         Scope is a conversation with an Agent. An assistant's workspace has its own
         wake/hibernate lifecycle over a shared box, and one sweeper deciding for
         both would be two authorities over the same sandbox.
+
+        Each park runs as its own task (``_parking``): a pause lasts as long as
+        the control plane's commit, and the rest of this watcher's tick must
+        not wait for it. ``idle_parking_started`` counts the parks this tick
+        began; their outcomes are logged by the parks themselves.
         """
         settings = self._settings()
         sessions_repo = self._platform._sessions_repo
@@ -642,14 +758,17 @@ class ExpirationWatcher:
         default_idle_seconds = settings.agent_idle_hibernate_seconds
         summary = {
             "idle_candidates": len(candidates),
-            "idle_parked": 0,
+            "idle_parking_started": 0,
+            "idle_parking_in_flight": 0,
             "idle_active": 0,
-            "idle_failed": 0,
         }
         for session in candidates:
             session_id = str((session or {}).get("session_id") or "").strip()
             sandbox_id = str((session or {}).get("sandbox_id") or "").strip()
             if not session_id or not sandbox_id:
+                continue
+            if sandbox_id in self._parking:
+                summary["idle_parking_in_flight"] += 1
                 continue
             idle_after_seconds = await self._idle_window_if_parking(
                 session,
@@ -666,30 +785,52 @@ class ExpirationWatcher:
             if not self._is_idle_past(fresh, idle_after_seconds=idle_after_seconds):
                 summary["idle_active"] += 1
                 continue
-            try:
-                parked = await self._park_sandbox(
+            task = self._platform._spawn_background_task(
+                self._park_and_log(
                     session_id=session_id,
                     sandbox_id=sandbox_id,
                     retention_seconds=retention_seconds,
                     idle_after_seconds=idle_after_seconds,
+                ),
+                name=f"park-sandbox-{sandbox_id}",
+            )
+            self._parking[sandbox_id] = task
+            task.add_done_callback(
+                lambda done, key=sandbox_id: (
+                    self._parking.pop(key, None) if self._parking.get(key) is done else None
                 )
-            except Exception:
-                summary["idle_failed"] += 1
-                logger.exception(
-                    "expiration_watcher: parking failed session=%s sandbox=%s",
-                    session_id, sandbox_id,
-                )
-                continue
-            if parked:
-                summary["idle_parked"] += 1
-                logger.info(
-                    "expiration_watcher: parked idle sandbox session=%s sandbox=%s "
-                    "idle_after_s=%d retention_s=%d",
-                    session_id, sandbox_id, idle_after_seconds, retention_seconds,
-                )
-            else:
-                summary["idle_failed"] += 1
+            )
+            summary["idle_parking_started"] += 1
         return summary
+
+    async def _park_and_log(
+        self,
+        *,
+        session_id: str,
+        sandbox_id: str,
+        retention_seconds: int,
+        idle_after_seconds: int,
+    ) -> None:
+        """One park as a task of its own; what it ends in is logged here."""
+        try:
+            parked = await self._park_sandbox(
+                session_id=session_id,
+                sandbox_id=sandbox_id,
+                retention_seconds=retention_seconds,
+                idle_after_seconds=idle_after_seconds,
+            )
+        except Exception:
+            logger.exception(
+                "expiration_watcher: parking failed session=%s sandbox=%s",
+                session_id, sandbox_id,
+            )
+            return
+        if parked:
+            logger.info(
+                "expiration_watcher: parked idle sandbox session=%s sandbox=%s "
+                "idle_after_s=%d retention_s=%d",
+                session_id, sandbox_id, idle_after_seconds, retention_seconds,
+            )
 
     async def _park_sandbox(
         self,
@@ -701,41 +842,107 @@ class ExpirationWatcher:
     ) -> bool:
         """Renew to the retention window, mark the binding parked, then pause.
 
-        The order is what makes this correct:
+        True once the control plane reports the box paused. The order is what
+        makes this correct:
 
         1. **Renew first.** A paused box still expires on its lease, and renewing
            one that is already paused makes the control plane fail it outright — so
            the retention window has to be bought while the box is still running. A
            renew that does not take means no parking: pausing anyway would promise
            files for a week and lose them at the old lease.
-        2. **Mark before pausing.** The commit takes tens of seconds, during which
-           a turn can arrive. The mark is what the ensure path reads to take the
-           wake branch, so that turn waits out the commit and resumes this box
-           instead of finding an unreachable one and cold-creating over it.
-        3. **Unmark on refusal.** A failed commit leaves the sandbox RUNNING, so a
-           mark left behind would describe a box that is not parked at all.
+        2. **Mark before pausing.** The commit reads the box's whole filesystem
+           and can take as long as the control plane's commit deadline, during
+           which the box is frozen. The mark is what the reader and the ensure
+           path read to take the wake branch, so a message sent meanwhile waits
+           for the pause's outcome and then resumes this box, instead of finding
+           an unreachable one and replacing it.
+        3. **Keep the mark until the control plane decides.** Only a pause that
+           ended without pausing — the box Running again after its failed
+           commit, or never paused at all — clears it, because only then is the
+           box running. A box still Pausing when the provider stops waiting
+           keeps its mark: it is neither running nor gone, and waking it later
+           reads the control plane's state again.
+
+        The session's runtime lock is held to decide, renew and mark, as
+        acceptance takes it for its durable input write: a message accepted
+        first prevents parking. The pause itself runs after the lock is
+        released, so a message sent during the commit is accepted at once and
+        its turn waits on the mark.
         """
-        # Acceptance uses this same lock only for its durable input/activity
-        # write. A message accepted first prevents parking; one arriving during
-        # pause is accepted after completion and wakes the parked box.
+        parked_at = await self._mark_parked(
+            session_id=session_id,
+            sandbox_id=sandbox_id,
+            retention_seconds=retention_seconds,
+            idle_after_seconds=idle_after_seconds,
+        )
+        if parked_at is None:
+            return False
+        runtime_manager = self._platform._runtime_manager
+        paused: bool | None
+        try:
+            paused = await runtime_manager.pause_sandbox_by_id(sandbox_id)
+        except APIError as exc:
+            if exc.code != "SANDBOX_UNREACHABLE":
+                await self._clear_parked_mark(session_id, sandbox_id=sandbox_id, parked_at=parked_at)
+                raise
+            logger.warning(
+                "expiration_watcher: pause undecided, sandbox stays parked "
+                "session=%s sandbox=%s: %s",
+                session_id, sandbox_id, exc.message,
+            )
+            paused = None
+        except Exception:
+            await self._clear_parked_mark(session_id, sandbox_id=sandbox_id, parked_at=parked_at)
+            raise
+        finally:
+            # The pause froze the box and, once it completes, removes its Pod,
+            # so every cached runtime for this session is stale. Eviction makes
+            # the next turn consult the parked mark and run the wake path instead
+            # of returning an in-memory runtime whose transport cannot serve it.
+            with contextlib.suppress(Exception):
+                await runtime_manager.evict_runtime(session_id)
+        if paused is False:
+            await self._clear_parked_mark(
+                session_id, sandbox_id=sandbox_id, parked_at=parked_at, box_resumed=True
+            )
+            logger.warning(
+                "expiration_watcher: the pause ended without pausing; the sandbox runs on "
+                "session=%s sandbox=%s",
+                session_id, sandbox_id,
+            )
+        return paused is True
+
+    async def _mark_parked(
+        self,
+        *,
+        session_id: str,
+        sandbox_id: str,
+        retention_seconds: int,
+        idle_after_seconds: int,
+    ) -> str | None:
+        """Under the session's runtime lock: renew and write the parked mark.
+
+        Returns the mark's timestamp, or None when this conversation is not
+        parked now (see :meth:`_park_sandbox`).
+        """
         async with get_persistence().coordination.runtime_lock(session_id) as check_lock:
             fresh = await self._platform._sessions_repo.get_session(session_id)
             if not fresh or fresh.get("sandbox_id") != sandbox_id or not self._is_idle_past(
                 fresh, idle_after_seconds=idle_after_seconds,
             ):
-                return False
+                return None
             if await self._platform._session_facts.open_input_ids(session_id):
                 logger.info(
                     "expiration_watcher: not parking — inputs await admission session=%s sandbox=%s",
                     session_id, sandbox_id,
                 )
-                return False
+                return None
             runtime_manager = self._platform._runtime_manager
             sessions_repo = self._platform._sessions_repo
             if not await self._box_is_this_session_s_alone(
                 session_id=session_id, sandbox_id=sandbox_id
             ):
-                return False
+                return None
             renewed_until = await runtime_manager.renew_sandbox_by_id(
                 sandbox_id, retention_seconds
             )
@@ -745,7 +952,7 @@ class ExpirationWatcher:
                     "session=%s sandbox=%s retention_s=%d",
                     session_id, sandbox_id, retention_seconds,
                 )
-                return False
+                return None
             await check_lock()
             parked_at = utcnow_iso()
             marked = await sessions_repo.compare_and_update_session(
@@ -764,28 +971,7 @@ class ExpirationWatcher:
                 },
                 touch_updated_at=False,
             )
-            if not marked:
-                return False
-            try:
-                paused = await runtime_manager.pause_sandbox_by_id(sandbox_id)
-            except Exception:
-                await self._clear_parked_mark(session_id)
-                raise
-            # Pausing removes the sandbox compute, so every cached runtime for this
-            # session is stale: its WebSocket targets the stopped Pod. Eviction makes
-            # the next turn consult the parked mark and run the wake path instead of
-            # returning an in-memory runtime whose transport cannot serve the turn.
-            with contextlib.suppress(Exception):
-                await runtime_manager.evict_runtime(session_id)
-            if not paused:
-                await self._clear_parked_mark(session_id)
-                logger.warning(
-                    "expiration_watcher: pause did not settle, sandbox left running "
-                    "session=%s sandbox=%s",
-                    session_id, sandbox_id,
-                )
-                return False
-            return True
+            return parked_at if marked else None
 
     async def _box_is_this_session_s_alone(
         self, *, session_id: str, sandbox_id: str
@@ -810,12 +996,36 @@ class ExpirationWatcher:
             )
         return not occupied
 
-    async def _clear_parked_mark(self, session_id: str) -> None:
-        with contextlib.suppress(Exception):
-            await self._platform._sessions_repo.update_session(
+    async def _clear_parked_mark(
+        self, session_id: str, *, sandbox_id: str, parked_at: str, box_resumed: bool = False
+    ) -> None:
+        """Remove the mark this park wrote, and nobody else's.
+
+        A wake may have resumed the box and cleared the mark meanwhile, or a
+        later park written its own; the comparison leaves both alone. The write
+        sends the session's ``reader`` notice, as a wake's does, because the box
+        it leaves bound is running.
+
+        ``box_resumed`` is for a pause the control plane failed after freezing
+        the box: its compute comes back as after a resume, so the idle clock
+        (:meth:`_is_idle_past`) starts again instead of parking it once more on
+        the next tick.
+        """
+        updates: dict[str, Any] = {"sandbox_parked_at": None}
+        if box_resumed:
+            updates["sandbox_resumed_at"] = utcnow_iso()
+        try:
+            await self._platform._sessions_repo.compare_and_update_session(
                 session_id,
-                {"sandbox_parked_at": None},
+                expected={"sandbox_id": sandbox_id, "sandbox_parked_at": parked_at},
+                updates=updates,
                 touch_updated_at=False,
+                notify="reader",
+            )
+        except Exception:
+            logger.exception(
+                "expiration_watcher: could not clear the parked mark session=%s sandbox=%s",
+                session_id, sandbox_id,
             )
 
     async def _idle_window_if_parking(

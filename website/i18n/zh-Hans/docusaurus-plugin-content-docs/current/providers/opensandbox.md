@@ -26,8 +26,12 @@ OpenSandbox Lifecycle API，不会取代这些文档中的控制器、容器运�
 
 ## 在 Kubernetes 中运行沙箱 {#run-sandboxes-on-kubernetes}
 
-先安装 OpenSandbox 控制器和 CRD，再创建沙箱 Pod 所在的命名空间。AstraBox 会检查
-命名空间、所选 workload CRD、Kubernetes API 访问和必要权限，但不会创建集群级资源
+先安装 OpenSandbox 控制器和 CRD，再创建沙箱 Pod 所在的命名空间。AstraBox 随附的生命周期
+服务是 opensandbox-server 1.2.1，而 OpenSandbox 把服务端、控制器、CRD、ingress Gateway
+和镜像作为同一个版本发布，所以请从同一版本安装：在 `release-1.2.1` 标签下渲染
+`manifests/charts/` 中的 chart，并使用 `opensandbox/<component>:release-1.2.1` 镜像。
+`agent-sandbox` workload 类型需要 Agent Sandbox 1.0（`agents.x-k8s.io/v1beta1`）。AstraBox
+会检查命名空间、所选 workload CRD、Kubernetes API 访问和必要权限，但不会创建集群级资源
 或命名空间。
 
 项目维护的 Compose overlay 让 AstraBox 在集群外运行，并在集群内创建沙箱 Pod。将
@@ -243,9 +247,10 @@ Pod 直连地址只在集群内有效；把它返回给公网上的控制台，�
 `gateway.dataplaneNamespace=opensandbox` 和 `gateway.gatewayRouteMode=uri`，并用
 `gateway.secureAccess.existingSecret` 指定该命名空间中的一个 Secret。这个 Secret 的
 `keys` 条目包含 `a=<base64-encoded-secret>`；密钥 ID `a` 必须与服务端配置一致。Secret
-和 Lifecycle 服务的密钥都要妥善保密。提交 `c806a49c62ee1fc3baa036165e9044e7b0efd97f`
-中的[官方 chart](https://github.com/opensandbox-group/OpenSandbox/tree/c806a49c62ee1fc3baa036165e9044e7b0efd97f/manifests/charts/ingress-gateway)
-的 chart 和镜像版本为 1.1.1。检出该提交并准备好签名 Secret 后，用以下命令安装：
+和 Lifecycle 服务的密钥都要妥善保密。标签 `release-1.2.1`
+中的[官方 chart](https://github.com/opensandbox-group/OpenSandbox/tree/release-1.2.1/manifests/charts/ingress-gateway)
+的 chart 和镜像版本为 1.2.1，即随附生命周期服务的版本。检出该标签并准备好签名 Secret 后，
+用以下命令安装：
 
 ```bash
 helm upgrade --install opensandbox-ingress \
@@ -284,7 +289,7 @@ scheme，与 Lifecycle API 无关。使用 HTTPS 的控制台需要 HTTPS 端点
 WebSocket 流量会被当作混合内容拦截。普通的浏览器链接无法使用基于请求头的路由。连接
 外部 Lifecycle 服务时，请按相同拓扑配置它原生的 `[ingress]` 设置；AstraBox 的
 `ASTRABOX_SANDBOX_SERVER_*` 设置只作用于内置服务。参见 OpenSandbox 的
-[Secure Access 指南](https://github.com/opensandbox-group/OpenSandbox/blob/c806a49c62ee1fc3baa036165e9044e7b0efd97f/docs/guides/secure-access.md)。
+[Secure Access 指南](https://github.com/opensandbox-group/OpenSandbox/blob/release-1.2.1/docs/guides/secure-access.md)。
 
 请在创建要使用 Secure Access 的沙箱之前启用它；修改服务端配置不会为已有沙箱启用它。
 通过 Gateway 的 `/status.ok` 端点和 TLS 证书检查部署健康状况。验收还需要从实际的

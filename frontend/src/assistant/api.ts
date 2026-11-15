@@ -10,6 +10,7 @@ import type {
   AssistantDefaultsFields,
   AssistantExtensionCatalog,
   AssistantListPage,
+  AssistantPanel,
   AssistantRecord,
   AssistantWorkspaceResult,
 } from './types';
@@ -102,6 +103,49 @@ export function wakeAssistantWorkspace(assistantId: string): Promise<AssistantWo
     ...wire,
     params: { path: { assistant_id: assistantId } },
   }));
+}
+
+/**
+ * A signed address for the Assistant runtime's own panel, issued to its owner
+ * while the workspace is READY. The address carries the runtime's login, so the
+ * server marks it no-store; `expires_at` is when it stops routing.
+ */
+export async function getAssistantPanel(assistantId: string): Promise<AssistantPanel> {
+  const data = await sendApi((wire) => apiClient.GET('/api/v1/assistants/{assistant_id}/panel', {
+    ...wire,
+    params: { path: { assistant_id: assistantId } },
+  }));
+  // The page renews the address before `expires_at`; one it cannot read would
+  // leave the panel to stop routing with nothing on screen saying why.
+  if (
+    data && typeof data === 'object' && typeof data.url === 'string' && data.url
+    && (data.expires_at == null || !Number.isNaN(Date.parse(data.expires_at)))
+  ) {
+    return data;
+  }
+  throw new Error(
+    i18n.t('misc:api_error.malformed_record', {
+      endpoint: `/assistants/${assistantId}/panel`,
+      got: data === null ? 'null' : typeof data,
+    }),
+  );
+}
+
+/**
+ * Set one credential the Assistant's runtime declares (`runtime.owner_secrets`).
+ * The value is write-only: the answer is the Assistant row, which records only
+ * that the credential is set and when.
+ */
+export function setAssistantOwnerSecret(
+  assistantId: string,
+  key: string,
+  value: string,
+): Promise<AssistantRecord> {
+  return sendApi((wire) => apiClient.PUT('/api/v1/assistants/{assistant_id}/owner-secrets/{key}', {
+    ...wire,
+    params: { path: { assistant_id: assistantId, key } },
+    body: { value },
+  })) as Promise<AssistantRecord>;
 }
 
 export function hibernateAssistantWorkspace(assistantId: string): Promise<{ assistant_id: string; hibernated: boolean }> {

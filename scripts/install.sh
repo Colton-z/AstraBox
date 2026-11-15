@@ -536,6 +536,111 @@ configure_model() {
   write_model_settings "$env_file"
 }
 
+# ── settings to review ──────────────────────────────────────────────────────
+#
+# containers/settings.reference.env lists every setting with its default. Its
+# first section holds the ones whose default is a decision about this host or
+# team: a "#? reason" line, the description, then "#NAME=default".
+
+# Prints name, default and reason for each setting to review, separated by
+# the unit separator: a default can be empty, and `read` merges adjacent tabs.
+review_settings() {
+  local reference="$1" line reason="" inside=0
+  [ -f "$reference" ] || die "The bundle has no $reference."
+  while IFS= read -r line; do
+    case "$line" in
+      '# >>> review at first install') inside=1 ;;
+      '# <<< review at first install') inside=0 ;;
+      '#? '*) [ "$inside" = 1 ] && reason="${line#\#? }" ;;
+      '#'[A-Z]*=*)
+        if [ "$inside" = 1 ]; then
+          line="${line#\#}"
+          printf '%s\037%s\037%s\n' "${line%%=*}" "${line#*=}" "$reason"
+        fi
+        ;;
+    esac
+  done <"$reference"
+}
+
+# How much memory sandboxes may hold together is decided before the settings
+# are first reviewed. Unset, the server takes the Docker host's memory less
+# 4 GiB, and nothing on the host tells it what else runs there. Taken from the
+# environment or the settings file when either sets it; otherwise asked. A
+# first install without a terminal to ask on is refused; an upgrade without one
+# keeps the server's default, which the server then warns about. An install is
+# an upgrade when main found an installed VERSION file (`previous_version`).
+decide_sandbox_memory() {
+  local env_file="$1" host_bytes host_gib suggestion="" value
+  if [ -n "${ASTRABOX_SANDBOX_QUOTA_MEMORY:-}" ] \
+    || [ -n "$(env_get "$env_file" ASTRABOX_SANDBOX_QUOTA_MEMORY)" ]; then
+    return 0
+  fi
+  if [ "$have_tty" != 1 ]; then
+    [ -z "${previous_version:-}" ] || return 0
+    die "Decide how much memory this host's sandboxes may hold together:" \
+      "AstraBox cannot see what else runs on the host. Set, for example," \
+      "ASTRABOX_SANDBOX_QUOTA_MEMORY=24Gi, or ASTRABOX_SANDBOX_QUOTA_MEMORY=unlimited." \
+      "See $DOCS_URL"
+  fi
+  host_bytes="$(docker info --format '{{.MemTotal}}' </dev/null)" || host_bytes=""
+  [[ "$host_bytes" =~ ^[0-9]+$ ]] || die "Cannot read the Docker host's memory from docker info."
+  host_gib=$((host_bytes / 1073741824))
+  # The server's own default, written out so the operator sees what it is.
+  [ "$host_gib" -le 4 ] || suggestion="$((host_gib - 4))Gi"
+  printf '\nThis Docker host has %s GiB of memory. AstraBox cannot see what else\n' "$host_gib" >&2
+  printf 'runs on it. How much may its sandboxes hold together? Enter a size such\n' >&2
+  printf 'as 24Gi, or unlimited.\n' >&2
+  [ -z "$suggestion" ] || printf '%s leaves 4 GiB for AstraBox itself and the host.\n' "$suggestion" >&2
+  value="$(prompt ASTRABOX_SANDBOX_QUOTA_MEMORY "$suggestion")"
+  # A size needs its unit: the server reads a bare number as bytes.
+  until [[ "$value" =~ ^([0-9]+(\.[0-9]+)?([KMGTP]i|[kMGTP])|unlimited)$ ]]; do
+    printf 'Enter a size with its unit, such as 24Gi or 768Mi, or unlimited.\n' >&2
+    value="$(prompt ASTRABOX_SANDBOX_QUOTA_MEMORY "$suggestion")"
+  done
+  env_set "$env_file" ASTRABOX_SANDBOX_QUOTA_MEMORY "$value"
+}
+
+# Takes each setting to review from the environment when it is set there, and
+# on a first interactive install offers to go through the rest. A setting
+# already in the settings file is kept.
+configure_review_settings() {
+  local env_file="$1" reference="$2" key default reason value ask=0
+  [ -n "$(env_get "$env_file" ASTRABOX_INSTALL_SETTINGS_REVIEWED)" ] \
+    || decide_sandbox_memory "$env_file"
+  if [ -z "$(env_get "$env_file" ASTRABOX_INSTALL_SETTINGS_REVIEWED)" ] && [ "$have_tty" = 1 ]; then
+    printf '\nSome defaults depend on this host and your team, such as how much of\n' >&2
+    printf 'the host sandboxes may use. Enter keeps the default shown.\n' >&2
+    if confirm 'Go through them now?'; then ask=1; fi
+  fi
+  # Descriptor 4: the questions below read the terminal on descriptor 3.
+  while IFS=$'\037' read -r key default reason <&4; do
+    if [ -n "${!key:-}" ]; then
+      env_set "$env_file" "$key" "${!key}"
+    elif [ "$ask" = 1 ] && [ -z "$(env_get "$env_file" "$key")" ]; then
+      printf '\n%s\n' "$reason" >&2
+      value="$(prompt "$key" "${default:-unset}")"
+      if [ "$value" != "${default:-unset}" ]; then env_set "$env_file" "$key" "$value"; fi
+    fi
+  done 4< <(review_settings "$reference")
+  env_set "$env_file" ASTRABOX_INSTALL_SETTINGS_REVIEWED 1
+}
+
+# The settings to review with the value each has now.
+show_review_settings() {
+  local env_file="$1" reference="$2" key default reason value
+  printf '\n  Settings that depend on this host and your team. Change one in\n'
+  printf '  %s and run the installer again:\n' "$env_file"
+  while IFS=$'\037' read -r key default reason; do
+    value="$(env_get "$env_file" "$key")"
+    if [ -n "$value" ]; then
+      printf '    %s=%s\n' "$key" "$value"
+    else
+      printf '    %s  (default: %s)\n      %s\n' "$key" "${default:-unset}" "$reason"
+    fi
+  done < <(review_settings "$reference")
+  printf '  Every setting and its default: %s\n' "$reference"
+}
+
 # ── team login ──────────────────────────────────────────────────────────────
 
 # Prints casdoor or none: what the settings file's COMPOSE_FILE runs now.
@@ -790,6 +895,9 @@ main() {
   local env_file="$install_dir/containers/.env"
   local previous_version=""
   [ -f "$install_dir/VERSION" ] && previous_version="$(tr -d '\r\n' <"$install_dir/VERSION")"
+  # Without a terminal, a first install whose sandbox memory is undecided stops
+  # here, before it writes the VERSION that would make a re-run an upgrade.
+  [ "$have_tty" = 1 ] || decide_sandbox_memory "$env_file"
 
   local bundle version
   work="$(mktemp -d)"
@@ -830,6 +938,8 @@ main() {
 
   configure_model "$env_file"
   configure_team_login "$env_file"
+  local reference="$install_dir/containers/settings.reference.env"
+  configure_review_settings "$env_file" "$reference"
 
   compose config --quiet || die "Docker Compose rejected the configuration in $install_dir/containers."
   step "Pulling the AstraBox $version images"
@@ -867,6 +977,7 @@ EOF
              docker compose logs -f server
              docker compose down      (keeps data; add -v to delete it)
 EOF
+  show_review_settings "$env_file" "$reference"
   if [ "$(env_get "$env_file" ASTRABOX_INSTALL_MODEL_PROVIDER)" = none ]; then
     printf '\n  No model service is configured. Add one in the console under\n'
     printf '  Integrated services > LiteLLM gateway, or re-run the installer.\n'

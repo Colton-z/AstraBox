@@ -277,7 +277,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "replacing a lost one. A backend that cannot honour it refuses the "
         "create with SANDBOX_RESOURCES_UNSUPPORTED before anything is "
         "allocated; the bundled OpenSandbox server on Docker lowers a CPU limit "
-        "above the host's CPU count to that count.",
+        "above the host's CPU count to that count. A RuntimeProfile's sandbox_cpu "
+        "replaces it for that profile's boxes, and caps their CPU request.",
         "astrabox.config.settings",
     ),
     (
@@ -285,7 +286,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "public",
         "1Gi",
         "Memory limit of a conversation's own box, as a Kubernetes quantity "
-        "(1Gi, 768Mi). Startup refuses a value that is not a quantity.",
+        "(1Gi, 768Mi). Startup refuses a value that is not a quantity. A "
+        "RuntimeProfile's sandbox_memory replaces it, and the memory request, for "
+        "that profile's boxes.",
         "astrabox.config.settings",
     ),
     (
@@ -313,14 +316,17 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "CPU limit of an Agent's shared box (RuntimeProfile "
         "sandbox_tenancy=agent), as a Kubernetes quantity, for every such box. "
         "A shared box admits another conversation while its free memory allows, "
-        "so its size decides how many it holds.",
+        "so its size decides how many it holds. A RuntimeProfile's sandbox_cpu "
+        "replaces it for that profile's boxes, and caps their CPU request.",
         "astrabox.config.settings",
     ),
     (
         "ASTRABOX_SHARED_SANDBOX_MEMORY_LIMIT",
         "public",
         "4Gi",
-        "Memory limit of an Agent's shared box, as a Kubernetes quantity.",
+        "Memory limit of an Agent's shared box, as a Kubernetes quantity. A "
+        "RuntimeProfile's sandbox_memory replaces it, and the memory request, for "
+        "that profile's boxes.",
         "astrabox.config.settings",
     ),
     (
@@ -345,7 +351,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "1",
         "CPU limit of an Assistant's workspace box, as a Kubernetes quantity, "
         "for every such box. The box stays running between messages so the "
-        "Assistant can answer its channels and run its scheduled jobs.",
+        "Assistant can answer its channels and run its scheduled jobs. A "
+        "RuntimeProfile's sandbox_cpu replaces it for that profile's boxes, and "
+        "caps their CPU request.",
         "astrabox.config.settings",
     ),
     (
@@ -353,7 +361,9 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "public",
         "1Gi",
         "Memory limit of an Assistant's workspace box, as a Kubernetes quantity. "
-        "Hermes and its desktop use about 860Mi when idle.",
+        "Hermes and its desktop use about 860Mi when idle. A RuntimeProfile's "
+        "sandbox_memory replaces it, and the memory request, for that profile's "
+        "boxes.",
         "astrabox.config.settings",
     ),
     (
@@ -392,7 +402,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Kubernetes quantity such as 12Gi). Empty: on the bundled Docker "
         "server, the Docker host's memory less 4Gi; elsewhere no ceiling. "
         "unlimited sets none. Startup logs the value in force and where it came "
-        "from.",
+        "from, and warns when it is derived from the host: the host's memory "
+        "says nothing about other software running on it.",
         "astrabox.config.settings",
     ),
     (
@@ -693,6 +704,22 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.common.utils.settings",
     ),
     (
+        "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN",
+        "public",
+        "false",
+        "Give each new Docker sandbox's execd a per-sandbox access token. Unset, "
+        "a sandbox's execd answers anyone who reaches its published port on the "
+        "Docker bridge gateway, so other containers on the bridge and processes "
+        "on the host can run commands and read files in it. True closes that for "
+        "sandboxes created afterwards. On the Docker runtime a browser reaches an "
+        "in-box port only through execd and cannot send the token, so with true "
+        "HTML preview, the Browser panel, exposed ports and Pi Agents that share "
+        "a sandbox between conversations are unavailable. Applies only to the "
+        "bundled lifecycle server on Docker; elsewhere true refuses every "
+        "sandbox create.",
+        "astrabox.common.utils.settings",
+    ),
+    (
         "ASTRABOX_SANDBOX_ENDPOINT_SCHEME",
         "public",
         "",
@@ -828,6 +855,18 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "selection is named at startup and fails new work with "
         "EXTENSION_CATALOG_DISABLED until that selection is removed. Startup "
         "refuses a name no installed provider registers.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED",
+        "public",
+        "false",
+        "Turn on the team pool of ChatGPT accounts. A conversation on a ChatGPT plan "
+        "RuntimeProfile whose owner's account reported its plan usage limit spends, from "
+        "its next response on, the owner's other accounts and then accounts other members "
+        "of the organization shared with the team. False: a conversation spends only its "
+        "owner's chosen account, and no account can be shared. YAML: "
+        "astrabox.model_accounts.pool_enabled. Restart to apply.",
         "astrabox.common.utils.settings",
     ),
     (
@@ -1037,7 +1076,8 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_SANDBOX_LEASE_SECONDS",
         "internal",
         "14400",
-        "The conversation sandbox lease; renewed on turn/mirror activity. An "
+        "The conversation sandbox lease; renewed while the runtime reports work "
+        "(working, waiting or background), however long one response runs. An "
         "abandoned session dies roughly one lease after its last activity.",
         "astrabox.common.utils.settings",
     ),
@@ -1206,12 +1246,14 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_ENVIRONMENT_ENTRY_POLICY",
         "public",
-        "members",
-        "Environment entry policy from astrabox.environment.entry. The default "
-        "requires explicit membership; a deployment may select an installed "
-        "policy for verified enterprise identities. Does not grant resource "
-        "permissions or roles. Unknown policies refuse startup; policy failures "
-        "refuse entry.",
+        "authenticated",
+        "Environment entry policy from astrabox.environment.entry. The default, "
+        "authenticated, admits every identity the deployment's sign-in verifies. "
+        "members admits only the Environment's member list, for an identity "
+        "provider shared with other deployments; a deployment may also select an "
+        "installed policy for verified enterprise identities. Does not grant "
+        "resource permissions or roles. Unknown policies refuse startup; policy "
+        "failures refuse entry.",
         "astrabox.providers.environment_entry",
     ),
     (
@@ -1549,11 +1591,12 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_WEBHOOK_HMAC_WINDOW_SECONDS",
         "public",
         "300",
-        "Freshness window (seconds) for the hmac webhook scene: a request whose "
+        "Freshness window (seconds) for signed webhook requests (the hmac scene and "
+        "signed generic_json channel requests): a request whose "
         "X-WEBHOOK-TIMESTAMP is outside +/- this is rejected 401, so a captured "
         "(timestamp, signature, body) triple expires. The signature binds the "
         "body, so it also cannot be replayed with a different body.",
-        "astrabox.core.service.orchestrator.deployment_service",
+        "astrabox.common.utils.webhook_signature",
     ),
     (
         "ASTRABOX_CHANNEL_CLAIM_STALE_SECONDS",
@@ -1914,6 +1957,49 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.deploy.sandbox_server",
     ),
     (
+        "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS",
+        "public",
+        "",
+        "Comma-separated Docker networks of this host that a RuntimeProfile may join "
+        "its sandboxes to, so they reach services there (sandbox_networks). Empty "
+        "allows none. A joined network's subnet is reachable from the sandbox in "
+        "both network-access modes; connections from it into the sandbox are "
+        "refused. Bundled OpenSandbox server on the Docker runtime only, with Docker "
+        "Engine 28.0 (API 1.48) or later; on its Kubernetes runtime, name a cluster "
+        "Service in a Limited RuntimeProfile's allowed hosts instead. Checked when "
+        "a RuntimeProfile is saved and each time a sandbox is created; the "
+        "lifecycle server checks it again.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS",
+        "public",
+        "",
+        "Comma-separated absolute host directories that a RuntimeProfile may mount "
+        "into its sandboxes (sandbox_mounts), each named exactly; a sub-directory "
+        "is not allowed by its parent. Empty allows none. A read-write mount gives "
+        "the sandbox write access to that directory. On the bundled OpenSandbox "
+        "server's Docker runtime a directory of this host; on its Kubernetes "
+        "runtime a directory of the node that runs the sandbox's Pod, which "
+        "Kubernetes creates, owned by root, when it is missing. The bundled "
+        "server also renders the list as its storage.allowed_host_paths; an "
+        "existing OpenSandbox service is refused.",
+        "astrabox.common.utils.settings",
+    ),
+    (
+        "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES",
+        "public",
+        "",
+        "Comma-separated named volumes that a RuntimeProfile may mount into its "
+        "sandboxes (sandbox_mounts): Docker named volumes on the bundled "
+        "OpenSandbox server's Docker runtime, PersistentVolumeClaims in the "
+        "sandbox namespace on its Kubernetes runtime. Empty allows none. Each "
+        "must already exist when a sandbox is created, and sandboxes never "
+        "create or delete one; names use lowercase letters, digits and '-'. An "
+        "existing OpenSandbox service is refused.",
+        "astrabox.common.utils.settings",
+    ),
+    (
         "ASTRABOX_PUBLISH_HOST_IP",
         "public",
         "127.0.0.1",
@@ -1994,6 +2080,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.deploy.sandbox_server",
     ),
     (
+        "ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH",
+        "public",
+        "",
+        "Kubernetes runtime of the bundled OpenSandbox server only: the absolute node "
+        "path of a tun device node (mknod <path> c 10 200) on a filesystem that "
+        "supports idmapped mounts, such as ext4, xfs or btrfs, present on every node "
+        "that runs sandboxes. A box whose RuntimeProfile has sandbox_container_engine "
+        "docker gets it at /dev/net/tun; the node's own /dev/net/tun cannot be used, "
+        "because devtmpfs does not support idmapped mounts. Empty refuses such a "
+        "RuntimeProfile on Kubernetes. The Docker runtime ignores it and warns.",
+        "astrabox.deploy.sandbox_server",
+    ),
+    (
         "ASTRABOX_SANDBOX_SERVER_KUBE_IMAGE_PULL_POLICY",
         "internal",
         "IfNotPresent",
@@ -2001,16 +2100,6 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Always, IfNotPresent or Never. Validated at startup because upstream copies "
         "the string into the Pod spec unchecked, so a typo would otherwise be a "
         "rejected create.",
-        "astrabox.deploy.sandbox_server",
-    ),
-    (
-        "ASTRABOX_SANDBOX_SERVER_KUBE_INFORMER",
-        "internal",
-        "true",
-        "Whether the lifecycle server keeps a watch-backed cache of sandbox workloads "
-        "(upstream's [beta] kubernetes.informer_enabled, on by default there too). It "
-        "trades a persistent watch for far fewer API reads; turn it off to take API "
-        "pressure off a shared control plane.",
         "astrabox.deploy.sandbox_server",
     ),
     (
@@ -2109,9 +2198,13 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_SANDBOX_EGRESS_IMAGE",
         "public",
-        "opensandbox/egress:v1.1.7",
+        "derived",
         "OpenSandbox outbound proxy image used for provider network enforcement and "
-        "protected credential injection. The default is the tested image. A missing "
+        "protected credential injection. Unset, it is the release image "
+        "<ASTRABOX_IMAGE_PREFIX>egress:<ASTRABOX_IMAGE_TAG>: OpenSandbox egress 1.2.1 "
+        "with an addon that decrypts HTTPS only to hosts a protected credential is "
+        "bound to, so every other connection, including those of containers an Agent "
+        "runs in its sandbox, keeps the destination's own certificate. A missing "
         "image makes either requested OpenSandbox capability fail before allocation.",
         "astrabox.deploy.sandbox_server",
     ),
@@ -2145,7 +2238,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Image the lifecycle server copies the execd init binary from into every "
         "new sandbox, including prepared boxes. Unset, it is the release image "
         "<ASTRABOX_IMAGE_PREFIX>execd:<ASTRABOX_IMAGE_TAG>, which carries the "
-        "streaming-upload patch over OpenSandbox execd v1.1.0. A custom value "
+        "streaming-upload patch over OpenSandbox execd 1.2.1. A custom value "
         "must provide the compatible execd init image layout.",
         "astrabox.deploy.sandbox_server",
     ),
@@ -2288,6 +2381,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Deadline in seconds for a sandbox probe, connection, or delete operation. "
         "Command and Agent streams use their own lifetimes.",
         "astrabox.core.service.orchestrator.runtime_manager",
+    ),
+    (
+        "ASTRABOX_CONTAINER_ENGINE",
+        "injected",
+        "none",
+        "Container engine the sandbox image starts at boot: docker starts a rootless "
+        "Docker Engine as the workload account, none starts nothing. Set by the "
+        "create of a box whose RuntimeProfile has sandbox_container_engine docker, "
+        "and only then; the box is handed out once the engine answers.",
+        "containers/container-engine/astrabox-container-engine (image: astrabox-container-engine)",
     ),
     (
         "ASTRABOX_RUNNER_PORT",
@@ -2573,12 +2676,68 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
+        "ASTRABOX_WORKLOAD_USER",
+        "internal",
+        "",
+        "Account an Agent sandbox image declares for its workload, set by the "
+        "image's Dockerfile and created by the image's entrypoint. The "
+        "conversation bootstrap waits for the entrypoint to create this account "
+        "and creates only accounts the image does not declare.",
+        "astrabox/core/service/orchestrator/runtime/provision-conversation",
+    ),
+    (
         "ASTRABOX_HERMES_PROFILE_WAIT_SECONDS",
         "internal",
         "1800",
         "Maximum seconds the image-owned Hermes launcher waits for a usable "
         "Assistant profile, account and workspace before exiting with status 75.",
         "containers/sandbox-hermes/astrabox-hermes-serve",
+    ),
+    (
+        "ASTRABOX_DSH_SUPERAGENT_PROFILE_WAIT_SECONDS",
+        "internal",
+        "1800",
+        "Maximum seconds the image-owned dsh-superagent launcher waits for a usable "
+        "Assistant profile, account, workspace and this box's initialization before "
+        "exiting with status 75.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
+    ),
+    (
+        "ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN",
+        "public",
+        "",
+        "Token of the GitHub agent account every dsh-superagent Assistant acts as "
+        "unless its owner sets one of their own: a classic token with repo and "
+        "notifications. Read through SecretProvider as the secret "
+        "astrabox-dsh-superagent-github-token, the dsh_superagent engine's "
+        "deployment_secret for its github_token.",
+        "astrabox.core.service.orchestrator.engine.dsh_superagent",
+    ),
+    (
+        "ASTRABOX_DSH_PROFILE_LINUX_USER",
+        "injected",
+        "",
+        "The Assistant's Linux account in a dsh-superagent box, written into the "
+        "profile env file at activation; the launcher runs the harness, the state "
+        "mirror and the GitHub sign-in as this account.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
+    ),
+    (
+        "ASTRABOX_DSH_PROFILE_HOME",
+        "injected",
+        "",
+        "The Assistant's home in a dsh-superagent box, written into the profile env "
+        "file at activation; DSH_HOME and the harness's launch URL live under it.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
+    ),
+    (
+        "ASTRABOX_DSH_WORKSPACE",
+        "injected",
+        "",
+        "The Assistant's workspace in a dsh-superagent box, written into the "
+        "profile env file at activation; the harness runs with it as its working "
+        "directory.",
+        "containers/sandbox-dsh-superagent/astrabox-dsh-superagent-serve",
     ),
     (
         "ASTRABOX_HERMES_UPSTREAM_WAIT_SECONDS",
@@ -2979,13 +3138,14 @@ SECRET_NAME_PATTERN_ROW = EnvVarSpec(
     description=(
         "Dynamic: SecretProvider.get_secret(secret_name) reads "
         "secret_name.upper().replace('-', '_') from the environment for whatever "
-        "secret_name a *_secret_name setting names (ASTRABOX_SANDBOX_API_KEY_SECRET_NAME, "
+        "secret_name a *_secret_name setting names "
+        "(ASTRABOX_SANDBOX_API_KEY_SECRET_NAME, "
         "ASTRABOX_MODEL_API_KEY_SECRET_NAME, ASTRABOX_GIT_HTTPS_TOKEN_SECRET_NAME, "
         "ASTRABOX_TITLE_MODEL_API_KEY_SECRET_NAME, an environment's own "
         "provider_access.api_key_secret_name, or a repository deploy key listed "
         "in ASTRABOX_DEPLOY_KEY_SECRET_NAMES) — the operator picks the name, so no "
-        "single literal "
-        "env var represents it."
+        "single literal env var represents it. A secret an engine declares as an "
+        "Assistant's shared credential has a fixed name and a row of its own."
     ),
     read_site="astrabox.secrets",
     is_pattern=True,
@@ -3004,6 +3164,69 @@ for _spec in ENV_REGISTRY:
         raise ValueError(f"duplicate env_registry entry for {_spec.name!r}")
     _seen.add(_spec.name)
 del _seen, _spec
+
+
+#: Operator-facing names a client process reads (the developer CLI), which the
+#: server never sees.
+CLIENT_SIDE: frozenset[str] = frozenset(
+    {
+        "ASTRABOX_ENDPOINT",
+        "ASTRABOX_TOKEN",
+        "ASTRABOX_CLIENT_ID",
+        "ASTRABOX_CLIENT_SECRET",
+        "ASTRABOX_TOKEN_URL",
+        "ASTRABOX_SCOPE",
+    }
+)
+
+#: Operator-facing server settings the Compose deployment decides itself, each
+#: with what an operator sets instead.
+COMPOSE_FIXED: dict[str, str] = {
+    "ASTRABOX_HOST": "the server image listens on every interface inside its container; "
+    "Compose publishes it on the host's loopback",
+    "ASTRABOX_PORT": "the port inside the container is fixed; ASTRABOX_SERVER_HOST_PORT "
+    "chooses the host port",
+}
+
+#: Settings whose default is a decision about this particular host or team, in
+#: the order an installer presents them, each with why an operator looks at it
+#: before the deployment takes work. A setting here is forwarded by Compose
+#: whatever its tier.
+SETUP_REVIEW: dict[str, str] = {
+    "ASTRABOX_SANDBOX_QUOTA_MEMORY": "Sandboxes may take all of this host's memory but 4 GiB. "
+    "Set a ceiling when the host runs anything else.",
+    "ASTRABOX_SANDBOX_QUOTA_CPU": "Sandboxes may take every CPU of this host. "
+    "Set a ceiling when the host runs anything else.",
+    "ASTRABOX_SANDBOX_QUOTA_BOXES": "No limit on how many sandboxes run at once.",
+    "ASTRABOX_SANDBOX_CPU_LIMIT": "CPU of each conversation's sandbox. Builds and test suites need more.",
+    "ASTRABOX_SANDBOX_MEMORY_LIMIT": "Memory of each conversation's sandbox. Builds and test suites need more.",
+    "ASTRABOX_SANDBOX_LEASE_SECONDS": "A conversation's sandbox, with the files in it, is removed "
+    "this long after its last work.",
+    "ASTRABOX_SANDBOX_IDLE_ACTION": "What new RuntimeProfiles do with an idle sandbox: "
+    "terminate removes it when its lease ends, pause keeps it parked.",
+    "ASTRABOX_AUTHORING_ADMIN_ONLY": "Every signed-in user may create Agents and Assistants.",
+    "ASTRABOX_ENVIRONMENT_ENTRY_POLICY": "Every account the identity provider signs in may use "
+    "this deployment; members admits only the Environment's member list.",
+}
+
+
+def compose_settable() -> list[EnvVarSpec]:
+    """The settings an operator of the Compose deployment sets in ``containers/.env``.
+
+    Every operator-facing setting the server reads and Compose does not decide
+    itself, and every setting an installer asks an operator to review.
+    """
+    return sorted(
+        (
+            spec
+            for spec in ENV_REGISTRY
+            if not spec.is_pattern
+            and spec.name not in CLIENT_SIDE
+            and spec.name not in COMPOSE_FIXED
+            and (spec.tier == "public" or spec.name in SETUP_REVIEW)
+        ),
+        key=lambda spec: spec.name,
+    )
 
 
 def by_tier(tier: Tier) -> list[EnvVarSpec]:

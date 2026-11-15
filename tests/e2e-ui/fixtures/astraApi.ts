@@ -124,7 +124,7 @@ export interface SessionRecord {
   user_id?: string | null;
   /** CREATING / READY / PROCESSING / WAITING_INPUT / TERMINATED / DELETED. */
   state?: string | null;
-  /** `idle`, `working` or `waiting`, as the runtime last reported. */
+  /** `idle`, `working`, `waiting` or `background`, as the runtime last reported. */
   runtime_status?: string | null;
   // Permission mode the conversation runs under. Community conversations are
   // created with `bypassPermissions` (POST /conversations hardcodes it) — switch
@@ -166,6 +166,8 @@ export interface SessionRecord {
   last_response?: ResponseRecord | null;
   /** Detail only: inputs the platform still holds. */
   held_inputs?: HeldInput[] | null;
+  /** Work the runtime keeps running in its box, each stoppable on its own. */
+  background_tasks?: Array<{ task_id: string; kind: string; description: string }> | null;
   /** Detail only: the output position to follow the session's stream from. */
   output_seq?: number | null;
 }
@@ -919,6 +921,9 @@ export class AstraApi {
     // The response's own frames, as the SSE the stream carried them in.
     const raw = () => frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join('');
     let answering = false;
+    // A start that names this input opens its response; a later start of the
+    // same message (a reopen, or the parts closing a lost response) continues it.
+    let responseId = '';
     while (Date.now() < deadline) {
       const read = await this.resumeStream(sessionId, cursor, Math.max(1_000, deadline - Date.now()));
       for (const frame of sseFrames(read.raw)) {
@@ -929,7 +934,12 @@ export class AstraApi {
         }
         if (type === 'start' && frame.messageMetadata) {
           const inputIds = (frame.messageMetadata as { input_ids?: unknown }).input_ids;
-          answering = Array.isArray(inputIds) && inputIds.map(String).includes(inputId);
+          if (Array.isArray(inputIds) && inputIds.map(String).includes(inputId)) {
+            responseId = String(frame.messageId || '');
+            answering = true;
+          } else {
+            answering = Boolean(responseId) && frame.messageId === responseId;
+          }
         }
         if (!answering) continue;
         frames.push(frame);

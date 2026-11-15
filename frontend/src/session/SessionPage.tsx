@@ -26,7 +26,7 @@ import {
   SessionHistoryBlockingState,
   SessionHistoryErrorState,
 } from './components/SessionBootstrapStates';
-import { stopSessionChildRun } from '../api';
+import { stopSessionBackgroundTask, stopSessionChildRun } from '../api';
 import { computeSessionRunStatus } from './sessionRunStatus';
 import { SubagentTranscriptDrawer } from './components/SubagentTranscriptDrawer';
 import { SubagentNavigationProvider } from './components/subagentNavigation';
@@ -35,6 +35,7 @@ import { SessionHeader } from './components/SessionHeader';
 import { SessionRetryBanner } from './components/SessionRetryBanner';
 import { SessionConversationView } from './components/SessionConversationView';
 import { SessionPendingInteractionFooter } from './components/SessionPendingInteractionFooter';
+import { SessionBackgroundTasks } from './components/SessionBackgroundTasks';
 import { SessionComposerBox } from './components/SessionComposerBox';
 import { SessionRightPanel } from './components/SessionRightPanel';
 import { SessionSendContext, type SessionSendState } from './components/UserMessageStatus';
@@ -412,7 +413,16 @@ function SessionPageReady({
           />
         ) : (
           <SessionComposerBox
-            userAction={<SessionUserAction gate={prerequisite} />}
+            userAction={<>
+              <SessionUserAction gate={prerequisite} />
+              <SessionBackgroundTasks
+                tasks={session.background_tasks ?? []}
+                onStop={async (taskId) => {
+                  await stopSessionBackgroundTask(session.session_id, taskId);
+                  void refresh().catch(() => {});
+                }}
+              />
+            </>}
             sessionId={sessionId}
             hasSlashCommands={hasSlashCommands}
             showSlashPopup={showSlashPopup}

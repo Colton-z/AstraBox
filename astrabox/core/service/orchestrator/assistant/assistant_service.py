@@ -61,6 +61,8 @@ from astrabox.core.service.orchestrator.agent_access import assert_may_author
 from astrabox.core.service.orchestrator.author_boundary import (
     validate_author_declarations,
 )
+from astrabox.core.service.orchestrator.assistant.assistant_secrets import AssistantOwnerSecrets
+from astrabox.secrets import SecretProvider
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
     AssistantWorkspaceService,
     get_assistant_profile_ready_marker,
@@ -638,8 +640,30 @@ class AssistantService:
         )
         if workspace:
             rendered["current_sandbox_id"] = workspace.get("current_sandbox_id")
+            rendered.update(await self._workspace_start_outcome(workspace))
         rendered["inherited"] = await self._inherited_summary(assistant)
         return rendered
+
+    async def _workspace_start_outcome(self, workspace: dict[str, Any]) -> dict[str, Any]:
+        """Why a workspace that is not running failed its last start.
+
+        The hidden Session that last tried to start it records either an action
+        only the owner can take (a credential to set) or the error it ended
+        with. A start that has not failed reports nothing.
+        """
+
+        if str(workspace.get("state") or "") in ("READY", "MATERIALIZING"):
+            return {}
+        session = await self._sessions_repo.latest_workspace_starter(
+            str(workspace.get("assistant_id") or "")
+        )
+        if not session or not session.get("runtime_unavailable"):
+            return {}
+        action = session.get("startup_user_action")
+        if isinstance(action, dict) and action.get("message"):
+            return {"workspace_action": action}
+        error = str(session.get("last_error") or "").strip()
+        return {"workspace_error": error[:1000]} if error else {}
 
     async def _inherited_summary(self, assistant: dict[str, Any]) -> dict[str, Any]:
         """What the layers above an Assistant provide, for its owner to read.
@@ -652,10 +676,19 @@ class AssistantService:
         reader learns which is the case from ``/api/v1/extension-provider``.
         """
 
-        from astrabox.core.service.orchestrator.assistant.assistant_layers import inherited_layers
+        from astrabox.core.service.orchestrator.assistant.assistant_layers import (
+            inherited_layers,
+            layers_for_engine,
+        )
         from astrabox.core.service.orchestrator.mcp_assignments import normalize_assignments
 
-        layers = await inherited_layers()
+        from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
+
+        layers = await layers_for_engine(
+            await inherited_layers(),
+            self._require_engine_kind(assistant),
+            await RuntimeProfileRepository().list_all(),
+        )
         summary: dict[str, Any] = {
             "instructions": False,
             "skills": [],
@@ -921,6 +954,123 @@ class AssistantService:
         refreshed = await self._catalog_repo.get_assistant(assistant_id)
         return self._sanitize_assistant(refreshed or assistant)
 
+    async def panel(self, user: UserContext, assistant_id: str) -> dict[str, Any]:
+        """A signed browser address for the Assistant runtime's own panel.
+
+        Only the owner is issued one, only for a runtime that declares a panel,
+        and only while its workspace is READY: the address names the box that
+        serves it now. The path carries the runtime's own login, so the page
+        opens signed in; ``expires_at`` is when the address stops routing.
+        """
+
+        assistant = await self._must_use_assistant(user, assistant_id)
+        engine_kind = self._require_engine_kind(assistant)
+        surface = capabilities_for_engine_kind(engine_kind).assistant
+        if surface is None or surface.panel is None:
+            raise APIError(
+                code="ASSISTANT_PANEL_UNSUPPORTED",
+                message=f"assistant={assistant_id} runs engine_kind={engine_kind!r}, which serves no panel",
+                status_code=409,
+            )
+        if self._runtime_manager is None:
+            raise APIError(
+                code="ASSISTANT_RUNTIME_MANAGER_UNAVAILABLE",
+                message="cannot open an assistant panel without runtime manager",
+                status_code=500,
+            )
+        workspace = await self._workspace_service.get_owned_workspace(
+            user_id=user.user_id, assistant_id=assistant_id
+        )
+        state = str((workspace or {}).get("state") or "").strip() or "NOT_MATERIALIZED"
+        sandbox_id = str((workspace or {}).get("current_sandbox_id") or "").strip()
+        identity = normalize_runtime_identity((workspace or {}).get("runtime_identity"))
+        if state != "READY" or not sandbox_id or identity is None:
+            raise APIError(
+                code="ASSISTANT_WORKSPACE_NOT_READY",
+                message=f"assistant={assistant_id} workspace is {state}; wake it and retry",
+                status_code=409,
+                data={"state": state},
+            )
+        from urllib.parse import urlsplit
+
+        from astrabox.core.service.orchestrator.expose_port_service import resolve_browser_url
+
+        provider = await self._runtime_manager.resolve_sandbox_provider(sandbox_id)
+        endpoint = await resolve_browser_url(
+            backend=provider.name, sandbox_id=sandbox_id, port=surface.panel.port
+        )
+        base = urlsplit(endpoint.endpoint)
+        if base.path not in ("", "/") or base.query:
+            # A panel is a whole web application that addresses its own routes
+            # from the root; under a path prefix every one of them misses.
+            raise APIError(
+                code="ASSISTANT_PANEL_ROUTE_UNSUPPORTED",
+                message=(
+                    "the sandbox gateway routes browser endpoints under a path prefix "
+                    f"({base.path!r}); an Assistant panel needs the gateway's wildcard "
+                    "route mode, which gives each endpoint its own hostname"
+                ),
+                status_code=409,
+            )
+        adapter = get_engine_adapter(engine_kind)
+        box = await self._runtime_manager.connect_sandbox_only(sandbox_id)
+        path = await adapter.panel_launch_path(box, runtime_identity=identity)
+        if not path.startswith("/"):
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message=f"engine_kind={engine_kind!r} returned a panel path that is not absolute",
+                status_code=502,
+            )
+        return {
+            "url": f"{base.scheme}://{base.netloc}{path}",
+            "expires_at": endpoint.expires_at.isoformat() if endpoint.expires_at else None,
+        }
+
+    async def set_owner_secret(
+        self, user: UserContext, assistant_id: str, key: str, value: Any
+    ) -> dict[str, Any]:
+        """Set one credential the Assistant's runtime asks its owner for.
+
+        The value goes to the secret store and is never returned; the row
+        records only that it is set, which moves the Assistant's revision so a
+        running workspace is prepared again with the new value.
+        """
+
+        assistant = await self._must_use_assistant(user, assistant_id)
+        engine_kind = self._require_engine_kind(assistant)
+        surface = capabilities_for_engine_kind(engine_kind).assistant
+        declared = {secret.key for secret in (surface.owner_secrets if surface else ())}
+        if key not in declared:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=(
+                    f"engine_kind={engine_kind!r} asks for no owner secret {key!r}; "
+                    f"it declares {sorted(declared)}"
+                ),
+                status_code=400,
+            )
+        if not isinstance(value, str) or not value.strip():
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"owner secret {key!r} must be a non-empty string",
+                status_code=400,
+            )
+        await AssistantOwnerSecrets().put(assistant_id, key, value.strip())
+        records = dict(assistant.get("owner_secrets") or {})
+        records[key] = {
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_by": user.user_id,
+        }
+        if not await self._catalog_repo.set_owner_secret_record(
+            assistant_id,
+            expected_version=int(assistant["version"]),
+            owner_secrets=records,
+        ):
+            raise _version_conflict(assistant_id)
+        await self._refresh_workspace_profile_logged(user, assistant_id)
+        refreshed = await self._catalog_repo.get_assistant(assistant_id)
+        return self._sanitize_assistant(refreshed or assistant)
+
     async def _refresh_workspace_profile_logged(self, user: UserContext, assistant_id: str) -> None:
         try:
             await self.refresh_workspace_profile(user, assistant_id)
@@ -949,6 +1099,16 @@ class AssistantService:
         """
 
         assistant = await self._must_use_assistant(user, assistant_id)
+        engine_kind = self._require_engine_kind(assistant)
+        if servers and not engine_takes_mcp_servers(engine_kind):
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=(
+                    f"assistant={assistant_id} runs engine_kind={engine_kind!r}, which takes "
+                    "no MCP servers, so it cannot use connectors"
+                ),
+                status_code=400,
+            )
         updates: dict[str, Any] = {
             "connector_servers": {str(name): str(url) for name, url in servers.items()} or None
         }
@@ -1131,6 +1291,7 @@ class AssistantService:
                 message=f"assistant={assistant_id} not found",
                 status_code=404,
             )
+        await AssistantOwnerSecrets().purge(assistant_id)
         return {"assistant_id": assistant_id, "deleted": True}
 
     async def acquire_workspace_for_session(
@@ -2265,6 +2426,19 @@ class AssistantService:
     ) -> dict[str, Any]:
         assistant = await self._must_use_assistant(user, assistant_id)
         engine_kind = self._require_engine_kind(assistant)
+        surface = capabilities_for_engine_kind(engine_kind).assistant
+        if surface is None or not surface.conversations:
+            # Its runtime serves the owner through its own panel; channels,
+            # schedules and other conversation starts all arrive here.
+            raise APIError(
+                code="ASSISTANT_CONVERSATIONS_UNSUPPORTED",
+                message=(
+                    f"assistant={assistant_id} runs engine_kind={engine_kind!r}, "
+                    "which hosts no conversations; open its panel instead"
+                ),
+                status_code=409,
+                data={"engine_kind": engine_kind},
+            )
         runtime_profile_name = str(assistant.get("runtime_profile_name") or "").strip()
         if not runtime_profile_name:
             raise APIError(
@@ -2323,7 +2497,57 @@ class AssistantService:
         clean.pop("credential_vault_ids", None)
         clean.pop("credentials_updated_by", None)
         clean.pop("credentials_updated_at", None)
+        records = clean.pop("owner_secrets", None) or {}
+        clean["runtime"] = _runtime_surface(str(doc.get("engine_kind") or ""), records)
         return clean
+
+
+def engine_takes_mcp_servers(engine_kind: str) -> bool:
+    """Whether an Assistant on this runtime is given MCP servers, connectors included."""
+
+    from astrabox.core.service.orchestrator.engine.extensions import (
+        accepted_configuration_inputs,
+    )
+
+    return "mcp_servers" in accepted_configuration_inputs(
+        capabilities_for_engine_kind(engine_kind).extensions
+    )
+
+
+def _runtime_surface(engine_kind: str, records: dict[str, Any]) -> dict[str, Any] | None:
+    """How the Assistant's runtime serves its owner, for the console to render.
+
+    ``None`` when the engine is not installed in this deployment.
+    """
+
+    from astrabox.core.service.orchestrator.engine.registry import EngineKindNotRegistered
+
+    try:
+        surface = capabilities_for_engine_kind(engine_kind).assistant
+    except EngineKindNotRegistered:
+        return None
+    if surface is None:
+        return None
+    return {
+        "conversations": surface.conversations,
+        "panel": surface.panel is not None,
+        "owner_secrets": [
+            {
+                "key": secret.key,
+                "label": secret.label,
+                "help": secret.help,
+                "configured": secret.key in records,
+                "updated_at": (records.get(secret.key) or {}).get("updated_at"),
+                # The deployment's shared value stands in while the owner sets none.
+                "deployment_default": bool(
+                    secret.deployment_secret
+                    and str(SecretProvider.get_secret(secret.deployment_secret) or "").strip()
+                ),
+                "required": secret.required,
+            }
+            for secret in surface.owner_secrets
+        ],
+    }
 
 
 def _assistant_org_id(user: UserContext, assistant: dict[str, Any]) -> str:

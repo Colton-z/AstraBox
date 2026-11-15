@@ -22,10 +22,10 @@ import astrabox.providers.model  # noqa: F401 — registers the litellm endpoint
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     RuntimeConfigResolver,
 )
-from astrabox.seams.model import ModelEndpoint, register_model_endpoint
+from astrabox.seams.model import ModelEndpoint, ModelEndpointProvider, register_model_endpoint
 
 
-class _PassthroughEndpoint:
+class _PassthroughEndpoint(ModelEndpointProvider):
     """A gateway that declines every override — the seam permits it (non-None
     fields win, all-None leaves the resolution chain in charge). These tests
     exercise the CHAIN itself, so they pin the provider to this stub instead of

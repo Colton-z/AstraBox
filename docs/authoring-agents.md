@@ -197,7 +197,7 @@ that commit until its configured revision changes.
 
 ### Delete
 
-Delete is currently available through `DELETE /api/v1/agents/{agent_id}`. Deleting an Agent removes it from further use and starts releasing runtime resources it owns. Existing Session records and transcripts remain, but a Session cannot start or rebuild its runtime after the Agent it references has been deleted.
+Delete is currently available through `DELETE /api/v1/agents/{agent_id}`. Deleting an Agent removes it from further use and starts releasing runtime resources it owns, including the box each of its conversations holds. Existing Session records and transcripts remain, but a Session cannot start or rebuild its runtime after the Agent it references has been deleted, and a new message to it is refused with `AGENT_DELETED`.
 
 ## Versioning
 

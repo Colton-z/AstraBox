@@ -21,7 +21,7 @@ from opensandbox.models.execd import Execution
 
 @dataclass
 class ExecdRun:
-    """What execd reports for one command: its output lines and how it ended.
+    """What execd reports for one command: its output events and how it ended.
 
     A zero ``exit_code`` ends with the completion event and any other value
     with the error event execd sends for a non-zero exit; ``None`` sends

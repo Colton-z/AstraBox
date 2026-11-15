@@ -19,6 +19,7 @@ from astrabox.core.service.orchestrator.engine import (  # noqa: F401
     codex as _codex_engine,  # module import registers the adapter
 )
 from astrabox.core.service.orchestrator.engine import provisioning
+import astrabox.providers.model  # noqa: F401 — registers the litellm endpoint the credential names
 from astrabox.seams.egress_credentials import (
     EgressCredential,
     SandboxEgressCredentialPlan,
@@ -37,7 +38,7 @@ def _credential(**overrides: Any) -> provisioning.ModelCredentialRequest:
                 model_name="m",
                 credential="sk-shared-key",
                 credential_kind="bearer",
-                endpoint_provider="test",
+                endpoint_provider="litellm",
             ),
             "request_paths": ("responses",),
             "missing_code": "ENGINE_CAPABILITY_UNAVAILABLE",

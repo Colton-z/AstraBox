@@ -39,7 +39,7 @@ AstraBox 内置一个 provider：`open_sandbox`，它调用 OpenSandbox 生命�
 ## 复用 execd 实现文件、命令和进程
 
 每个内置沙箱镜像都在 `/opt/astrabox/opensandbox/execd` 带有 OpenSandbox 的 execd
-`v1.1.0`（见[容器参考](container-reference.md)）。如果 provider 的沙箱在端口 `44772`
+（OpenSandbox `1.2.1` 版，见[容器参考](container-reference.md)）。如果 provider 的沙箱在端口 `44772`
 上运行 execd，且 `get_endpoint(44772)` 返回能到达它的 URL 和请求头，就可以直接用
 `astrabox.providers.execd` 构建句柄的三个数据面，而不必自己编写：
 

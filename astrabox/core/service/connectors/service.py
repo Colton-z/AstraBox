@@ -427,11 +427,19 @@ class AssistantConnectors(_ConnectorSwitch):
         Returns the Assistants that changed.
         """
 
+        from astrabox.core.service.orchestrator.assistant.assistant_service import (
+            engine_takes_mcp_servers,
+        )
+
         owned = await self._service().list_assistants(user)
         changed: list[str] = []
         for assistant in owned:
             assistant_id = str(assistant.get("assistant_id") or "")
             if assistant_ids is not None and assistant_id not in assistant_ids:
+                continue
+            # Connectors reach a runtime as MCP servers; one that takes none is
+            # not offered them.
+            if not engine_takes_mcp_servers(str(assistant.get("engine_kind") or "")):
                 continue
             off = set(assistant.get("connectors_off") or [])
             servers = assistant.get("connector_servers") or {}

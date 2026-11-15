@@ -74,6 +74,7 @@ def plan_subject_storage_mounts(
     agent_id: str | None = None,
     assistant_id: str | None = None,
     user_id: str | None = None,
+    engine_kind: str | None = None,
     runtime_identity: dict[str, Any] | None = None,
 ) -> list[tuple[str, str]]:
     """The ``(box_path, storage_subpath)`` mounts for a runtime, by subject kind.
@@ -154,17 +155,22 @@ def plan_subject_storage_mounts(
         # Native/profile snapshots retain engine state independently of these
         # mounts. A deployment may keep live SQLite on the sandbox filesystem
         # while routing only user workspace files through persistent storage.
+        engine = str(engine_kind or "").strip()
+        if not engine:
+            raise APIError(
+                code="NAS_MOUNT_FAILED",
+                message=(
+                    "assistant_runtime storage planning requires the Assistant's "
+                    "engine_kind, whose profile renders its paths"
+                ),
+                status_code=500,
+            )
+        user, assistant = str(user_id or ""), str(assistant_id or "")
         mounts = [
-            (
-                assistant_workspace_dir(str(user_id or ""), str(assistant_id or "")),
-                f"{root}/workspace",
-            ),
+            (assistant_workspace_dir(engine, user, assistant), f"{root}/workspace"),
         ]
         if settings.assistant_profile_on_workspace_volume:
-            mounts.append((
-                assistant_config_dir(str(user_id or ""), str(assistant_id or "")),
-                f"{root}/config",
-            ))
+            mounts.append((assistant_config_dir(engine, user, assistant), f"{root}/config"))
         return mounts
     raise APIError(
         code="NAS_MOUNT_FAILED",

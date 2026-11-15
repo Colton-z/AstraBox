@@ -523,7 +523,7 @@ export default function App() {
         </>
       }
       sidebarFooter={<UserMenu userInfo={userInfo} theme={theme} setTheme={setTheme} />}
-      topbar={isSession || location.pathname.startsWith('/agents/') || location.pathname.startsWith('/artifacts') || location.pathname.startsWith('/connections') ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
+      topbar={isSession || location.pathname.startsWith('/agents/') || location.pathname.startsWith('/assistants') || location.pathname.startsWith('/artifacts') || location.pathname.startsWith('/connections') ? undefined : <AppTopbar crumbs={[{ label: crumb }]} trailLabel={t('shell:breadcrumb_navigation')} />}
       banner={
         error ? (
           /* The margin is this strip's own because `SidebarInset` stacks the

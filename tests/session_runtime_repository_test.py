@@ -74,3 +74,24 @@ async def test_a_reader_that_lost_its_lease_records_nothing() -> None:
     assert await repo.record(old, stale, ttl_s=_TTL) is False
     assert await repo.read_output("s1", after_seq=0) == []
     assert await repo.reader_owner("s1") == "p2"
+
+
+async def test_the_session_list_keeps_the_sessions_whose_runtime_reports_a_given_status() -> None:
+    """A watcher asks which conversations work and which wait; one that reported nothing is idle."""
+    sessions = SessionRepository()
+    await create_agent("a1")
+    for session_id, status in (("s-idle", None), ("s-work", "working"), ("s-wait", "waiting"), ("s-bg", "background")):
+        await sessions.create_session(
+            {"session_id": session_id, "user_id": "u1", "session_kind": "agent_chat", "agent_id": "a1", "state": "READY"}
+        )
+        if status is not None:
+            await sessions.update_session(session_id, {"runtime_status": status})
+
+    async def listed(statuses: list[str] | None) -> set[str]:
+        page = await sessions.list_user_sessions_page("u1", runtime_statuses=statuses)
+        return {str(row["session_id"]) for row in page["sessions"]}
+
+    assert await listed(None) == {"s-idle", "s-work", "s-wait", "s-bg"}
+    assert await listed(["working", "background"]) == {"s-work", "s-bg"}
+    assert await listed(["waiting"]) == {"s-wait"}
+    assert await listed(["idle"]) == {"s-idle"}

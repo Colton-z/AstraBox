@@ -48,6 +48,18 @@ export type AdminLogsPage = Schemas['AdminLogsPage'];
 export type SessionFileEntry = Schemas['SessionFileEntry'];
 export type WebshellResult = Schemas['WebshellAccess'];
 export type SandboxTerminateResult = Schemas['SandboxTermination'];
+/** One of the signed-in user's model accounts; never carries a token or key. */
+export type ModelAccount = Schemas['ModelAccount'];
+/**
+ * The kinds of model account: a ChatGPT account linked for its plan, or an
+ * Anthropic API key. A model endpoint provider of the same name spends it.
+ */
+export type ModelAccountVendor = 'chatgpt_plan' | 'anthropic_api_key';
+export type DeletedModelAccount = Schemas['DeletedModelAccount'];
+/** A model a linked account can use: `id` is what an Agent names as its model. */
+export type ModelAccountModel = Schemas['ModelAccountModel'];
+/** Whether the deployment's team pool of model accounts is on. */
+export type ModelAccountTeamPool = Schemas['ModelAccountTeamPool'];
 export type ConversationEndResult = Schemas['ConversationEndResult'];
 export type AgentCategory = Schemas['AgentCategory'];
 export type AdminAgentCategory = Schemas['AdminAgentCategory'];
@@ -108,6 +120,9 @@ export interface AgentDraft {
   // First-class Agent fields; there is no separate template resource.
   model?: string;
   runtime_profile_name?: string;
+  // On a ChatGPT plan RuntimeProfile: which of the creator's linked accounts
+  // the creator's conversations spend; null or absent is their default.
+  model_account_id?: string | null;
   system?: string;
   display_meta?: Record<string, unknown>;
   // Ids of the administrator-defined categories the home page lists it under.
@@ -178,6 +193,8 @@ export interface VaultCredentialSummary {
       allowed_hosts?: string[];
     };
     injection_location?: { header?: boolean; body?: boolean };
+    /** The grant an environment credential obtains its value by, when it has one. */
+    oauth?: { token_endpoint?: string; grant_type?: string };
   };
   archived_at?: string | null;
 }
@@ -353,6 +370,11 @@ export interface RuntimeProfileConfig {
   engine_kind?: string;
   engine_available?: boolean;
   supported_session_kinds?: string[];
+  // The model endpoint provider; absent or null when the deployment's default
+  // serves the profile. `chatgpt_plan` and `anthropic_api_key` spend a
+  // conversation owner's account; with `claude_login` Claude Code uses the login
+  // its user makes in the conversation's sandbox.
+  endpoint_provider?: string | null;
   // The permission modes the RuntimeProfile's Agent program declares; empty when
   // it has none, and then no form may offer or send one.
   permission_modes?: string[];

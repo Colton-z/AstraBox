@@ -7,8 +7,10 @@ history read what the reader recorded.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Sequence
 from typing import Any
@@ -38,6 +40,9 @@ from astrabox.seams.admission import ADMISSION_KIND_INPUT, AdmissionRequest, enf
 from astrabox.seams.runtime_preparation import validated_user_action
 
 _HISTORY_PAGE_LIMIT = 100
+#: How long a cancellation waits for the reader's outcome, and how often it looks.
+_CANCEL_WAIT_S = 10.0
+_CANCEL_POLL_S = 0.2
 
 
 def _encode_before(before: tuple[int, int, int, int] | None) -> str | None:
@@ -78,12 +83,18 @@ def interaction_view(row: dict[str, Any], *, include_tool_input: bool) -> dict[s
     return {**view, "response_id": row["response_id"]}
 
 
+#: Page states in which the runtime's last report describes a box it still runs in.
+_REACHABLE = frozenset({SessionState.READY.value, "PROCESSING", "WAITING_INPUT"})
+
+
 def runtime_view_state(session: dict[str, Any], activity: dict[str, Any]) -> str:
     """The session's state as the page shows it.
 
     The lifecycle state while the session is not READY, recovery required
     while its runtime is unavailable, and otherwise what the runtime reports,
-    with inputs the platform still holds counted as work.
+    with inputs the platform still holds counted as work. Background work
+    alone leaves the session READY: no response runs, so the next message is
+    sent as usual, and the work is listed apart (``background_tasks``).
     """
     lifecycle = str(session.get("state") or "")
     if lifecycle != SessionState.READY.value:
@@ -378,6 +389,42 @@ class SessionRuntimeService:
             )
         return {"session_id": session_id, "status": "accepted"}
 
+    async def cancel_input(
+        self, user: UserContext, session_id: str, input_id: str, *, allowed: set[str]
+    ) -> dict[str, Any]:
+        """Stop the work one input started, without stopping any input outside ``allowed``.
+
+        The session's reader applies it (``SessionReader._cancel_input``):
+        an input no runtime has received is withdrawn, a response answering
+        only allowed inputs is interrupted, and inputs the runtime queued go
+        with the response in progress when the runtime can drop them. The
+        call waits briefly for a live reader's outcome: ``applied``, or a
+        refusal with its reason. Without a live reader, the next reader
+        applies it before delivering anything, and the call answers
+        ``requested``.
+        """
+        await self._require_owner(user, session_id, execution=True)
+        target = json.dumps({"input_id": input_id, "allowed": sorted(allowed | {input_id})})
+        control_id, live = await self._repo.request_control_for_reader(
+            session_id, kind="cancel_input", target=target, requested_by=str(user.user_id)
+        )
+        if not live:
+            return {"session_id": session_id, "input_id": input_id, "status": "requested"}
+        deadline = time.monotonic() + _CANCEL_WAIT_S
+        while time.monotonic() < deadline:
+            control = await self._repo.get_control(session_id, control_id)
+            state = str((control or {}).get("state") or "")
+            if state == "done":
+                return {"session_id": session_id, "input_id": input_id, "status": "applied"}
+            if state in ("failed", "expired"):
+                raise APIError(
+                    code="CANCEL_REFUSED",
+                    message=str((control or {}).get("error") or "the runtime did not apply the cancellation"),
+                    status_code=409,
+                )
+            await asyncio.sleep(_CANCEL_POLL_S)
+        return {"session_id": session_id, "input_id": input_id, "status": "requested"}
+
     async def stop_child_run(self, user: UserContext, session_id: str, control_ref: str) -> dict[str, Any]:
         """Ask the runtime to stop one sub-agent, named by the runtime's own handle."""
         await self._require_owner(user, session_id, execution=True)
@@ -391,6 +438,31 @@ class SessionRuntimeService:
                 status_code=409,
             )
         return {"session_id": session_id, "status": "accepted"}
+
+    async def stop_background_task(self, user: UserContext, session_id: str, task_id: str) -> dict[str, Any]:
+        """Ask the runtime to stop one of the background tasks it last reported.
+
+        The stop is accepted when the reader takes it; the task's end arrives
+        as a runtime status that omits it.
+        """
+        await self._require_owner(user, session_id, execution=True)
+        session = await self._sessions.get_session(session_id) or {}
+        if task_id not in {str(task.get("task_id")) for task in session.get("runtime_background_tasks") or []}:
+            raise APIError(
+                code="BACKGROUND_TASK_NOT_FOUND",
+                message="the conversation's runtime reports no running background task with this id",
+                status_code=404,
+            )
+        control = await self._repo.request_control(
+            session_id, kind="stop_background", target=task_id, requested_by=str(user.user_id)
+        )
+        if control is None:
+            raise APIError(
+                code="BACKGROUND_TASK_CONTROL_UNAVAILABLE",
+                message="the conversation's runtime is not connected, so nothing can stop the background task",
+                status_code=409,
+            )
+        return {"session_id": session_id, "task_id": task_id, "status": "accepted"}
 
     # -- reads -------------------------------------------------------------
 
@@ -445,8 +517,9 @@ class SessionRuntimeService:
         activity = await self._repo.activity(session_id)
         waiting = [row for row in activity["open_interactions"] if row.get("answer") is None]
         last_response = activity["last_response"]
+        state = runtime_view_state(session, activity)
         return {
-            "state": runtime_view_state(session, activity),
+            "state": state,
             "runtime_status": session.get("runtime_status"),
             "current_responses": [response_view(row) for row in activity["open_responses"]],
             "last_response": response_view(last_response) if last_response else None,
@@ -455,6 +528,8 @@ class SessionRuntimeService:
                 {key: row.get(key) for key in ("input_id", "client_message_id", "content", "state", "created_at")}
                 for row in activity["held_inputs"]
             ],
+            # What the runtime last reported, while its box is reachable; a lost box ended its work.
+            "background_tasks": list(session.get("runtime_background_tasks") or []) if state in _REACHABLE else [],
             "output_seq": output_seq,
         }
 

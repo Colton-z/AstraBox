@@ -234,38 +234,6 @@ async def test_existing_sandbox_id_closes_the_handle_when_permission_proof_fails
     assert fake_sdk.close_calls == 1
 
 
-# ── platform endpoint resolution ────────────────────────────────────────────
-
-
-async def test_endpoint_resolution_mints_a_signed_uri_when_secure_access_requires_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from astrabox.core.service.orchestrator.engine.provisioning import (
-        resolve_sandbox_websocket_endpoint,
-    )
-
-    monkeypatch.setenv("ASTRABOX_SANDBOX_ENDPOINT_URL_TTL_SECONDS", "600")
-    signature = "runner-bearer-secret"
-    routing_secret = "routing-header-secret"
-    raw_endpoint = "box.test:9001"
-    fake_sdk = _FakeSdkSandbox(
-        endpoint=raw_endpoint,
-        endpoint_headers={"OpenSandbox-Secure-Access": routing_secret},
-        signed_endpoint=f"{raw_endpoint}?signature={signature}",
-    )
-    handle = OpenSandboxHandle(fake_sdk)  # type: ignore[arg-type]
-    earliest_expiry = int(time.time()) + 599
-    uri = await resolve_sandbox_websocket_endpoint(handle, 9001)
-    latest_expiry = int(time.time()) + 601
-
-    assert uri == f"ws://{raw_endpoint}?signature={signature}"
-    assert len(fake_sdk.signed_endpoint_calls) == 1
-    port, expires = fake_sdk.signed_endpoint_calls[0]
-    assert port == 9001
-    assert earliest_expiry <= expires <= latest_expiry
-    assert routing_secret not in uri
-
-
 # ── key hygiene on the executor's lifecycle face ─────────────────────────────
 
 
@@ -307,28 +275,23 @@ async def test_attach_precheck_failure_text_is_scrubbed(
     assert "***" in str(err.value)
 
 
-@pytest.mark.parametrize("signed", [False, True], ids=["endpoint", "signed-endpoint"])
 async def test_startup_endpoint_failure_text_is_scrubbed(
     monkeypatch: pytest.MonkeyPatch,
-    signed: bool,
 ) -> None:
-    from astrabox.core.service.orchestrator.engine.provisioning import (
-        resolve_sandbox_websocket_endpoint,
+    from astrabox.core.service.orchestrator.runtime.pty_terminal import (
+        resolve_sandbox_endpoint,
     )
 
-    # This is the endpoint seam every engine startup uses. Both the ordinary
-    # endpoint lookup and Secure Access signing are lifecycle requests whose
-    # SDK exceptions can quote the server's response body into the runtime 502.
+    # This is the endpoint seam every engine startup uses. The endpoint lookup
+    # is a lifecycle request whose SDK exception can quote the server's
+    # response body into the runtime 502.
     key = "osk-secret-key-1234567890"
     monkeypatch.setenv("ASTRABOX_SANDBOX_API_KEY", key)
     monkeypatch.setenv("ASTRABOX_ALLOW_PLAINTEXT_SANDBOX_API_KEY", "1")
-    sdk = _FakeSdkSandbox(
-        endpoint_headers={"X-OpenSandbox-Route": "required"} if signed else None,
-    )
-    failing_method = "get_signed_endpoint" if signed else "get_endpoint"
+    sdk = _FakeSdkSandbox()
     monkeypatch.setattr(
         sdk,
-        failing_method,
+        "get_endpoint",
         AsyncMock(
             side_effect=SandboxApiException(
                 f"unauthorized for key {key}", status_code=401
@@ -338,7 +301,7 @@ async def test_startup_endpoint_failure_text_is_scrubbed(
     handle = OpenSandboxHandle(sdk)  # type: ignore[arg-type]
 
     with pytest.raises(APIError) as err:
-        await resolve_sandbox_websocket_endpoint(handle, 9001)
+        await resolve_sandbox_endpoint(handle, 9001)
 
     assert err.value.code == "AGENT_RUNTIME_ERROR"
     assert key not in str(err.value)

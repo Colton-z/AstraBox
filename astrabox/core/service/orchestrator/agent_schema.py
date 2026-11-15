@@ -147,6 +147,10 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     # the console renders a combobox with a free-entry escape hatch.
     {"key": "model", "type": "string", "group": GROUP_MODEL, "required": True},
     {"key": "system", "type": "text", "group": GROUP_MODEL},
+    # On a RuntimeProfile whose model endpoint each conversation's owner pays
+    # for (the ChatGPT plan): which of the creator's linked accounts the
+    # creator's conversations spend. Empty means their default account.
+    {"key": "model_account_id", "type": "string", "advanced": True, "group": GROUP_MODEL},
     {
         "key": "engine_options",
         "type": "object",

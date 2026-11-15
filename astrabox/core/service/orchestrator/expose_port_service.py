@@ -32,6 +32,54 @@ from astrabox.seams.sandbox import (
 logger = get_logger(__name__)
 
 
+
+async def resolve_browser_url(
+    *, backend: str | None, sandbox_id: str, port: int
+) -> SandboxBrowserEndpoint:
+    """A browser-openable address for one in-box port, signed when Secure Access is on.
+
+    Every browser-facing surface (an exposed port, an Assistant's panel) asks
+    here, so the expiry, the scheme and the refusal of header-routed endpoints
+    are decided once.
+    """
+    settings = load_astrabox_settings()
+    expires_at: datetime | None = None
+    if bool(getattr(settings, "sandbox_secure_access_enabled", False)):
+        expires_at = datetime.now(timezone.utc) + timedelta(
+            seconds=int(settings.sandbox_endpoint_url_ttl_seconds)
+        )
+    endpoint = await sandbox_for_name(backend).resolve_browser_endpoint(
+        sandbox_id,
+        port,
+        expires_at=expires_at,
+    )
+    if endpoint is None or not str(endpoint.endpoint or "").strip():
+        raise APIError(
+            code="EXPOSE_PORT_ENDPOINT_UNAVAILABLE",
+            message=f"failed to resolve endpoint for sandbox={sandbox_id} port={port}",
+            status_code=502,
+        )
+    if endpoint.headers:
+        header_names = ", ".join(sorted(str(name) for name in endpoint.headers))
+        raise APIError(
+            code="SANDBOX_BROWSER_ENDPOINT_REQUIRES_HEADERS",
+            message=(
+                "OpenSandbox returned an endpoint that requires request headers "
+                f"({header_names}). Browser links require ingress route mode "
+                "'uri' or 'wildcard'; header mode cannot be opened directly."
+            ),
+            status_code=502,
+        )
+    url = str(endpoint.endpoint).strip()
+    if not url.startswith(("http://", "https://")):
+        url = f"https://{url}"
+    return SandboxBrowserEndpoint(
+        endpoint=url,
+        headers={},
+        expires_at=endpoint.expires_at,
+        signed=endpoint.signed,
+    )
+
 class ExposePortService:
     def __init__(
         self,
@@ -116,40 +164,9 @@ class ExposePortService:
             )
         context = await self._resolve_binding_context(deployment_id, user=user)
         sandbox_id = context["sandbox_id"]
-        backend = context.get("sandbox_backend")
-        settings = load_astrabox_settings()
-        expires_at: datetime | None = None
-        if bool(getattr(settings, "sandbox_secure_access_enabled", False)):
-            expires_at = datetime.now(timezone.utc) + timedelta(
-                seconds=int(settings.sandbox_endpoint_url_ttl_seconds)
-            )
-        endpoint = await sandbox_for_name(backend).resolve_browser_endpoint(
-            sandbox_id,
-            normalized_port,
-            expires_at=expires_at,
+        endpoint = await resolve_browser_url(
+            backend=context.get("sandbox_backend"), sandbox_id=sandbox_id, port=normalized_port
         )
-        if endpoint is None or not str(endpoint.endpoint or "").strip():
-            raise APIError(
-                code="EXPOSE_PORT_ENDPOINT_UNAVAILABLE",
-                message=(
-                    f"failed to resolve endpoint for sandbox={sandbox_id} port={normalized_port}"
-                ),
-                status_code=502,
-            )
-        if endpoint.headers:
-            header_names = ", ".join(sorted(str(name) for name in endpoint.headers))
-            raise APIError(
-                code="SANDBOX_BROWSER_ENDPOINT_REQUIRES_HEADERS",
-                message=(
-                    "OpenSandbox returned an endpoint that requires request headers "
-                    f"({header_names}). Browser links require ingress route mode "
-                    "'uri' or 'wildcard'; header mode cannot be opened directly."
-                ),
-                status_code=502,
-            )
-        url = str(endpoint.endpoint).strip()
-        if not url.startswith(("http://", "https://")):
-            url = f"https://{url}"
         session_id = context.get("session_id")
         if session_id and context.get("session_kind") != "assistant_chat":
             # Direct application traffic bypasses the platform, so silence in
@@ -166,12 +183,7 @@ class ExposePortService:
                     message="sandbox binding changed or is parking; request its endpoint when ready",
                     status_code=409,
                 )
-        return context, SandboxBrowserEndpoint(
-            endpoint=url,
-            headers={},
-            expires_at=endpoint.expires_at,
-            signed=endpoint.signed,
-        )
+        return context, endpoint
 
     @staticmethod
     def _assert_user_can_refresh(context: dict[str, Any], user: UserContext) -> None:

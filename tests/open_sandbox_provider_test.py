@@ -588,6 +588,100 @@ async def test_secure_access_setting_reaches_the_opensandbox_create_request(
     assert fake.create_bodies[-1]["secureAccess"] is True
 
 
+async def test_a_create_names_its_networks_and_mounts_the_operators_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Networks travel as metadata for the bundled server's hook; storage as volumes.
+
+    A named volume must already exist and outlives the box; read-write is
+    carried only where the RuntimeProfile stated it.
+    """
+    from astrabox.providers.open_sandbox.executor import create_open_sandbox_box
+    from astrabox.seams.sandbox import SandboxSharedMount
+
+    # The fake lifecycle host stands in for the bundled server on Docker,
+    # the one deployment that joins networks as well as mounting storage.
+    for refusal in ("_host_network_refusal", "_shared_mount_refusal"):
+        monkeypatch.setattr(OpenSandboxSandboxProvider, refusal, staticmethod(lambda: None))
+    fake = _FakeLifecycle()
+    handle = await create_open_sandbox_box(
+        environment_name="astrabox",
+        session_id="sess-shared",
+        assignment_id="assignment-shared",
+        image="astrabox/agent:1",
+        env={},
+        resource_limits={"cpu": "4", "memory": "4Gi"},
+        resource_requests={"cpu": "200m", "memory": "768Mi"},
+        cwd=None,
+        networks=("foundry-shared", "git"),
+        shared_mounts=(
+            SandboxSharedMount(source="/srv/git-objects", target="/mnt/git-objects"),
+            SandboxSharedMount(source="npm-cache", target="/mnt/npm", read_only=False),
+        ),
+        transport=fake.transport(),
+    )
+    await handle.close()
+
+    body = fake.create_bodies[-1]
+    assert body["metadata"]["astrabox.network.0"] == "foundry-shared"
+    assert body["metadata"]["astrabox.network.1"] == "git"
+    assert [
+        {
+            key: {k: v for k, v in value.items() if v is not None}
+            if isinstance(value, dict)
+            else value
+            for key, value in volume.items()
+            if key in ("host", "pvc", "mountPath", "readOnly")
+        }
+        for volume in body["volumes"]
+    ] == [
+        {"host": {"path": "/srv/git-objects"}, "mountPath": "/mnt/git-objects", "readOnly": True},
+        {
+            "pvc": {
+                "claimName": "npm-cache",
+                "createIfNotExists": False,
+                "deleteOnSandboxTermination": False,
+            },
+            "mountPath": "/mnt/npm",
+            "readOnly": False,
+        },
+    ]
+
+
+_MOUNT = [{"source": "npm-cache", "target": "/mnt/npm", "read_only": True}]
+
+
+@pytest.mark.parametrize(
+    ("runtime", "field", "value", "code"),
+    [
+        # The fixture points at an existing OpenSandbox service, which applies
+        # only its own configuration and does not say which runtime it uses.
+        (None, "sandbox_networks", ["foundry-shared"], "SANDBOX_NETWORK_NOT_ALLOWED"),
+        (None, "sandbox_mounts", _MOUNT, "SANDBOX_MOUNT_NOT_ALLOWED"),
+        # The bundled server on Kubernetes mounts the create's volumes, but a
+        # Pod has no host network to join.
+        ("kubernetes", "sandbox_networks", ["foundry-shared"], "SANDBOX_NETWORK_NOT_ALLOWED"),
+        ("kubernetes", "sandbox_mounts", _MOUNT, None),
+    ],
+)
+def test_networks_and_mounts_are_saved_only_where_the_server_applies_them(
+    monkeypatch: pytest.MonkeyPatch, runtime: str | None, field: str, value: Any, code: str | None
+) -> None:
+    if runtime is not None:
+        monkeypatch.delenv("ASTRABOX_SANDBOX_OPENAPI_BASE_URL")
+        monkeypatch.setenv("ASTRABOX_SANDBOX_SERVER_RUNTIME", runtime)
+    provider = OpenSandboxSandboxProvider()
+    if code is None:
+        provider.validate_runtime_profile_configuration({field: value})
+        return
+    with pytest.raises(APIError) as refused:
+        provider.validate_runtime_profile_configuration({field: value})
+    assert refused.value.code == code
+    if runtime == "kubernetes":
+        # The refusal says what reaches a cluster service instead.
+        assert "networking.allowed_hosts" in refused.value.message
+
+
 async def test_diagnostics_keeps_a_tail_line_aligned_so_a_fragment_is_not_prose() -> None:
     """A tail cut mid-line must not hand the tail of a secret to the redactor.
 

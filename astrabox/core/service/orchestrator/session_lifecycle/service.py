@@ -62,7 +62,8 @@ from astrabox.seams.sandbox_disposal import (
 logger = get_logger(__name__)
 
 #: The runtime status during which a conversation may not be taken offline.
-_WORKING = "working"
+#: What the runtime reports while work runs in its box: a response, or only background tasks.
+_WORKING = frozenset({"working", "background"})
 
 
 class SessionLifecycleService:
@@ -329,8 +330,7 @@ class SessionLifecycleService:
         require_environment_ownership(session)
         _refuse_while_working(session, "delete session")
         if is_assistant_user_conversation(session):
-            sandbox_id = str(session.get("sandbox_id") or "").strip() or None
-            await self._dispose_conversation_runtime(session_id, sandbox_id=sandbox_id)
+            sandbox_id = await self._dispose_conversation_runtime(session_id)
             await self._sessions.soft_delete(session_id, user.user_id)
             return {
                 "session_id": session_id,
@@ -403,8 +403,7 @@ class SessionLifecycleService:
             require_environment_ownership(session)
             if is_assistant_user_conversation(session):
                 _refuse_while_working(session, "archive session")
-                sandbox_id = str(session.get("sandbox_id") or "").strip() or None
-                await self._dispose_conversation_runtime(session_id, sandbox_id=sandbox_id)
+                sandbox_id = await self._dispose_conversation_runtime(session_id)
                 result: dict[str, Any] = {
                     "session_id": session_id,
                     "sandbox_id": sandbox_id,
@@ -435,8 +434,7 @@ class SessionLifecycleService:
                     status_code=409,
                 )
             _refuse_while_working(session, "end conversation")
-            sandbox_id = str(session.get("sandbox_id") or "").strip() or None
-            await self._dispose_conversation_runtime(session_id, sandbox_id=sandbox_id)
+            sandbox_id = await self._dispose_conversation_runtime(session_id)
             await check_lock()
             await self._sessions.update_session(
                 session_id,
@@ -510,21 +508,33 @@ class SessionLifecycleService:
             "destruction_detail": destruction.detail,
         }
 
+    async def release_deleted_agent_conversation(self, session: dict[str, Any]) -> None:
+        """Release the box of a conversation whose Agent is being deleted.
+
+        Such a conversation keeps its history and takes no new messages
+        (``AGENT_DELETED``), so its box serves nothing. A response it was still
+        running fails as one whose box died, with its history kept.
+        """
+        await self._reclaim_sandbox(session, while_working=True)
+
     async def _reclaim_sandbox(
         self,
         session: dict[str, Any],
         *,
         before_publish: Callable[[], Awaitable[None]] | None = None,
+        while_working: bool = False,
     ) -> dict[str, Any]:
         """Release an Agent conversation's box; the conversation stays ``READY``.
 
         The conversation keeps its history and is woken by its next message
         on a new box, which resumes the engine's session. Only archive and
-        delete take a conversation out of the active set.
+        delete take a conversation out of the active set. A working
+        conversation is refused unless ``while_working``.
         """
         require_environment_ownership(session)
         session_id = str(session["session_id"])
-        _refuse_while_working(session, "terminate sandbox")
+        if not while_working:
+            _refuse_while_working(session, "terminate sandbox")
         if is_assistant_user_conversation(session):
             raise APIError(
                 code="INVALID_REQUEST",
@@ -612,7 +622,7 @@ class SessionLifecycleService:
             "killed": bool(killed),
         }
 
-    async def _dispose_conversation_runtime(self, session_id: str, *, sandbox_id: str | None) -> None:
+    async def _dispose_conversation_runtime(self, session_id: str) -> str | None:
         """End an Assistant conversation's processes; the shared workspace box stays.
 
         Ordinary eviction only disconnects a client so another process can
@@ -620,10 +630,16 @@ class SessionLifecycleService:
         through its client or the adapter's recorded native identity, and its
         terminal shell through the shell the terminal recorded. A supplier
         failure in that finalizer refuses completion.
+
+        The processes are in the box the Assistant's workspace binds now. The
+        conversation's row records a box only as of its last reconciliation,
+        and has none when the conversation has not run since the workspace last
+        changed boxes. Returns the box the processes were ended in.
         """
         from astrabox.persistence.repository.terminal_repository import TerminalRepository
 
         failed_operations: list[str] = []
+        sandbox_id: str | None = None
         try:
             session = await self._sessions.get_session(session_id)
             if session is None:
@@ -633,8 +649,7 @@ class SessionLifecycleService:
                 sessions_repo=self._sessions,
                 assistant_workspace_service=self._assistant_workspace_service,
             )
-            if binding.sandbox_id != sandbox_id:
-                raise RuntimeError("conversation workspace binding changed before final disposal")
+            sandbox_id = binding.sandbox_id
             await self._runtime_manager.dispose_runtime_session(
                 session_id,
                 sandbox_id=sandbox_id,
@@ -675,6 +690,7 @@ class SessionLifecycleService:
                 status_code=502,
                 data={"failed_operations": failed_operations},
             )
+        return sandbox_id
 
     # -- permission mode -------------------------------------------------------
 
@@ -763,8 +779,9 @@ def _refuse_while_working(session: dict[str, Any], operation: str) -> None:
     status reads, so its last working snapshot cannot veto explicit disposal;
     the finalizer must still confirm that disposal before ending the Session.
     """
+    status = str(session.get("runtime_status") or "")
     if (
-        str(session.get("runtime_status") or "") != _WORKING
+        status not in _WORKING
         or session.get("runtime_unavailable")
         or session.get("recovery_reason") == RUNTIME_PROTOCOL_INCOMPATIBLE
     ):
@@ -774,7 +791,7 @@ def _refuse_while_working(session: dict[str, Any], operation: str) -> None:
         code="SESSION_BUSY",
         message=f"cannot {operation} while the agent is working",
         status_code=409,
-        data={"runtime_status": _WORKING},
+        data={"runtime_status": status},
     )
 
 

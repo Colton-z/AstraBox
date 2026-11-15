@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from sqlalchemy import select
@@ -37,6 +37,9 @@ class PreparationSubjectState:
     runtime: dict[str, Any] | None
     layers: list[dict[str, Any]]
     materializer_session: dict[str, Any] | None = None
+    #: Every RuntimeProfile, for an Assistant: which of them the defaults choose
+    #: decides whether the Assistant receives the defaults' runtime fields.
+    runtime_profiles: list[dict[str, Any]] = field(default_factory=list)
 
 
 async def lock_subject(
@@ -44,6 +47,8 @@ async def lock_subject(
 ) -> PreparationSubjectState:
     """Lock RuntimeProfile, definition and operation in that order; refuse a moved reference.
 
+    An Assistant's revision depends on which RuntimeProfile the defaults choose,
+    so for an Assistant every RuntimeProfile is held; for an Agent, its own.
     Assistant defaults precede these locks. Definition writers protect their
     child rows; an exclusive Assistant lock also blocks first workspace insert.
     A materializing workspace's owning Session follows its workspace lock.
@@ -60,10 +65,13 @@ async def lock_subject(
     if not runtime_profile_name:
         raise subject_conflict()
     runtime_profiles = RuntimeProfile.__table__
-    environment = (await connection.execute(
-        select(runtime_profiles).where(runtime_profiles.c.name == runtime_profile_name)
-        .with_for_update(read=True)
-    )).mappings().first()
+    profiles = select(runtime_profiles).order_by(runtime_profiles.c.name).with_for_update(read=True)
+    if not assistant:
+        profiles = profiles.where(runtime_profiles.c.name == runtime_profile_name)
+    held_profiles = [
+        runtime_profile_view(dict(row)) for row in (await connection.execute(profiles)).mappings()
+    ]
+    environment = next((row for row in held_profiles if row["name"] == runtime_profile_name), None)
     definition = (await connection.execute(
         select(table).where(key == subject.id).with_for_update(read=not assistant)
     )).mappings().first()
@@ -111,7 +119,8 @@ async def lock_subject(
             raise subject_conflict()
         document = await read_agent(connection, subject.id)
     return PreparationSubjectState(
-        definition=document, environment=runtime_profile_view(dict(environment)),
+        definition=document, environment=environment,
         runtime=dict(runtime) if runtime is not None else None, layers=layers,
         materializer_session=dict(materializer_session) if materializer_session is not None else None,
+        runtime_profiles=held_profiles if assistant else [],
     )

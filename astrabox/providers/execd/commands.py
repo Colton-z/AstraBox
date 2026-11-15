@@ -7,8 +7,9 @@ server-sent events. :class:`ExecdCommands` implements
 :class:`astrabox.seams.sandbox_data.SandboxCommands` on that route through the
 OpenSandbox SDK's execd client, and keeps execd's wire rules out of core:
 
-* output arrives as one event per line (:data:`EXECD_LINE_EVENT_MODEL`), and
-  :func:`join_execd_lines` reassembles a stream from them;
+* output arrives as pieces that keep their line terminators
+  (:data:`EXECD_COMMAND_EVENT_MODEL`), and :func:`join_execd_output` rebuilds
+  the text :class:`~astrabox.seams.sandbox_data.SandboxCommandResult` carries;
 * a non-zero exit arrives as an error event whose value is the status, so the
   status is read from the first numeric error value (:class:`ReportedExitStatus`)
   and a success from the completion event;
@@ -47,31 +48,28 @@ from astrabox.seams.sandbox_data import (
     SandboxCommandResult,
 )
 
-#: The execd release whose output events :data:`EXECD_LINE_EVENT_MODEL` records.
-EXECD_LINE_EVENT_MODEL_VERSION = "1.1.0"
+#: The execd release whose ``/command`` output events
+#: :data:`EXECD_COMMAND_EVENT_MODEL` records.
+EXECD_COMMAND_EVENT_MODEL_VERSION = "1.2.1"
 
-#: execd's stdout and stderr events, as ``(in-box command, events, reassembled text)``.
+#: execd's ``/command`` stdout and stderr events, as
+#: ``(in-box command, events, reassembled text)``.
 #:
 #: execd publishes no normative contract for these events, so this table is the
-#: measurement :func:`join_execd_lines` is built on:
-#:
-#: * one event carries one output line with its terminator removed, and a
-#:   carriage return ends a line as a newline does;
-#: * an event whose text is exactly ``"\n"`` carries an empty line.
-#:
-#: Reassembly therefore reads the empty-line event as ``""`` and joins on
-#: ``"\n"``. Interior line boundaries survive; a trailing newline, and a
-#: carriage return before a newline, do not.
-EXECD_LINE_EVENT_MODEL: tuple[tuple[str, tuple[str, ...], str], ...] = (
-    (r"printf 'hello\n200'", ("hello", "200"), "hello\n200"),
-    (r"printf 'a\n\n404'", ("a", "\n", "404"), "a\n\n404"),
-    (r"printf 'only\n'", ("only",), "only"),
+#: model :func:`join_execd_output` is built on. execd tails each stream and
+#: sends a piece every time it reads a ``"\n"`` or a ``"\r"``, terminator
+#: included, and the unterminated rest when the command ends
+#: (``commandOutputTail.read`` in execd's ``pkg/runtime/command_common.go``), so
+#: concatenating the events reproduces the output exactly. The third column is
+#: the text the seam's result carries: a carriage return before a newline read
+#: as a newline, and the one trailing newline dropped.
+EXECD_COMMAND_EVENT_MODEL: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    (r"printf 'hello\n200'", ("hello\n", "200"), "hello\n200"),
+    (r"printf 'a\n\n404'", ("a\n", "\n", "404"), "a\n\n404"),
+    (r"printf 'only\n'", ("only\n",), "only"),
     (r"printf 'no-newline'", ("no-newline",), "no-newline"),
-    (r"printf 'a\r\nb\n200'", ("a", "b", "200"), "a\nb\n200"),
+    (r"printf 'a\r\nb\n200'", ("a\r", "\n", "b\n", "200"), "a\nb\n200"),
 )
-
-#: The event text that stands for an empty line (see the model above).
-_EMPTY_LINE_EVENT = "\n"
 
 #: How long past the caller's deadline execd lets a command run before stopping
 #: it. The caller's side gives up first, so a command that ends just in time is
@@ -81,19 +79,44 @@ _BOX_STOP_GRACE_SECONDS = 5.0
 logger = get_logger(__name__)
 
 
-def join_execd_lines(lines: Iterable[str]) -> str:
-    """Reassemble one output stream from execd's line events (:data:`EXECD_LINE_EVENT_MODEL`)."""
+def join_execd_output(pieces: Iterable[str]) -> str:
+    """Reassemble one ``/command`` output stream (:data:`EXECD_COMMAND_EVENT_MODEL`).
 
-    return "\n".join("" if line == _EMPTY_LINE_EVENT else line for line in lines)
+    The pieces concatenate to the exact output. The result keeps interior
+    lines, blank ones included, and drops a carriage return before a newline
+    and the one trailing newline, as
+    :class:`~astrabox.seams.sandbox_data.SandboxCommandResult` defines its text.
+    """
+
+    text = "".join(pieces).replace("\r\n", "\n")
+    return text[:-1] if text.endswith("\n") else text
+
+
+def join_execd_lines(lines: Iterable[str]) -> str:
+    """Reassemble one output stream of an isolated session's foreground run.
+
+    That route reads the run's output line by line and sends each line without
+    its terminator (``scanOutputLines`` in execd's
+    ``pkg/runtime/output_lines.go``), and sends no event for an empty line
+    (``IsolatedSessionController.Run`` in
+    ``pkg/web/controller/isolated_session.go``), so the lines are rejoined on
+    ``"\n"`` and blank lines do not survive. A line longer than 16 MiB arrives
+    in pieces, which are rejoined as separate lines.
+    """
+
+    return "\n".join(lines)
 
 
 class ReportedExitStatus:
     """The exit status execd named, kept apart from the events after it.
 
     execd reports a process's own exit status as an error event's value
-    (``"9"`` for ``exit 9``) and reports transport trouble as error events
-    too, with a message. A process exits once, so the first numeric value is
-    its status and anything after it describes the plumbing.
+    (``"9"`` for ``exit 9``) on both ``/command`` and an isolated session's
+    run, and reports transport trouble as error events too, with a message.
+    ``/command`` also sets the error's ``exit_code`` field to the same status;
+    an isolated run's error does not carry it, so the value is what both
+    routes share. A process exits once, so the first numeric value is its
+    status and anything after it describes the plumbing.
     """
 
     __slots__ = ("code",)
@@ -271,7 +294,7 @@ class ExecdCommands:
                 f"execd reported no exit status for {command[:200]!r}: {detail}"
             )
         return SandboxCommandResult(
-            exit_code=code, stdout=join_execd_lines(stdout), stderr=join_execd_lines(stderr)
+            exit_code=code, stdout=join_execd_output(stdout), stderr=join_execd_output(stderr)
         )
 
 
@@ -289,9 +312,10 @@ def _checked_env(env: Mapping[str, str] | None) -> dict[str, str] | None:
 
 
 __all__ = [
-    "EXECD_LINE_EVENT_MODEL",
-    "EXECD_LINE_EVENT_MODEL_VERSION",
+    "EXECD_COMMAND_EVENT_MODEL",
+    "EXECD_COMMAND_EVENT_MODEL_VERSION",
     "ExecdCommands",
     "ReportedExitStatus",
     "join_execd_lines",
+    "join_execd_output",
 ]

@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# AstraBox — run dsh-superagent for one Assistant, as a service of the image.
+#
+# One harness process per box: the DeepSeek Harness web profile with the
+# dsh-superagent bundle, which polls its Sources, routes requests in its main
+# Session and runs Executor Sessions on its own. Nothing about the Assistant
+# exists when the box boots — its Linux account, home, model route and
+# credentials arrive when the platform activates the box — so every program here
+# waits for the platform's profile file and the current box's initialization
+# gate before it starts.
+#
+# Three supervised programs run this script (supervisord.dsh-superagent.conf):
+#
+#   (no argument)  restore the saved state once, then the harness
+#   --mirror       the state mirror that saves the database and the profile
+#   --hop          the browser's way to the panel (panel-hop.conf)
+set -euo pipefail
+
+mode=harness
+case "${1:-}" in
+  "") ;;
+  --mirror) mode=mirror ;;
+  --hop) mode=hop ;;
+  *)
+    printf 'astrabox-dsh-superagent-serve: expected no argument, --mirror or --hop\n' >&2
+    exit 64
+    ;;
+esac
+
+if [ "$mode" = hop ]; then
+  # The hop answers only for a running harness, and holds no profile state.
+  exec nginx -c /opt/astrabox/superagent/panel-hop.conf -g 'daemon off;'
+fi
+
+STATE=/opt/astrabox/superagent/superagent_state.py
+# shellcheck source=/dev/null
+source /opt/astrabox/superagent/composition.sh
+superagent_patch_args
+# One level under the root, matching the Assistant profile's `home_template`.
+PROFILE_GLOB="/home/conversations/*/.dsh/astrabox-dsh-superagent.env"
+DEADLINE_SECONDS="${ASTRABOX_DSH_SUPERAGENT_PROFILE_WAIT_SECONDS:-1800}"
+
+profile_ready() {
+  local env_file="$1"
+  python3 "$STATE" gate ready --profile-env "$env_file" || return $?
+  if [ "$mode" = mirror ]; then
+    python3 "$STATE" mirror ready --profile-env "$env_file" || return $?
+  fi
+  # shellcheck disable=SC1090
+  ( source "$env_file" >/dev/null 2>&1 \
+    && [ -n "${ASTRABOX_DSH_PROFILE_LINUX_USER:-}" ] \
+    && [ -n "${ASTRABOX_DSH_PROFILE_HOME:-}" ] \
+    && [ -n "${ASTRABOX_DSH_WORKSPACE:-}" ] \
+    && [ -d "$ASTRABOX_DSH_PROFILE_HOME" ] \
+    && [ -d "$ASTRABOX_DSH_WORKSPACE" ] \
+    && id -u "$ASTRABOX_DSH_PROFILE_LINUX_USER" >/dev/null 2>&1 )
+}
+
+profile_env=""
+announced=0
+deadline=$(( $(date +%s) + DEADLINE_SECONDS ))
+while :; do
+  # shellcheck disable=SC2086
+  matches=( $(compgen -G "$PROFILE_GLOB" || true) )
+  if [ "${#matches[@]}" -gt 1 ]; then
+    # One box carries one Assistant. Two profiles means a box this design does
+    # not describe, and starting against either would bind the wrong account.
+    printf 'astrabox-dsh-superagent-serve: %d profiles under %s; refusing to guess\n' \
+      "${#matches[@]}" "$PROFILE_GLOB" >&2
+    exit 78
+  fi
+  if [ "${#matches[@]}" -eq 1 ]; then
+    if profile_ready "${matches[0]}"; then
+      profile_env="${matches[0]}"
+      break
+    else
+      status=$?
+      [ "$status" -eq 1 ] || exit "$status"
+    fi
+    if [ "$announced" -eq 0 ]; then
+      announced=1
+      printf 'astrabox-dsh-superagent-serve: profile present, waiting for the current-box '
+      printf 'initialization, account and directories (%s)\n' "${matches[0]}"
+    fi
+  fi
+  if [ "$(date +%s)" -ge "$deadline" ]; then
+    printf 'astrabox-dsh-superagent-serve: no usable profile at %s after %ss\n' \
+      "$PROFILE_GLOB" "$DEADLINE_SECONDS" >&2
+    exit 75
+  fi
+  sleep 1
+done
+printf 'ASTRABOX_DSH_SUPERAGENT_PROFILE_FOUND path=%s mode=%s\n' "$profile_env" "$mode"
+
+# shellcheck disable=SC1090
+source "$profile_env"
+: "${ASTRABOX_DSH_PROFILE_LINUX_USER:?profile env names no Linux user}"
+: "${ASTRABOX_DSH_PROFILE_HOME:?profile env names no profile home}"
+: "${ASTRABOX_DSH_WORKSPACE:?profile env names no workspace}"
+
+# The profile file is sourced again inside the workload account's shell: every
+# variable in it (the model route, DSH_HOME, the platform's runtime environment)
+# reaches the program started there.
+exec runuser -u "$ASTRABOX_DSH_PROFILE_LINUX_USER" -- env \
+  HOME="$ASTRABOX_DSH_PROFILE_HOME" \
+  USER="$ASTRABOX_DSH_PROFILE_LINUX_USER" \
+  LOGNAME="$ASTRABOX_DSH_PROFILE_LINUX_USER" \
+  bash --noprofile --norc -c "
+    set -euo pipefail
+    set -a
+    source $(printf '%q' "$profile_env")
+    set +a
+    export HOME=$(printf '%q' "$ASTRABOX_DSH_PROFILE_HOME")
+    cd $(printf '%q' "$ASTRABOX_DSH_WORKSPACE")
+    if [ $(printf '%q' "$mode") = mirror ]; then
+      exec python3 $(printf '%q' "$STATE") mirror mirror --profile-env $(printf '%q' "$profile_env")
+    fi
+    # Restore before the harness opens the database: the bundle migrates and
+    # writes it at startup, and a restore after that would discard its writes.
+    python3 $(printf '%q' "$STATE") gate restore --profile-env $(printf '%q' "$profile_env")
+    exec python3 /opt/dsh/web.py serve /opt/dsh/node_modules/.bin/dsh --profile web \
+      $(printf '%q ' "${SUPERAGENT_PATCH_ARGS[@]}")--no-open --host 127.0.0.1 --port 44781
+  "

@@ -64,14 +64,15 @@ rotation plan; it is not a seamless configuration-only migration.
 
 ### OpenSandbox version boundary
 
-With OpenSandbox Server 0.2.3, use a single external lifecycle service with its
-own persistent SQLite store. This permits multiple AstraBox replicas and
-sandbox nodes; it does **not** provide lifecycle-control-plane high availability.
-Do not run independent SQLite-backed lifecycle replicas and assume that sharing
-Kubernetes also shares snapshot records. The
-[0.2.3 configuration reference](https://github.com/opensandbox-group/OpenSandbox/blob/c39b814/server/configuration.md#store)
-supports only SQLite for server-managed metadata. A different upstream version
-and its documented shared-store guarantees require separate acceptance.
+AstraBox configures the OpenSandbox lifecycle service with its own persistent
+SQLite store, so use a single external lifecycle service. This permits multiple
+AstraBox replicas and sandbox nodes; it does **not** provide
+lifecycle-control-plane high availability. Do not run independent SQLite-backed
+lifecycle replicas and assume that sharing Kubernetes also shares snapshot
+records. OpenSandbox 1.2.1 also offers a PostgreSQL store that lets several
+server processes coordinate snapshots on Kubernetes
+([configuration reference](https://github.com/opensandbox-group/OpenSandbox/blob/release-1.2.1/server/configuration.md#store));
+AstraBox does not configure it, and it requires separate acceptance.
 
 The bundled lifecycle process listens on container loopback. Publishing a host
 port alone does not expose it. Operate the external service using OpenSandbox's

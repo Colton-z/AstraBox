@@ -1,0 +1,4 @@
+# The e2e to-do Source, inserted after AstraBox's layer (composition.sh).
+- insert:
+    - id: astrabox-e2e-todo-source
+      name: file:///opt/astrabox/dsh-plugins/astrabox-e2e-todo-source/lib/index.js

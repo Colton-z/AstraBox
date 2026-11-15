@@ -1,0 +1,18 @@
+{
+  "name": "@astrabox/dsh-panel-landing",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Opens the dsh-superagent panel when the harness's web page loads in an AstraBox Assistant.",
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": ["@deepseek-ai/dsh-client-ui-layout", "@deepseek-ai/dsh-client-locale"]
+    },
+    "manifestVersion": 1
+  }
+}

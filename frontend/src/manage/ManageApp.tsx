@@ -5,6 +5,7 @@ import {
   Bot,
   Box,
   Boxes,
+  CircleUserRound,
   Container,
   ExternalLink,
   Gauge,
@@ -57,6 +58,7 @@ import RuntimeProfileCreatePage from './RuntimeProfileCreatePage';
 import AgentDetailPage from './AgentDetailPage';
 import DeploymentsListPage from './DeploymentsListPage';
 import McpTokensPage from './McpTokensPage';
+import ModelAccountsPage from './ModelAccountsPage';
 import DeploymentDetailPage from './DeploymentDetailPage';
 import AssistantsListPage from './AssistantsListPage';
 import AssistantDetailPage from './AssistantDetailPage';
@@ -127,6 +129,7 @@ const NAV_GROUPS: { titleKey: string; items: NavItem[] }[] = [
       { to: '/manage/connectors', labelKey: 'manage:nav.connectors', icon: Plug, match: '/manage/connectors', adminOnly: true },
       { to: '/manage/deployments', labelKey: 'manage:nav.deployments', icon: Boxes, match: '/manage/deployments' },
       { to: '/manage/mcp-tokens', labelKey: 'manage:nav.mcp_tokens', icon: Plug, match: '/manage/mcp-tokens' },
+      { to: '/manage/model-accounts', labelKey: 'manage:nav.model_accounts', icon: CircleUserRound, match: '/manage/model-accounts' },
     ],
   },
   {
@@ -338,6 +341,7 @@ export default function ManageApp() {
           <Route path="agent-categories" element={<AgentCategoriesPage />} />
           <Route path="deployments" element={<DeploymentsListPage />} />
           <Route path="mcp-tokens" element={<McpTokensPage />} />
+          <Route path="model-accounts" element={<ModelAccountsPage />} />
           <Route path="deployments/new" element={<DeploymentCreatePage />} />
           <Route path="deployments/:deploymentId" element={<DeploymentDetailPage />} />
           <Route path="assistants" element={<AssistantsListPage />} />

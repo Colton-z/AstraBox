@@ -798,10 +798,12 @@ export interface paths {
          *     nothing the timer would not have decided on its next tick. It is a
          *     `POST` because it acts.
          *
-         *     The summary is the tick's own — `idle_candidates` / `idle_parked` /
-         *     `idle_active` / `idle_failed`, plus the dead-binding counters — so a caller
-         *     sees why nothing happened, which is usually the question. An empty object
-         *     means neither sweep found a candidate.
+         *     The summary is the tick's own — `idle_candidates` /
+         *     `idle_parking_started` / `idle_parking_in_flight` / `idle_active`, plus
+         *     the dead-binding counters — so a caller sees why nothing happened, which
+         *     is usually the question. A park runs on after the tick answers: its
+         *     outcome is the session's parked mark and the box's state. An empty
+         *     object means neither sweep found a candidate.
          */
         post: operations["run_sandbox_idle_sweep_api_v1_admin_sandbox_idle_sweep_post"];
         delete?: never;
@@ -2428,6 +2430,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/assistants/{assistant_id}/owner-secrets/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Assistant Owner Secret */
+        put: operations["set_assistant_owner_secret_api_v1_assistants__assistant_id__owner_secrets__key__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/assistants/{assistant_id}/panel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Open Assistant Panel */
+        get: operations["open_assistant_panel_api_v1_assistants__assistant_id__panel_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/assistants/{assistant_id}/workspace": {
         parameters: {
             query?: never;
@@ -2837,6 +2873,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/me/model-accounts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Model Accounts */
+        get: operations["list_model_accounts_api_v1_me_model_accounts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/model-accounts/anthropic": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Add Anthropic Api Key */
+        post: operations["add_anthropic_api_key_api_v1_me_model_accounts_anthropic_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/model-accounts/chatgpt/authorizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Chatgpt Authorization */
+        post: operations["start_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/model-accounts/chatgpt/authorizations/{authorization_id}/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete Chatgpt Authorization */
+        post: operations["complete_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations__authorization_id__callback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/model-accounts/team-pool": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Model Account Team Pool */
+        get: operations["get_model_account_team_pool_api_v1_me_model_accounts_team_pool_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/me/model-accounts/{account_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Model Account */
+        delete: operations["delete_model_account_api_v1_me_model_accounts__account_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Model Account */
+        patch: operations["update_model_account_api_v1_me_model_accounts__account_id__patch"];
+        trace?: never;
+    };
+    "/api/v1/me/model-accounts/{account_id}/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Model Account Models */
+        get: operations["list_model_account_models_api_v1_me_model_accounts__account_id__models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/me/schedules": {
         parameters: {
             query?: never;
@@ -3163,6 +3319,23 @@ export interface paths {
         put?: never;
         /** Archive Session */
         post: operations["archive_session_api_v1_sessions__session_id__archive_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stop Session Background Task */
+        post: operations["stop_session_background_task_api_v1_sessions__session_id__background_tasks__task_id__stop_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5110,6 +5283,16 @@ export interface components {
         /** Value */
         A2AValue: unknown;
         /**
+         * AddAnthropicApiKeyRequest
+         * @description Body for keeping an Anthropic API key as one of the caller's accounts.
+         */
+        AddAnthropicApiKeyRequest: {
+            /** Api Key */
+            api_key: string;
+            /** Label */
+            label?: string | null;
+        };
+        /**
          * AdminAgentCategory
          * @description A category with the number of Agents it holds.
          */
@@ -5745,6 +5928,8 @@ export interface components {
             agent_state?: string | null;
             /** Assistant Id */
             assistant_id?: string | null;
+            /** Background Tasks */
+            background_tasks?: components["schemas"]["BackgroundTaskView"][] | null;
             /** Conversation State */
             conversation_state: string;
             /** Created At */
@@ -5769,11 +5954,15 @@ export interface components {
             held_inputs?: components["schemas"]["HeldInputView"][] | null;
             /** Last Error */
             last_error?: string | null;
+            /** Last Error Code */
+            last_error_code?: string | null;
             /** Last Output At */
             last_output_at?: string | null;
             last_response?: components["schemas"]["ResponseView"] | null;
             /** Mcp Connections */
             mcp_connections: unknown[];
+            /** Model Account Id */
+            model_account_id?: string | null;
             /** Model Name */
             model_name?: string | null;
             /** Output Seq */
@@ -6299,6 +6488,8 @@ export interface components {
             } | null;
             /** Model */
             model?: string | null;
+            /** Model Account Id */
+            model_account_id?: string | null;
             /** Name */
             name?: string | null;
             /** Packages */
@@ -6347,6 +6538,8 @@ export interface components {
             display_name: string;
             /** Enabled */
             enabled: boolean;
+            /** Endpoint Provider */
+            endpoint_provider?: string | null;
             /** Engine Kind */
             engine_kind: string;
             /**
@@ -6759,6 +6952,14 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[AssistantPanel] */
+        ApiEnvelope_AssistantPanel_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AssistantPanel"];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[AssistantWorkspaceDestruction] */
         ApiEnvelope_AssistantWorkspaceDestruction_: {
             /** Code */
@@ -6796,6 +6997,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AuthorizeResponse"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[BackgroundTaskStopResult] */
+        ApiEnvelope_BackgroundTaskStopResult_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["BackgroundTaskStopResult"];
             /** Message */
             message: string;
         };
@@ -6884,6 +7093,14 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["DeletedDeployment"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[DeletedModelAccount] */
+        ApiEnvelope_DeletedModelAccount_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["DeletedModelAccount"];
             /** Message */
             message: string;
         };
@@ -6988,6 +7205,30 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["MCPServer"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[ModelAccountAuthorization] */
+        ApiEnvelope_ModelAccountAuthorization_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["ModelAccountAuthorization"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[ModelAccountTeamPool] */
+        ApiEnvelope_ModelAccountTeamPool_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["ModelAccountTeamPool"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[ModelAccount] */
+        ApiEnvelope_ModelAccount_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["ModelAccount"];
             /** Message */
             message: string;
         };
@@ -7491,6 +7732,24 @@ export interface components {
             /** Message */
             message: string;
         };
+        /** ApiEnvelope[list[ModelAccountModel]] */
+        ApiEnvelope_list_ModelAccountModel__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["ModelAccountModel"][];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[list[ModelAccount]] */
+        ApiEnvelope_list_ModelAccount__: {
+            /** Code */
+            code: string;
+            /** Data */
+            data: components["schemas"]["ModelAccount"][];
+            /** Message */
+            message: string;
+        };
         /** ApiEnvelope[list[SessionRecord]] */
         ApiEnvelope_list_SessionRecord__: {
             /** Code */
@@ -7955,6 +8214,7 @@ export interface components {
             permission_mode_default?: string | null;
             /** Primary */
             primary?: boolean | null;
+            runtime?: components["schemas"]["AssistantRuntimeSurface"] | null;
             /** Runtime Profile Name */
             runtime_profile_name?: string | null;
             /** Skills */
@@ -7967,6 +8227,12 @@ export interface components {
             timezone?: string | null;
             /** Updated At */
             updated_at?: string | null;
+            /** Workspace Action */
+            workspace_action?: {
+                [key: string]: unknown;
+            } | null;
+            /** Workspace Error */
+            workspace_error?: string | null;
             /** Workspace State */
             workspace_state?: string | null;
         } & {
@@ -8126,6 +8392,64 @@ export interface components {
             total?: number | null;
         };
         /**
+         * AssistantOwnerSecretStatus
+         * @description One credential the Assistant's runtime asks its owner for; never its value.
+         */
+        AssistantOwnerSecretStatus: {
+            /** Configured */
+            configured: boolean;
+            /**
+             * Deployment Default
+             * @default false
+             */
+            deployment_default: boolean;
+            /**
+             * Help
+             * @default
+             */
+            help: string;
+            /** Key */
+            key: string;
+            /** Label */
+            label: string;
+            /**
+             * Required
+             * @default true
+             */
+            required: boolean;
+            /** Updated At */
+            updated_at?: string | null;
+        };
+        /**
+         * AssistantPanel
+         * @description A signed browser address for the Assistant runtime's panel.
+         *
+         *     The address carries the runtime's login. ``expires_at`` is when it stops
+         *     routing (``null`` when the deployment does not sign sandbox addresses);
+         *     ask for a new one before then.
+         */
+        AssistantPanel: {
+            /** Expires At */
+            expires_at?: string | null;
+            /** Url */
+            url: string;
+        };
+        /**
+         * AssistantRuntimeSurface
+         * @description How the Assistant's runtime serves its owner.
+         *
+         *     ``conversations``: the console hosts its conversations. ``panel``: the
+         *     runtime serves its own page, opened through ``GET .../panel``.
+         */
+        AssistantRuntimeSurface: {
+            /** Conversations */
+            conversations: boolean;
+            /** Owner Secrets */
+            owner_secrets: components["schemas"]["AssistantOwnerSecretStatus"][];
+            /** Panel */
+            panel: boolean;
+        };
+        /**
          * AssistantWorkspace
          * @description An Assistant workspace's posture after a wake.
          *
@@ -8202,6 +8526,36 @@ export interface components {
         AuthorizeResponse: {
             /** Authorize Url */
             authorize_url: string;
+        };
+        /**
+         * BackgroundTaskStopResult
+         * @description Acknowledgement that the runtime was asked to stop one background task.
+         *
+         *     The task leaves the session's ``background_tasks`` when the runtime
+         *     reports it ended.
+         */
+        BackgroundTaskStopResult: {
+            /** Session Id */
+            session_id: string;
+            /** Status */
+            status: string;
+            /** Task Id */
+            task_id: string;
+        };
+        /**
+         * BackgroundTaskView
+         * @description Work the runtime keeps running in its box after its response ended.
+         *
+         *     ``kind`` is the engine's own name for the task's type, such as Claude
+         *     Code's ``local_bash``; ``description`` is the engine's own label for it.
+         */
+        BackgroundTaskView: {
+            /** Description */
+            description: string;
+            /** Kind */
+            kind: string;
+            /** Task Id */
+            task_id: string;
         };
         /** Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post */
         Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post: {
@@ -8420,6 +8774,20 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * CompleteAuthorizationRequest
+         * @description The query OpenAI redirected the browser to, as the client received it.
+         */
+        CompleteAuthorizationRequest: {
+            /** Client Id */
+            client_id?: string | null;
+            /** Code */
+            code?: string | null;
+            /** Error */
+            error?: string | null;
+            /** State */
+            state: string;
+        };
         /** ConfigureRequest */
         ConfigureRequest: {
             /** Client Id */
@@ -8550,6 +8918,7 @@ export interface components {
             /** Mcp Server Url */
             mcp_server_url?: string | null;
             networking?: components["schemas"]["CredentialNetworking"] | null;
+            oauth?: components["schemas"]["CredentialTokenGrant"] | null;
             refresh?: components["schemas"]["CredentialRefresh"] | null;
             /** Secret Name */
             secret_name?: string | null;
@@ -8636,6 +9005,26 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * CredentialTokenGrant
+         * @description Non-secret half of the OAuth2 grant an environment credential obtains its value by.
+         */
+        CredentialTokenGrant: {
+            /** Auth Method */
+            auth_method?: string | null;
+            /** Client Id */
+            client_id?: string | null;
+            /** Grant Type */
+            grant_type?: string | null;
+            /** Scope */
+            scope?: string | null;
+            /** Token Endpoint */
+            token_endpoint?: string | null;
+            /** Username */
+            username?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** CurrentEnvironment */
         CurrentEnvironment: {
             /** Description */
@@ -8709,6 +9098,18 @@ export interface components {
             deleted: boolean;
             /** Deployment Id */
             deployment_id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * DeletedModelAccount
+         * @description A removed account, and whether OpenAI confirmed its session ended.
+         */
+        DeletedModelAccount: {
+            /** Account Id */
+            account_id: string;
+            /** Revocation Confirmed */
+            revocation_confirmed: boolean | null;
         } & {
             [key: string]: unknown;
         };
@@ -8845,6 +9246,8 @@ export interface components {
              * @constant
              */
             custody_scope: "environment";
+            /** Entry Policy */
+            entry_policy: string;
             /** Scheduler Provider */
             scheduler_provider: string | null;
             /** Scheduler Worker Enabled */
@@ -11108,6 +11511,80 @@ export interface components {
             path: string;
         };
         /**
+         * ModelAccount
+         * @description One account, without its tokens or key.
+         */
+        ModelAccount: {
+            /** Access Expires At */
+            access_expires_at: string | null;
+            /** Account Id */
+            account_id: string;
+            /** Created At */
+            created_at: string;
+            /** Email */
+            email: string | null;
+            /** Is Default */
+            is_default: boolean;
+            /** Label */
+            label: string;
+            /** Last Error At */
+            last_error_at: string | null;
+            /** Last Error Code */
+            last_error_code: string | null;
+            /** Pool Last Used At */
+            pool_last_used_at: string | null;
+            /** Scopes */
+            scopes: string[];
+            /** Shared */
+            shared: boolean;
+            /** Status */
+            status: string;
+            /** Updated At */
+            updated_at: string;
+            /** Usage Limited Until */
+            usage_limited_until: string | null;
+            /** Vendor */
+            vendor: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ModelAccountAuthorization
+         * @description A started sign-in: where to send the browser, and until when it can complete.
+         */
+        ModelAccountAuthorization: {
+            /** Authorization Id */
+            authorization_id: string;
+            /** Authorize Url */
+            authorize_url: string;
+            /** Expires At */
+            expires_at: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ModelAccountModel
+         * @description One model an account can use.
+         */
+        ModelAccountModel: {
+            /** Display Name */
+            display_name: string;
+            /** Id */
+            id: string;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
+         * ModelAccountTeamPool
+         * @description Whether the deployment's team pool of model accounts is on.
+         */
+        ModelAccountTeamPool: {
+            /** Enabled */
+            enabled: boolean;
+        } & {
+            [key: string]: unknown;
+        };
+        /**
          * MoveSessionFilesRequest
          * @description Body for ``POST /sessions/{id}/files/move``.
          */
@@ -11130,6 +11607,14 @@ export interface components {
             sandbox_id: string;
             /** Session Id */
             session_id: string;
+        };
+        /**
+         * OwnerSecretValue
+         * @description A write-only credential value.
+         */
+        OwnerSecretValue: {
+            /** Value */
+            value: string;
         };
         /** PerformUserAction */
         PerformUserAction: {
@@ -11682,6 +12167,8 @@ export interface components {
             agent_state?: string | null;
             /** Assistant Id */
             assistant_id?: string | null;
+            /** Background Tasks */
+            background_tasks?: components["schemas"]["BackgroundTaskView"][] | null;
             /** Created At */
             created_at?: string | null;
             /** Current Responses */
@@ -11702,9 +12189,13 @@ export interface components {
             held_inputs?: components["schemas"]["HeldInputView"][] | null;
             /** Last Error */
             last_error?: string | null;
+            /** Last Error Code */
+            last_error_code?: string | null;
             /** Last Output At */
             last_output_at?: string | null;
             last_response?: components["schemas"]["ResponseView"] | null;
+            /** Model Account Id */
+            model_account_id?: string | null;
             /** Model Name */
             model_name?: string | null;
             /** Output Seq */
@@ -11907,6 +12398,16 @@ export interface components {
             text: string;
         };
         /**
+         * StartAuthorizationRequest
+         * @description Body for starting a ChatGPT sign-in.
+         */
+        StartAuthorizationRequest: {
+            /** Account Id */
+            account_id?: string | null;
+            /** Redirect Uri */
+            redirect_uri: string;
+        };
+        /**
          * StartConversationRequest
          * @description Conversation start body.
          *
@@ -12050,6 +12551,20 @@ export interface components {
             transport?: string | null;
             /** Url */
             url?: string | null;
+        };
+        /**
+         * UpdateModelAccountRequest
+         * @description Body for changing an account; an absent or null field is left as it is.
+         */
+        UpdateModelAccountRequest: {
+            /** Api Key */
+            api_key?: string | null;
+            /** Is Default */
+            is_default?: boolean | null;
+            /** Label */
+            label?: string | null;
+            /** Shared */
+            shared?: boolean | null;
         };
         /** UserActionCommandView */
         UserActionCommandView: {
@@ -14582,6 +15097,17 @@ export interface operations {
                     } | null;
                     runtime_template_name?: string | null;
                     sandbox_backend?: string | null;
+                    /** @default none */
+                    sandbox_container_engine?: ("none" | "docker") | null;
+                    sandbox_cpu?: string | null;
+                    sandbox_memory?: string | null;
+                    sandbox_mounts?: {
+                        /** @default true */
+                        read_only?: boolean | null;
+                        source: string;
+                        target: string;
+                    }[] | null;
+                    sandbox_networks?: string[] | null;
                     /** @default default */
                     sandbox_permission_level?: ("default" | "advanced" | "privileged") | null;
                     /** @default conversation */
@@ -16117,6 +16643,7 @@ export interface operations {
                         [key: string]: unknown;
                     } | null;
                     model: string;
+                    model_account_id?: string | null;
                     name: string;
                     packages?: {
                         branch?: string | null;
@@ -16269,6 +16796,7 @@ export interface operations {
                         [key: string]: unknown;
                     } | null;
                     model: string;
+                    model_account_id?: string | null;
                     name: string;
                     packages?: {
                         branch?: string | null;
@@ -20138,6 +20666,91 @@ export interface operations {
             };
         };
     };
+    set_assistant_owner_secret_api_v1_assistants__assistant_id__owner_secrets__key__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OwnerSecretValue"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_Assistant_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    open_assistant_panel_api_v1_assistants__assistant_id__panel_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                assistant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AssistantPanel_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     destroy_workspace_api_v1_assistants__assistant_id__workspace_delete: {
         parameters: {
             query?: never;
@@ -21341,6 +21954,337 @@ export interface operations {
             };
         };
     };
+    list_model_accounts_api_v1_me_model_accounts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_ModelAccount__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    add_anthropic_api_key_api_v1_me_model_accounts_anthropic_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddAnthropicApiKeyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ModelAccount_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartAuthorizationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ModelAccountAuthorization_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    complete_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations__authorization_id__callback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                authorization_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompleteAuthorizationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ModelAccount_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_model_account_team_pool_api_v1_me_model_accounts_team_pool_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ModelAccountTeamPool_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_model_account_api_v1_me_model_accounts__account_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_DeletedModelAccount_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    update_model_account_api_v1_me_model_accounts__account_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateModelAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ModelAccount_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_model_account_models_api_v1_me_model_accounts__account_id__models_get: {
+        parameters: {
+            query?: {
+                /** @description The account's vendor, chatgpt_plan or anthropic_api_key; required with the account id default. */
+                vendor?: string | null;
+            };
+            header?: never;
+            path: {
+                account_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_list_ModelAccountModel__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_personal_schedules_api_v1_me_schedules_get: {
         parameters: {
             query?: {
@@ -22241,6 +23185,10 @@ export interface operations {
                 limit?: number;
                 /** @description Opaque next_cursor from the preceding page. */
                 cursor?: string;
+                /** @description Keep the sessions of these Agents (comma-separated ids); used only with page=1. */
+                agent_id?: string;
+                /** @description Keep the sessions whose runtime last reported one of these statuses (comma-separated: idle, working, waiting, background); used only with page=1. */
+                runtime_status?: string;
             };
             header?: never;
             path?: never;
@@ -22419,6 +23367,47 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_SessionArchival_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    stop_session_background_task_api_v1_sessions__session_id__background_tasks__task_id__stop_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                task_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_BackgroundTaskStopResult_"];
                 };
             };
             /** @description Request validation failed (INVALID_REQUEST). */

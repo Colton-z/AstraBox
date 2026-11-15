@@ -33,10 +33,12 @@ vocabulary says when an environment supplies neither.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import shlex
 from collections.abc import Awaitable, Callable, Mapping
+import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -47,6 +49,7 @@ from astrabox.persistence.repository.session_repository import (
 )
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.settings import load_astrabox_settings
+from astrabox.common.utils.time_utils import parse_iso
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     required_network_host,
     resolve_network_policy,
@@ -65,16 +68,19 @@ from astrabox.core.service.orchestrator.runtime.storage.mounts import (
     create_sandbox_with_storage,
 )
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
+    resolve_sandbox_container_engine,
+    resolve_sandbox_mounts,
+    resolve_sandbox_networks,
     resolve_sandbox_permission_level,
+    resolve_sandbox_size,
     resolve_sandbox_tenancy,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_credentials import (
-    mcp_credential_refresher,
     resolve_agent_mcp_credential_plan,
     resolve_mcp_credential_plan,
 )
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
-    artifact_tools_enabled,
+    prepared_runtime_serves,
     sandbox_mcp_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.packages import (
@@ -83,6 +89,7 @@ from astrabox.core.service.orchestrator.runtime.packages import (
 from astrabox.providers.sandbox_image import sandbox_boot_env
 from astrabox.config.settings import get_settings
 from astrabox.seams.egress_credentials import (
+    ACCESS_TOKEN_RENEWAL_WINDOW_S,
     DELIVERY_HEADER,
     EGRESS_HELD_PLACEHOLDER,
     ModelEgressCredential,
@@ -94,6 +101,10 @@ from astrabox.seams.egress_credentials import (
     workload_credential_name,
     workload_model_placeholder,
 )
+from astrabox.core.service.orchestrator.runtime.pty_terminal import (
+    resolve_sandbox_endpoint,
+)
+from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.seams.sandbox import (
     SANDBOX_LIFECYCLE_PROBE_NOT_FOUND,
     SANDBOX_PERMISSION_LEVEL_ADVANCED,
@@ -116,33 +127,46 @@ logger = get_logger(__name__)
 
 
 def sandbox_create_resources(
-    *, shared: bool, assistant: bool = False,
+    template: Any | None, *, shared: bool, assistant: bool = False,
 ) -> tuple[dict[str, str], dict[str, str]]:
-    """Return the deployment's ``(limits, requests)`` for one kind of box.
+    """Return ``(limits, requests)`` for one box of ``template``'s RuntimeProfile.
 
     ``shared`` selects an Agent's shared box and ``assistant`` an Assistant's
-    workspace box, otherwise a conversation's own box. Limits are the ceiling;
-    requests are only the Kubernetes scheduling reservation. A deployment sets
-    them with ``ASTRABOX_SANDBOX_*``, ``ASTRABOX_SHARED_SANDBOX_*`` and
+    workspace box, otherwise a conversation's own box. A deployment sizes each
+    kind with ``ASTRABOX_SANDBOX_*``, ``ASTRABOX_SHARED_SANDBOX_*`` and
     ``ASTRABOX_ASSISTANT_SANDBOX_*`` (defaults in
-    :class:`~astrabox.config.settings.AstraBoxSettings`). Every create passes
-    them through its backend's ``fit_resources``, which refuses what that
-    runtime cannot honour.
+    :class:`~astrabox.config.settings.AstraBoxSettings`). The RuntimeProfile's
+    ``sandbox_cpu`` and ``sandbox_memory`` replace that kind's limit for every
+    box of the profile, whichever kind it is (``resolve_sandbox_size``).
+
+    Limits are the ceiling; requests are only the Kubernetes scheduling
+    reservation. A profile's memory is also its boxes' memory request, so a
+    node reserves the memory such a box may use. A profile's CPU caps the
+    deployment's CPU request, which Kubernetes refuses above the limit, and
+    otherwise leaves it as the deployment set it: a box that finds the CPU busy
+    only runs slower. Every create passes the result through its backend's
+    ``fit_resources``, which refuses what that runtime cannot honour.
     """
-    from astrabox.config.settings import get_settings
+    from astrabox.config.settings import cpu_quantity, get_settings
 
     settings = get_settings()
     prefix = "shared_sandbox" if shared else "assistant_sandbox" if assistant else "sandbox"
-    return (
-        {
-            "cpu": getattr(settings, f"{prefix}_cpu_limit"),
-            "memory": getattr(settings, f"{prefix}_memory_limit"),
-        },
-        {
-            "cpu": getattr(settings, f"{prefix}_cpu_request"),
-            "memory": getattr(settings, f"{prefix}_memory_request"),
-        },
-    )
+    limits = {
+        "cpu": getattr(settings, f"{prefix}_cpu_limit"),
+        "memory": getattr(settings, f"{prefix}_memory_limit"),
+    }
+    requests = {
+        "cpu": getattr(settings, f"{prefix}_cpu_request"),
+        "memory": getattr(settings, f"{prefix}_memory_request"),
+    }
+    size = resolve_sandbox_size(template)
+    if "cpu" in size:
+        limits["cpu"] = size["cpu"]
+        if cpu_quantity(requests["cpu"]) > cpu_quantity(size["cpu"]):
+            requests["cpu"] = size["cpu"]
+    if "memory" in size:
+        limits["memory"] = requests["memory"] = size["memory"]
+    return limits, requests
 
 
 def _slot_model_substitution(
@@ -284,7 +308,7 @@ class ProvisionedEngineSandbox:
     #: Re-resolve and atomically reconcile MCP credentials before each new
     #: root input. The callback refuses a missing process-local Vault instead
     #: of creating an incomplete one without the model credential beside it.
-    prepare_engine_input: Callable[[], Awaitable[None]] | None = None
+    prepare_engine_input: Callable[..., Awaitable[None]] | None = None
     #: The conversation this box can actually rejoin. For an engine whose
     #: transcript the platform moves (``session_log``), this is the planned key
     #: only when the store had something to put back; when it had nothing the
@@ -301,8 +325,8 @@ class ProvisionedEngineSandbox:
     #: adapter; allocation and cleanup stay in the platform.
     prepared_manifest: dict[str, Any] | None = None
     #: A platform-resolved endpoint to an already prepared runner, when the
-    #: unit includes one.
-    runner_uri: str | None = None
+    #: unit includes one, with the headers a connection to it carries.
+    runner_endpoint: SandboxEndpoint | None = field(default=None, repr=False)
 
 
 def plan_conversation_identity(
@@ -361,14 +385,27 @@ def resolve_model_credential_delivery(
     -running child's identity. Provider-owned model delivery instead supplies
     only a workload placeholder and leaves its protected binding to Session
     preparation, independently of the platform Vault switch.
+
+    A model endpoint whose runtime signs in inside its sandbox
+    (``credential_owner`` ``sandbox``) has nothing to deliver: its endpoint is
+    admitted to the network policy, the image receives no credential, and no
+    binding is written for it.
     """
 
+    from astrabox.seams.model import model_endpoint_for_name
     from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
     preparation = runtime_preparation_plan(template)
     model_api_key = str(credential.access.credential or "").strip()
     model_base_url = str(credential.access.base_url or "").strip()
-    if not model_base_url or (preparation.model_credential_delivery == "platform" and not model_api_key):
+    signs_in_inside = (
+        model_endpoint_for_name(credential.access.endpoint_provider).credential_owner == "sandbox"
+    )
+    if not model_base_url or (
+        preparation.model_credential_delivery == "platform"
+        and not model_api_key
+        and not signs_in_inside
+    ):
         raise APIError(
             code=credential.missing_code,
             message=credential.missing_message,
@@ -392,6 +429,8 @@ def resolve_model_credential_delivery(
             f"sandbox backend {backend_adapter.name!r} cannot enforce the "
             f"{engine_kind} RuntimeProfile's networking contract"
         )
+    if signs_in_inside:
+        return "", network_policy, additional_vault_write
     if preparation.model_credential_delivery == "provider":
         identity = target_slot or str(workload_id or "").strip()
         if not identity:
@@ -495,6 +534,282 @@ def credential_delivery_record(
     if placeholder_context is not None:
         record[ENVIRONMENT_PLACEHOLDER_CONTEXT] = placeholder_context
     return record
+
+
+async def reconcile_sandbox_credentials(
+    platform: Any,
+    *,
+    session_id: str,
+    template: Any,
+    backend_adapter: Any,
+    sandbox: Any,
+    placeholder_context: str | None,
+    delivered: set[str],
+    bindings: set[str],
+    vault_enabled: bool,
+    with_mcp: bool = True,
+) -> tuple[set[str], set[str], datetime | None]:
+    """Write a running sandbox's protected credentials again; what it now delivers.
+
+    It composes the Session's whole outbound plan (MCP destinations,
+    environment and HTTP Basic credentials) under the placeholder context the
+    sandbox's processes were started with, so a rotated value reaches the same
+    placeholder, and names every credential delivered earlier (``delivered``,
+    environment ``credential_id``s; ``bindings``, MCP binding names), so an
+    archived, deleted or unassigned one stops being delivered. A credential
+    added since a process started has no variable in it; its runtime's next
+    start gives it one. Returns the environment credentials and MCP bindings
+    the sandbox delivers afterwards, and when the first of the access tokens
+    it delivers expires, if it delivers any. ``with_mcp=False`` leaves the MCP
+    bindings to the runtimes that refresh them before each turn.
+    """
+
+    mcp_plan = await resolve_mcp_credential_plan(
+        platform, session_id=session_id, template=template, vault_enabled=vault_enabled,
+    ) if with_mcp else None
+    plan, _environment = await resolve_session_environment_credentials(
+        platform,
+        session_id=session_id,
+        vault_enabled=vault_enabled,
+        vault_write=mcp_plan,
+        backend=backend_adapter,
+        placeholder_context=placeholder_context,
+    )
+    environment = plan.environment if plan is not None else ()
+    composed = {str(item.credential_id) for item in environment}
+    expiries = [parse_iso(item.expires_at) for item in environment if item.expires_at]
+    token_expiry = min(expiries) if expiries else None
+    if (plan is None or plan.is_empty) and not (delivered - composed):
+        return composed, bindings, token_expiry
+    await backend_adapter.apply_credential_vault(
+        sandbox,
+        vault_write=plan if plan is not None else SandboxEgressCredentialPlan(),
+        managed_credential_names=tuple(sorted(delivered)),
+        managed_binding_names=tuple(sorted(bindings)),
+        create_if_missing=False,
+    )
+    return composed, bindings | {
+        item.name
+        for item in (plan.mcp if plan is not None else ())
+        if item.name.startswith("astrabox-mcp-")
+    }, token_expiry
+
+
+def session_model_context(
+    template: Any, *, session_id: str, user_id: str | None, keep_account: bool = False
+) -> Any:
+    """Who a Session's model requests are made for.
+
+    ``keep_account`` asks for the account the Session spends now instead of a
+    new choice; see :attr:`~astrabox.seams.model.ModelRequestContext.keep_account`.
+    """
+    from astrabox.seams.model import ModelRequestContext
+
+    return ModelRequestContext(
+        conversation_id=str(session_id or "").strip() or None,
+        user_id=str(user_id or "").strip() or None,
+        # An Agent names one of its creator's accounts; anyone else's
+        # conversation with it spends their own default account.
+        account_id=(
+            str(getattr(template, "model_account_id", "") or "").strip() or None
+            if user_id and str(user_id) == str(getattr(template, "model_account_owner_id", "") or "")
+            else None
+        ),
+        keep_account=keep_account,
+    )
+
+
+async def session_model_access(
+    platform: Any,
+    template: Any,
+    *,
+    session_id: str,
+    user_id: str | None,
+    keep_account: bool = False,
+) -> ResolvedModelAccess:
+    """A Session's model access, with its owner's credential where the endpoint has no other.
+
+    A model endpoint whose credential is the Session owner's
+    (``credential_owner``) resolves with none; the owner's is obtained here,
+    for the Session that is starting or being attached to. ``keep_account``
+    keeps the model account the Session spends now (a box being attached to
+    may be in the middle of a response).
+    """
+    from astrabox.seams.model import model_endpoint_for_name
+
+    access: ResolvedModelAccess = platform.resolve_model_access(template.model_config or {})
+    provider = model_endpoint_for_name(access.endpoint_provider)
+    if provider.credential_owner != "session_owner":
+        from astrabox.core.service.model_accounts.service import get_model_account_service
+
+        await get_model_account_service().release_session_account(session_id)
+        return access
+    credential = await provider.ensure_session_credential(
+        context=session_model_context(
+            template, session_id=session_id, user_id=user_id, keep_account=keep_account
+        )
+    )
+    return dataclasses.replace(access, credential=credential)
+
+
+def _owner_model_renewal(
+    platform: Any, *, session_id: str, template: Any, backend_adapter: Any, sandbox: Any,
+) -> Callable[[bool], Awaitable[datetime | None]] | None:
+    """Write the Session owner's renewed model credential to its running sandbox.
+
+    ``None`` for a model endpoint with a deployment credential, which does not
+    expire. The process keeps the placeholder it started with; only the value
+    behind it at the egress boundary changes, and only when it has. The
+    returned call takes ``choose_account``: True lets the model-account
+    service choose the account (before a response), False renews the one the
+    Session spends.
+    """
+    from astrabox.core.service.orchestrator.engine.registry import get_engine_adapter
+    from astrabox.seams.model import model_endpoint_for_name
+
+    provider = model_endpoint_for_name(
+        platform.resolve_model_access(template.model_config or {}).endpoint_provider
+    )
+    if provider.credential_owner != "session_owner":
+        return None
+    written: list[str] = []
+
+    async def renew(choose_account: bool) -> datetime | None:
+        session = await SessionRepository().get_session(session_id)
+        user_id = str((session or {}).get("user_id") or "").strip() or None
+        access = await session_model_access(
+            platform, template, session_id=session_id, user_id=user_id,
+            keep_account=not choose_account,
+        )
+        if written != [access.credential]:
+            request = get_engine_adapter(str(template.engine_kind)).sandbox_request(
+                template=template, model_access=access
+            )
+            await backend_adapter.apply_credential_vault(
+                sandbox,
+                vault_write=model_credential_plan(request.credential),
+                create_if_missing=False,
+            )
+            written[:] = [str(access.credential)]
+        return await provider.session_credential_expires_at(
+            context=session_model_context(
+                template, session_id=session_id, user_id=user_id, keep_account=True
+            )
+        )
+
+    return renew
+
+
+class SessionCredentialRefresh:
+    """The refresh of a running Session's protected credentials.
+
+    Calling it writes the sandbox's credentials again
+    (:func:`reconcile_sandbox_credentials`) and keeps what the sandbox
+    delivers between calls. It runs before each turn. A credential whose value
+    is an access token the platform obtains also has to be written again
+    before that token expires, however long a turn runs: :meth:`due` says when.
+    ``choose_account=True`` is for an input no response is running for: the
+    model-account service may then give the Session another model account
+    (:meth:`~astrabox.core.service.model_accounts.service.ModelAccountService.conversation_token`).
+    Every other call renews the account the Session spends.
+    """
+
+    def __init__(
+        self,
+        reconcile: Callable[
+            [set[str], set[str]], Awaitable[tuple[set[str], set[str], datetime | None]]
+        ],
+        *,
+        delivered: set[str],
+        bindings: set[str],
+        model: Callable[[bool], Awaitable[datetime | None]] | None = None,
+    ) -> None:
+        self._reconcile = reconcile
+        self._delivered = delivered
+        self._bindings = bindings
+        self._model = model
+        # A model credential's expiry is learned by the first refresh.
+        self._token_expiry: datetime | None = datetime.now(timezone.utc) if model else None
+        self._lock = asyncio.Lock()
+
+    async def __call__(self, *, choose_account: bool = False) -> None:
+        async with self._lock:
+            self._delivered, self._bindings, expiry = await self._reconcile(
+                self._delivered, self._bindings
+            )
+            if self._model is not None:
+                model_expiry = await self._model(choose_account)
+                if model_expiry is not None and (expiry is None or model_expiry < expiry):
+                    expiry = model_expiry
+            self._token_expiry = expiry
+
+    def due(self) -> bool:
+        """Whether a delivered access token is inside its renewal window."""
+        return self._token_expiry is not None and self._token_expiry <= datetime.now(
+            timezone.utc
+        ) + timedelta(seconds=ACCESS_TOKEN_RENEWAL_WINDOW_S)
+
+
+def session_credential_refresher(
+    platform: Any,
+    *,
+    session_id: str,
+    template: Any,
+    backend_adapter: Any,
+    sandbox: Any,
+    runtime_identity: Mapping[str, Any] | None,
+    initial_credential_plan: SandboxEgressCredentialPlan | None,
+    vault_enabled: bool,
+) -> SessionCredentialRefresh | None:
+    """The refresh of a running Session's protected credentials; ``None`` for a sandbox nothing can deliver to."""
+
+    identity = dict(runtime_identity or {})
+    placeholder_context = str(identity.get(ENVIRONMENT_PLACEHOLDER_CONTEXT) or "").strip() or None
+    delivered = {str(item) for item in identity.get(ENVIRONMENT_CREDENTIAL_IDS) or ()}
+    bindings = {
+        item.name
+        for item in (initial_credential_plan.mcp if initial_credential_plan is not None else ())
+        if item.name.startswith("astrabox-mcp-")
+    }
+    if not vault_enabled and not bool(
+        getattr(backend_adapter, "supports_header_placeholder_credentials", False)
+    ):
+        return None
+
+    async def reconcile(
+        delivered: set[str], bindings: set[str]
+    ) -> tuple[set[str], set[str], datetime | None]:
+        return await reconcile_sandbox_credentials(
+            platform,
+            session_id=session_id,
+            template=template,
+            backend_adapter=backend_adapter,
+            sandbox=sandbox,
+            placeholder_context=placeholder_context,
+            delivered=delivered,
+            bindings=bindings,
+            vault_enabled=vault_enabled,
+        )
+
+    model = _owner_model_renewal(
+        platform, session_id=session_id, template=template,
+        backend_adapter=backend_adapter, sandbox=sandbox,
+    ) if vault_enabled else None
+    refresh = SessionCredentialRefresh(
+        reconcile, delivered=delivered, bindings=bindings, model=model
+    )
+    if model is None:
+        # A sandbox starts with the tokens its plan carried; their expiry is
+        # the first renewal's.
+        expiries = [
+            parse_iso(item.expires_at)
+            for item in (
+                initial_credential_plan.environment if initial_credential_plan is not None else ()
+            )
+            if item.expires_at
+        ]
+        refresh._token_expiry = min(expiries) if expiries else None
+    return refresh
 
 
 def require_live_credential_delivery(
@@ -764,34 +1079,6 @@ async def workspace_is_ready(
         await workspace_router.prepare(ref, box=box, box_path=box_path)
 
 
-async def resolve_sandbox_websocket_endpoint(sandbox: Any, port: int) -> str:
-    """Resolve one box service endpoint into the URI an engine client uses.
-
-    Endpoint publication and Secure Access signing are sandbox-platform work.
-    Keeping this beside provisioning means an engine receives an address; it
-    never asks a provider how the box is exposed.
-    """
-
-    endpoint = await sandbox.get_endpoint(int(port))
-    if endpoint.headers:
-        settings = load_astrabox_settings()
-        expires_at = datetime.now(timezone.utc) + timedelta(
-            seconds=int(settings.sandbox_endpoint_url_ttl_seconds)
-        )
-        endpoint = await sandbox.get_signed_endpoint(int(port), expires_at=expires_at)
-        if endpoint.headers:
-            raise RuntimeError(
-                "signed sandbox endpoint still requires routing headers the "
-                f"engine transport cannot carry (sandbox={sandbox.sandbox_id})"
-            )
-    base = endpoint.url
-    if base.startswith("https://"):
-        return "wss://" + base[len("https://") :]
-    if base.startswith("http://"):
-        return "ws://" + base[len("http://") :]
-    raise RuntimeError(f"sandbox endpoint has no http(s) scheme: {base!r}")
-
-
 async def prepare_platform_workspace(
     manager: Any,
     sandbox: Any,
@@ -896,6 +1183,7 @@ async def plan_workspace_mounts(
     user_id: str | None,
     runtime_identity: dict[str, Any] | None,
     workspace_id: str | None = None,
+    engine_kind: str | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Plan optional workspace mounts before the box starts.
 
@@ -933,6 +1221,7 @@ async def plan_workspace_mounts(
         agent_id=str(agent_id or "").strip() or None,
         assistant_id=str(assistant_id or "").strip() or None,
         user_id=str(user_id or "").strip() or None,
+        engine_kind=str(engine_kind or "").strip() or None,
         runtime_identity=runtime_identity,
     )
     return tuple((str(box_path), str(subpath)) for box_path, subpath in planned)
@@ -955,7 +1244,7 @@ async def _assemble_provisioned_sandbox(
     vault_enabled: bool = False,
     runtime_env: Mapping[str, str] | None = None,
     prepared_manifest: dict[str, Any] | None = None,
-    runner_uri: str | None = None,
+    runner_endpoint: SandboxEndpoint | None = None,
 ) -> ProvisionedEngineSandbox:
     """The tenancy-agnostic tail: transcript restore, then the result.
 
@@ -1018,23 +1307,20 @@ async def _assemble_provisioned_sandbox(
         cwd=cwd,
         model_credential=credential,
         mcp_vault_write=mcp_vault_write,
-        prepare_engine_input=(
-            mcp_credential_refresher(
-                manager,
-                session_id=session_id,
-                template=template,
-                backend_adapter=backend_adapter,
-                sandbox=sandbox,
-                initial_credential_plan=mcp_vault_write,
-                vault_enabled=vault_enabled,
-            )
-            if mcp_vault_write is not None
-            else None
+        prepare_engine_input=session_credential_refresher(
+            manager,
+            session_id=session_id,
+            template=template,
+            backend_adapter=backend_adapter,
+            sandbox=sandbox,
+            runtime_identity=runtime_identity,
+            initial_credential_plan=mcp_vault_write,
+            vault_enabled=vault_enabled,
         ),
         resume_session_key=honoured_resume_key,
         runtime_env=dict(runtime_env or {}),
         prepared_manifest=prepared_manifest,
-        runner_uri=runner_uri,
+        runner_endpoint=runner_endpoint,
     )
 
 
@@ -1231,8 +1517,9 @@ def engine_create_spec(
     """
 
     resource_limits, resource_requests = backend.fit_resources(
-        *sandbox_create_resources(shared=shared, assistant=assistant)
+        *sandbox_create_resources(template, shared=shared, assistant=assistant)
     )
+    container_engine = resolve_sandbox_container_engine(template)
     return SandboxCreateSpec(
         session_id=session_id,
         assignment_id=assignment_id,
@@ -1243,7 +1530,7 @@ def engine_create_spec(
         entrypoint=tuple(request.entrypoint),
         cwd=cwd,
         env={
-            **sandbox_boot_env(shared=shared),
+            **sandbox_boot_env(shared=shared, container_engine=container_engine),
             **dict(request.env),
             **dict(mirror_env),
             **dict(runtime_env),
@@ -1261,6 +1548,9 @@ def engine_create_spec(
         death_callback_url=callback_url,
         network_policy=network_policy,
         permission_level=permission_level,
+        container_engine=container_engine,
+        networks=resolve_sandbox_networks(template),
+        shared_mounts=resolve_sandbox_mounts(template),
         vault_write=vault_write,
         workspace_mounts=planned_mounts,
     )
@@ -1371,7 +1661,7 @@ async def _provision_shared_conversation(
     session_log: Any,
     progress_callback: Callable[[str], Awaitable[None]] | None = None,
     recover_assignment: bool = False,
-) -> tuple[Any, str, dict[str, Any], str]:
+) -> tuple[Any, str, dict[str, Any], SandboxEndpoint]:
     """Place one conversation into its Agent's shared box and start its service.
 
     The Agent-shared tenancy is a platform capability — an application of
@@ -1673,8 +1963,8 @@ async def _provision_shared_conversation(
             engine_label=engine_kind,
         )
     )
-    runner_uri = await resolve_sandbox_websocket_endpoint(sandbox, runner_port)
-    return sandbox, sandbox_id, runtime_identity, runner_uri
+    runner_endpoint = await resolve_sandbox_endpoint(sandbox, runner_port)
+    return sandbox, sandbox_id, runtime_identity, runner_endpoint
 
 
 async def require_engine_sandbox_permission(
@@ -1810,9 +2100,10 @@ async def claim_prepared_engine_sandbox(
     from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
 
 
-    if not artifact_tools_enabled(getattr(template, "session_source_type", None)):
-        # Prepared native processes froze personal artifact tools before any Session existed.
-        logger.info("channel Session %s starts its own runtime without private artifact tools", session_id)
+    source_type = getattr(template, "session_source_type", None)
+    if not prepared_runtime_serves(source_type):
+        # Prepared native processes froze their platform MCP servers before any Session existed.
+        logger.info("%s Session %s starts its own runtime with its own platform tools", source_type, session_id)
         return None
 
     if (
@@ -2068,6 +2359,7 @@ async def claim_prepared_engine_sandbox(
         user_id=str(getattr(workspace_plan, "user_id", "") or user_id or ""),
         runtime_identity=identity,
         workspace_id=None,
+        engine_kind=str(getattr(workspace_plan, "engine_kind", "") or ""),
     )
     if placement == PLACEMENT_CONVERSATION_BOX:
         await bind_prepared_workspace(
@@ -2113,10 +2405,10 @@ async def claim_prepared_engine_sandbox(
             runtime_identity=identity, owner_label=f"Session {session_id!r}",
             additional_env=claimed_runtime_env,
         )
-    runner_uri = None
+    runner_endpoint = None
     runner_port = int(claimed.get("runner_port") or 0)
     if runner_port:
-        runner_uri = await resolve_sandbox_websocket_endpoint(sandbox, runner_port)
+        runner_endpoint = await resolve_sandbox_endpoint(sandbox, runner_port)
     return await _assemble_provisioned_sandbox(
         sandbox,
         manager=manager,
@@ -2133,7 +2425,7 @@ async def claim_prepared_engine_sandbox(
         vault_enabled=vault_enabled,
         prepared_manifest=claimed,
         runtime_env=claimed_runtime_env,
-        runner_uri=runner_uri,
+        runner_endpoint=runner_endpoint,
     )
 
 
@@ -2190,7 +2482,7 @@ async def _claim_conversation_pool_box(
 ) -> _ConversationPoolClaim | None:
     """Recover or atomically acquire the Session's official-pool box."""
 
-    if recovered_assignment is None and not artifact_tools_enabled(getattr(template, "session_source_type", None)):
+    if recovered_assignment is None and not prepared_runtime_serves(getattr(template, "session_source_type", None)):
         return None
 
     from astrabox.core.service.orchestrator.agent.client_pool import (
@@ -2545,7 +2837,7 @@ async def provision_engine_sandbox(
         # session. The box-create recipe below cannot express any of that,
         # so the placement path takes over here and rejoins at the
         # tenancy-agnostic tail (transcript restore, result assembly).
-        sandbox, sandbox_id, runtime_identity, runner_uri = await _provision_shared_conversation(
+        sandbox, sandbox_id, runtime_identity, runner_endpoint = await _provision_shared_conversation(
             manager,
             backend_adapter,
             session_id=session_id,
@@ -2579,7 +2871,7 @@ async def provision_engine_sandbox(
             mcp_vault_write=mcp_vault_write,
             vault_enabled=vault_enabled,
             runtime_env=runtime_env,
-            runner_uri=runner_uri,
+            runner_endpoint=runner_endpoint,
         )
 
     planned_mounts = await plan_workspace_mounts(
@@ -2589,6 +2881,7 @@ async def provision_engine_sandbox(
         assistant_id=str(getattr(workspace_plan, "assistant_id", "") or ""),
         user_id=str(getattr(workspace_plan, "user_id", "") or user_id or ""),
         runtime_identity=runtime_identity,
+        engine_kind=str(getattr(workspace_plan, "engine_kind", "") or ""),
     )
     # The platform has already made every placement decision before it invokes
     # this capability.  A provider receives one complete, immutable box recipe;
@@ -2655,8 +2948,8 @@ async def provision_engine_sandbox(
         cwd=cwd,
     )
 
-    runner_uri = (
-        await resolve_sandbox_websocket_endpoint(sandbox, int(request.wait_for_inbox_service_port))
+    runner_endpoint = (
+        await resolve_sandbox_endpoint(sandbox, int(request.wait_for_inbox_service_port))
         if request.wait_for_inbox_service_port is not None
         else None
     )
@@ -2675,5 +2968,5 @@ async def provision_engine_sandbox(
         mcp_vault_write=mcp_vault_write,
         vault_enabled=vault_enabled,
         runtime_env=runtime_env,
-        runner_uri=runner_uri,
+        runner_endpoint=runner_endpoint,
     )

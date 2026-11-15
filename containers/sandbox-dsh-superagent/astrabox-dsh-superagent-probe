@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Print the status this box's superagent panel answers a browser with.
+
+Runs as the Assistant's account. It takes the harness's own launch URL, logs in
+through the browser hop (port 44790) exactly as the signed panel address does,
+then asks the bundle's panel API for its state. Prints one HTTP status:
+``200`` when the panel answered with its state, ``000`` while there is nothing
+to ask yet (no launch URL, nothing listening), otherwise the status that came
+back — the platform's readiness wait treats the hop's 502 as "still starting"
+and anything else as an answer it will not wait out.
+"""
+
+from __future__ import annotations
+
+import http.cookiejar
+import json
+import os
+from pathlib import Path
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HOP = "http://127.0.0.1:44790"
+
+
+def status() -> str:
+    launch = Path(os.environ["HOME"]) / ".deepseek-harness" / "web-url"
+    if not launch.is_file():
+        return "000"
+    query = urllib.parse.urlsplit(launch.read_text(encoding="utf-8").strip()).query
+    cookies = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}), urllib.request.HTTPCookieProcessor(cookies),
+    )
+    try:
+        with opener.open(f"{HOP}/?{query}", timeout=5) as response:
+            if response.status != 200:
+                return str(response.status)
+            if not list(cookies):
+                return "401"
+        request = urllib.request.Request(
+            f"{HOP}/orchestrator/api/state", headers={"x-orchestrator-request": "1"}
+        )
+        with opener.open(request, timeout=5) as response:
+            state = json.load(response)
+    except urllib.error.HTTPError as exc:
+        return str(exc.code)
+    except (urllib.error.URLError, TimeoutError, ConnectionError):
+        return "000"
+    if not isinstance(state, dict) or "setup" not in state or "health" not in state:
+        return "599"
+    return "200"
+
+
+if __name__ == "__main__":
+    print(status())

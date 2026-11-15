@@ -48,6 +48,9 @@ from astrabox.core.service.orchestrator.runtime.packages import (
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     probe_sandbox_runtime_profile,
     resolve_runtime_profile,
+    resolve_sandbox_container_engine,
+    resolve_sandbox_mounts,
+    resolve_sandbox_networks,
     resolve_sandbox_permission_level,
     resolve_sandbox_tenancy,
 )
@@ -340,7 +343,7 @@ async def build_agent_client_pool_plan(
             else {}
         )
         resource_limits, resource_requests = provider.fit_resources(
-            *sandbox_create_resources(shared=not conversation_owned)
+            *sandbox_create_resources(template, shared=not conversation_owned)
         )
         create_spec = SandboxCreateSpec(
             session_id=member.session_id,
@@ -360,7 +363,10 @@ async def build_agent_client_pool_plan(
                 else {}
             ),
             env={
-                **sandbox_boot_env(shared=not conversation_owned),
+                **sandbox_boot_env(
+                    shared=not conversation_owned,
+                    container_engine=resolve_sandbox_container_engine(template),
+                ),
                 **dict(request.env),
                 **mirror_env,
                 **dict(runtime_env),
@@ -373,6 +379,9 @@ async def build_agent_client_pool_plan(
             requires_command_channel=True,
             network_policy=network_policy,
             permission_level=resolve_sandbox_permission_level(template),
+            container_engine=resolve_sandbox_container_engine(template),
+            networks=resolve_sandbox_networks(template),
+            shared_mounts=resolve_sandbox_mounts(template),
             credential_proxy_enabled=vault_enabled,
             vault_write=vault_plan,
         )

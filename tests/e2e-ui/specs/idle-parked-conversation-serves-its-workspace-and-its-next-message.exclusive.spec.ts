@@ -36,9 +36,9 @@ test.use({ locale: 'en-US' });
 // failure would surface three steps later as an unexplained model error.
 const REDACTION_SENTINEL = '••••••••';
 
-// The product's own word for a committed box (`_PAUSED_STATES`,
-// providers/open_sandbox/sandbox.py:130). Not a spelling invented here.
-const PAUSED_STATES = new Set(['PAUSED', 'SUCCEED']);
+// The OpenSandbox lifecycle state of a committed box, as the operator sandbox
+// read reports it (`_PAUSE_DONE_STATES` in providers/open_sandbox/sandbox.py).
+const PAUSED_STATES = new Set(['PAUSED']);
 
 // How long this Agent may sit quiet before the keeper may take its compute.
 // Really waited out on the activity clock, not simulated; short because the wall

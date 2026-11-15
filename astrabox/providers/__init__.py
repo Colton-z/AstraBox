@@ -223,6 +223,7 @@ def register_builtin_providers() -> None:
         claude_code as _claude_engine,
         codex as _codex_engine,
         deepseek_harness as _deepseek_harness_engine,
+        dsh_superagent as _dsh_superagent_engine,
         hermes as _hermes_engine,
         pi as _pi_engine,
     )

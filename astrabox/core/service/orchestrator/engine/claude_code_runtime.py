@@ -21,6 +21,7 @@ import contextlib
 import dataclasses
 import hashlib
 import json
+import shlex
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from pathlib import Path
@@ -35,6 +36,7 @@ from astrabox.seams.egress_credentials import (
     EGRESS_HELD_PLACEHOLDER,
 )
 from astrabox.core.model import AgentView
+from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.core.service.orchestrator.engine.runtime import initialize_runtime_client
 from astrabox.core.service.orchestrator.engine.base import (
     EnginePreparationContext,
@@ -52,6 +54,10 @@ from astrabox.core.service.orchestrator.engine.claude_code_config import (
     ModelConfig,
     build_claude_model_config_kwargs,
     build_claude_options_kwargs,
+    signs_in_inside_sandbox,
+)
+from astrabox.core.service.orchestrator.runtime.conversation_identity import (
+    normalize_runtime_identity,
 )
 from astrabox.core.service.orchestrator.runtime.models import SessionRuntime
 from astrabox.core.service.orchestrator.runtime.diagnostics import (
@@ -159,6 +165,58 @@ def _anthropic_container_env(model_config: Any) -> dict[str, str]:
         env["ANTHROPIC_MODEL"] = model_name
         env["ANTHROPIC_SMALL_FAST_MODEL"] = model_name
     return env
+
+
+#: Where the terminal hands ``claude auth login`` the code Anthropic's sign-in
+#: page shows, and where the login's own output goes. The AstraBox terminal
+#: runs one command at a time and has no input for a running one, so the login
+#: runs in the background reading this pipe, and a second command writes it.
+CLAUDE_LOGIN_PIPE = "/tmp/claude-login"
+CLAUDE_LOGIN_LOG = "/tmp/claude-login.log"
+
+
+def claude_login_hint(runtime_identity: dict[str, Any] | None) -> str:
+    """How a conversation's user signs Claude Code in from the conversation's terminal.
+
+    The terminal's shell runs as root, and Claude Code runs as the
+    conversation's account with its own configuration directory, so the login
+    runs as that account with that directory: its ``.credentials.json`` is the
+    one the running Claude Code reads, and Claude Code reads it again on its
+    next request.
+    """
+
+    identity = normalize_runtime_identity(runtime_identity)
+    if identity is None or not identity.get("config_dir"):
+        raise APIError(
+            code="CONVERSATION_IDENTITY_REQUIRED",
+            message="a Claude Code that signs in inside its sandbox needs the conversation's identity",
+            status_code=409,
+        )
+    login = (
+        f"rm -f {CLAUDE_LOGIN_PIPE}; mkfifo -m 600 {CLAUDE_LOGIN_PIPE}; "
+        f"(runuser -u {shlex.quote(str(identity['linux_user']))} -- env "
+        f"HOME={shlex.quote(str(identity['home_dir']))} "
+        f"CLAUDE_CONFIG_DIR={shlex.quote(str(identity['config_dir']))} "
+        f"claude auth login <>{CLAUDE_LOGIN_PIPE} >{CLAUDE_LOGIN_LOG} 2>&1 &); "
+        f"{_wait_for_log('visit:')}"
+    )
+    code = f"echo '<code>' >{CLAUDE_LOGIN_PIPE}; {_wait_for_log('Login ')}"
+    return (
+        "Claude Code in this conversation's sandbox is not signed in to a Claude account. "
+        f"Sign in from the conversation's terminal: run `{login}`, open the address it "
+        f"prints, sign in, and copy the code the page shows; then run `{code}` with that "
+        "code. When it says the login succeeded, send your message again. The login stays "
+        "in this sandbox only, and a replacement sandbox needs a new one."
+    )
+
+
+def _wait_for_log(text: str) -> str:
+    """Shell that waits up to 30 seconds for the login's output to show ``text``, then prints it."""
+
+    return (
+        f"for i in $(seq 30); do grep -q {shlex.quote(text)} {CLAUDE_LOGIN_LOG} && break; "
+        f"sleep 1; done; cat {CLAUDE_LOGIN_LOG}"
+    )
 
 
 def sandbox_request(
@@ -353,8 +411,13 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             runtime_env={**dict(context.runtime_env or {}), **dict(context.session_env or {})},
         )
         session_mcp = _session_mcp_references(template)
-        runner_uri = str(context.runner_uri or "").strip()
-        if not runner_uri:
+        sign_in_hint = (
+            claude_login_hint(context.runtime_identity)
+            if signs_in_inside_sandbox(model_config.endpoint_provider)
+            else None
+        )
+        runner_endpoint = context.runner_endpoint
+        if runner_endpoint is None:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
                 message="the platform supplied Claude no ready runner endpoint",
@@ -380,12 +443,13 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 session_mcp,
             )
             engine_client, how = await _attach_runner_engine_client(
-                runner_uri,
+                runner_endpoint,
                 activation_token=activation_token,
                 session_id=context.session_id,
                 sdk_options=_session_mcp_options(runner_options, template),
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
+                sign_in_hint=sign_in_hint,
             )
             logger.info(
                 "runtime reattached (%s): session=%s sandbox=%s resume=%s",
@@ -404,7 +468,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                     await engine_client.bind_environment(context.session_env)
         elif is_prepared:
             engine_client = await _activate_runner_engine_client(
-                runner_uri,
+                runner_endpoint,
                 slot_id=str(prepared.get("slot_id") or ""),
                 activation_token=activation_token,
                 session_id=context.session_id,
@@ -418,6 +482,7 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
                 environment=context.session_env,
+                sign_in_hint=sign_in_hint,
             )
         else:
             runner_options = _disable_plugin_mcp_autostart(
@@ -439,12 +504,13 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 token=activation_token,
             )
             engine_client = await _connect_runner_engine_client(
-                runner_uri,
+                runner_endpoint,
                 activation_token=activation_token,
                 session_id=context.session_id,
                 sdk_options=_session_mcp_options(runner_options, template),
                 transcript_store=context.transcript_store,
                 sandbox_death_notice=context.sandbox_death_notice,
+                sign_in_hint=sign_in_hint,
             )
         engine_manifest = await initialize_runtime_client(
             engine_client,
@@ -680,7 +746,9 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
         file_name=RUNNER_TOKEN_FILE_NAME,
         token=activation_token,
     )
-    link = RunnerLink(str(context.runner_uri or ""), activation_token=activation_token)
+    if context.runner_endpoint is None:
+        raise RuntimeError("a Claude preparation needs its runner endpoint")
+    link = RunnerLink(context.runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         await link.prepare(target_slot, options=wire_options)
@@ -699,13 +767,14 @@ _ENGINE_BOUNDARY_MESSAGE_TYPES = frozenset({"StreamEvent", "AssistantMessage"})
 
 
 async def _connect_runner_engine_client(
-    runner_uri: str,
+    runner_endpoint: SandboxEndpoint,
     *,
     activation_token: str,
     session_id: str,
     sdk_options: dict[str, Any],
     transcript_store: dict[str, Any] | None,
     sandbox_death_notice: dict[str, Any] | None,
+    sign_in_hint: str | None = None,
 ) -> Any:
     """Connect the host to a just-launched in-box runner and hand back its
     engine client. Module-level seam (patched by the hosted-flow
@@ -744,7 +813,7 @@ async def _connect_runner_engine_client(
             message="the platform supplied Claude no sandbox death notice",
             status_code=500,
         )
-    link = RunnerLink(runner_uri, activation_token=activation_token)
+    link = RunnerLink(runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         hello = await link.configure(
@@ -762,11 +831,12 @@ async def _connect_runner_engine_client(
         session_id=session_id,
         hello=hello,
         resume_session_key=str(sdk_options.get("resume") or "").strip() or None,
+        sign_in_hint=sign_in_hint,
     )
 
 
 async def _activate_runner_engine_client(
-    runner_uri: str,
+    runner_endpoint: SandboxEndpoint,
     *,
     slot_id: str,
     activation_token: str,
@@ -777,6 +847,7 @@ async def _activate_runner_engine_client(
     transcript_store: dict[str, Any] | None,
     sandbox_death_notice: dict[str, Any] | None,
     environment: dict[str, str] | None = None,
+    sign_in_hint: str | None = None,
 ) -> Any:
     """Claim a prepared slot's runner for one platform Session.
 
@@ -812,7 +883,7 @@ async def _activate_runner_engine_client(
             message="the platform supplied Claude no sandbox death notice",
             status_code=500,
         )
-    link = RunnerLink(runner_uri, activation_token=activation_token)
+    link = RunnerLink(runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         hello = await link.activate(
@@ -834,17 +905,19 @@ async def _activate_runner_engine_client(
         session_id=session_id,
         hello=hello,
         resume_session_key=resume_session_key,
+        sign_in_hint=sign_in_hint,
     )
 
 
 async def _attach_runner_engine_client(
-    runner_uri: str,
+    runner_endpoint: SandboxEndpoint,
     *,
     activation_token: str,
     session_id: str,
     sdk_options: dict[str, Any],
     transcript_store: dict[str, Any] | None,
     sandbox_death_notice: dict[str, Any] | None,
+    sign_in_hint: str | None = None,
 ) -> tuple[Any, str]:
     """Attach to the box's live runner, or configure a relaunched one.
 
@@ -863,7 +936,7 @@ async def _attach_runner_engine_client(
     from astrabox.core.service.orchestrator.engine.claude_runtime_client import ClaudeRuntimeClient
     from astrabox.core.service.orchestrator.engine.runner_link import RunnerLink
 
-    link = RunnerLink(runner_uri, activation_token=activation_token)
+    link = RunnerLink(runner_endpoint, activation_token=activation_token)
     await link.__aenter__()
     try:
         hello = await link.attach(
@@ -878,6 +951,7 @@ async def _attach_runner_engine_client(
                 session_id=session_id,
                 hello=hello,
                 resume_session_key=str(sdk_options.get("resume") or "").strip() or None,
+                sign_in_hint=sign_in_hint,
             ),
             "attached",
         )
@@ -890,12 +964,13 @@ async def _attach_runner_engine_client(
             attach_exc,
         )
     client = await _connect_runner_engine_client(
-        runner_uri,
+        runner_endpoint,
         activation_token=activation_token,
         session_id=session_id,
         sdk_options=sdk_options,
         transcript_store=transcript_store,
         sandbox_death_notice=sandbox_death_notice,
+        sign_in_hint=sign_in_hint,
     )
     return client, "configured"
 

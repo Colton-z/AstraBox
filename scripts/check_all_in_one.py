@@ -17,7 +17,9 @@ exactly once:
 
 A new Compose variable fails this check until someone decides which. A
 pass-through entry that Compose does not set fails too, so the list stays a
-statement about the current file.
+statement about the current file. A variable Compose only names, with no
+value, is an operator setting it forwards from ``containers/.env`` when set;
+Compose decides nothing about it, so it needs no row here.
 
 The image also creates Compose's two sandbox edges itself
 (``EDGE_SPECS``). Their image, configuration files and environment must stay
@@ -88,6 +90,9 @@ PASS_THROUGH = frozenset(
         "ASTRABOX_ASSISTANT_SANDBOX_CPU_REQUEST",
         "ASTRABOX_ASSISTANT_SANDBOX_MEMORY_REQUEST",
         "ASTRABOX_SANDBOX_QUOTA_BOXES",
+        # The deployment's shared GitHub agent account for dsh-superagent
+        # Assistants: a deployment secret with the same effect as in Compose.
+        "ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN",
         "ASTRABOX_SANDBOX_QUOTA_MEMORY",
         "ASTRABOX_SANDBOX_QUOTA_CPU",
         "ASTRABOX_SANDBOX_QUOTA_CONCURRENT_CREATES",
@@ -98,6 +103,9 @@ PASS_THROUGH = frozenset(
         "ASTRABOX_SANDBOX_SECURE_ACCESS",
         "ASTRABOX_SANDBOX_SERVER_PORT_RANGE",
         "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE",
+        # The all-in-one runs the same bundled Docker lifecycle server and the
+        # same execd image, so the per-sandbox execd token applies there too.
+        "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN",
         "ASTRABOX_SECRET_STORE",
         "ASTRABOX_AWS_KMS_KEY_ARN",
         "ASTRABOX_VAULT_MASTER_KEY",
@@ -199,7 +207,12 @@ def main() -> int:
 
     services = yaml.safe_load(COMPOSE_FILE.read_text(encoding="utf-8"))["services"]
     compose = list(_environment(services["server"]))
+    forwarded = {
+        str(name) for name, value in (services["server"].get("environment") or {}).items() if value is None
+    }
     for name in compose:
+        if name in forwarded and name not in PASS_THROUGH:
+            continue
         if name not in refused | PASS_THROUGH:
             problems.append(
                 f"{name} is set by containers/compose.yaml's server but not "

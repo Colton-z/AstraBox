@@ -78,6 +78,20 @@ class ResponseView(BaseModel):
     ended_at: str | None = None
 
 
+class BackgroundTaskView(BaseModel):
+    """Work the runtime keeps running in its box after its response ended.
+
+    ``kind`` is the engine's own name for the task's type, such as Claude
+    Code's ``local_bash``; ``description`` is the engine's own label for it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    kind: str
+    description: str
+
+
 class HeldInputView(BaseModel):
     """An input the platform still holds: accepted, not yet durably taken by the runtime."""
 
@@ -107,10 +121,14 @@ class SessionRecord(BaseModel):
     session_id: str
     user_id: str | None = None
     state: str | None = None
-    #: ``idle``, ``working`` or ``waiting``, as the runtime last reported.
+    #: ``idle``, ``working``, ``waiting`` or ``background``, as the runtime last reported.
     runtime_status: str | None = None
     permission_mode: str | None = None
     model_name: str | None = None
+    #: The model account whose plan the session's last response spent, on a
+    #: ChatGPT plan RuntimeProfile; with the team pool on it may be an account
+    #: another member shared.
+    model_account_id: str | None = None
     sandbox_id: str | None = None
     terminal_cwd: str | None = None
     title: str | None = None
@@ -134,6 +152,9 @@ class SessionRecord(BaseModel):
     runtime_unavailable: bool | None = None
     engine_available: bool | None = None
     last_error: str | None = None
+    #: The registered code of ``last_error``, such as the code a failed
+    #: start ended the conversation with; null when that error has none.
+    last_error_code: str | None = None
     startup_progress: str | None = None
     recovery_reason: str | None = None
     # Platform vocabulary, not the engine's: which workspace surfaces this
@@ -148,6 +169,8 @@ class SessionRecord(BaseModel):
     current_responses: list[ResponseView] | None = None
     last_response: ResponseView | None = None
     held_inputs: list[HeldInputView] | None = None
+    #: Work running in the box with or without a response; each can be stopped on its own.
+    background_tasks: list[BackgroundTaskView] | None = None
     output_seq: int | None = None
 
 
@@ -300,6 +323,20 @@ class ChildRunStopResult(BaseModel):
     status: str
 
 
+class BackgroundTaskStopResult(BaseModel):
+    """Acknowledgement that the runtime was asked to stop one background task.
+
+    The task leaves the session's ``background_tasks`` when the runtime
+    reports it ended.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    task_id: str
+    status: str
+
+
 class PermissionModeUpdate(BaseModel):
     """The outcome of setting a session's permission mode.
 
@@ -399,6 +436,16 @@ class SessionFileChanges(BaseModel):
     responses: list[SessionFileChangeResponse]
 
 
+#: The statuses a runtime reports of itself (``engine.runtime.RuntimeStatus``).
+_RUNTIME_STATUSES = frozenset({"idle", "working", "waiting", "background"})
+
+
+def _comma_separated(value: str | None) -> list[str] | None:
+    """A comma-separated query value as its items; ``None`` when the parameter is absent or empty."""
+    items = [item.strip() for item in str(value or "").split(",") if item.strip()]
+    return items or None
+
+
 @router.get(
     "/api/v1/sessions",
     # Two shapes, and both are live: the console's `listSessions` reads the
@@ -421,6 +468,17 @@ class SessionFileChanges(BaseModel):
                 default=50,
             ),
             query_parameter("cursor", "string", "Opaque next_cursor from the preceding page."),
+            query_parameter(
+                "agent_id",
+                "string",
+                "Keep the sessions of these Agents (comma-separated ids); used only with page=1.",
+            ),
+            query_parameter(
+                "runtime_status",
+                "string",
+                "Keep the sessions whose runtime last reported one of these statuses "
+                "(comma-separated: idle, working, waiting, background); used only with page=1.",
+            ),
         ]
     },
 )
@@ -429,7 +487,19 @@ async def list_sessions(request: Request):
     if str(request.query_params.get("page") or "").strip() == "1":
         limit = min(max(int(request.query_params.get("limit", "50")), 1), 100)
         cursor = request.query_params.get("cursor")
-        page = await _svc().list_sessions_page(user, limit=limit, cursor=cursor)
+        agent_ids = _comma_separated(request.query_params.get("agent_id"))
+        runtime_statuses = _comma_separated(request.query_params.get("runtime_status"))
+        unknown = sorted(set(runtime_statuses or ()) - _RUNTIME_STATUSES)
+        if unknown:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"runtime_status must be among {sorted(_RUNTIME_STATUSES)}, not {unknown}",
+                status_code=400,
+            )
+        page = await _svc().list_sessions_page(
+            user, limit=limit, cursor=cursor,
+            agent_ids=agent_ids, runtime_statuses=runtime_statuses,
+        )
         return success_response(page)
     sessions = await _svc().list_sessions(user)
     return success_response(sessions)
@@ -628,6 +698,21 @@ async def stop_session_child_run(
 ):
     user = await _resolve_user(request)
     result = await _svc().stop_session_child_run(user, session_id, child_run_id)
+    return success_response(result)
+
+
+@router.post(
+    "/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop",
+    response_model=ApiEnvelope[BackgroundTaskStopResult],
+    response_model_exclude_unset=True,
+)
+async def stop_session_background_task(
+    session_id: str,
+    task_id: str,
+    request: Request,
+):
+    user = await _resolve_user(request)
+    result = await _svc().stop_session_background_task(user, session_id, task_id)
     return success_response(result)
 
 

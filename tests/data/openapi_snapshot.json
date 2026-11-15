@@ -1954,6 +1954,32 @@
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "Value"
       },
+      "AddAnthropicApiKeyRequest": {
+        "additionalProperties": false,
+        "description": "Body for keeping an Anthropic API key as one of the caller's accounts.",
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          }
+        },
+        "required": [
+          "api_key"
+        ],
+        "title": "AddAnthropicApiKeyRequest",
+        "type": "object"
+      },
       "AdminAgentCategory": {
         "description": "A category with the number of Agents it holds.",
         "properties": {
@@ -3440,6 +3466,20 @@
             ],
             "title": "Assistant Id"
           },
+          "background_tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BackgroundTaskView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background Tasks"
+          },
           "conversation_state": {
             "title": "Conversation State",
             "type": "string"
@@ -3554,6 +3594,17 @@
             ],
             "title": "Last Error"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
           "last_output_at": {
             "anyOf": [
               {
@@ -3579,6 +3630,17 @@
             "items": {},
             "title": "Mcp Connections",
             "type": "array"
+          },
+          "model_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Account Id"
           },
           "model_name": {
             "anyOf": [
@@ -5067,6 +5129,17 @@
             ],
             "title": "Model"
           },
+          "model_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Account Id"
+          },
           "name": {
             "anyOf": [
               {
@@ -5242,6 +5315,17 @@
           "enabled": {
             "title": "Enabled",
             "type": "boolean"
+          },
+          "endpoint_provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint Provider"
           },
           "engine_kind": {
             "title": "Engine Kind",
@@ -6350,6 +6434,28 @@
         "title": "ApiEnvelope[AssistantListPage]",
         "type": "object"
       },
+      "ApiEnvelope_AssistantPanel_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AssistantPanel"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AssistantPanel]",
+        "type": "object"
+      },
       "ApiEnvelope_AssistantWorkspaceDestruction_": {
         "properties": {
           "code": {
@@ -6458,6 +6564,28 @@
           "data"
         ],
         "title": "ApiEnvelope[AuthorizeResponse]",
+        "type": "object"
+      },
+      "ApiEnvelope_BackgroundTaskStopResult_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/BackgroundTaskStopResult"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[BackgroundTaskStopResult]",
         "type": "object"
       },
       "ApiEnvelope_ChannelAccountLinkRecord_": {
@@ -6700,6 +6828,28 @@
           "data"
         ],
         "title": "ApiEnvelope[DeletedDeployment]",
+        "type": "object"
+      },
+      "ApiEnvelope_DeletedModelAccount_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/DeletedModelAccount"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[DeletedModelAccount]",
         "type": "object"
       },
       "ApiEnvelope_DeploymentExtensionProvider_": {
@@ -6986,6 +7136,72 @@
           "data"
         ],
         "title": "ApiEnvelope[MCPServer]",
+        "type": "object"
+      },
+      "ApiEnvelope_ModelAccountAuthorization_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ModelAccountAuthorization"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ModelAccountAuthorization]",
+        "type": "object"
+      },
+      "ApiEnvelope_ModelAccountTeamPool_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ModelAccountTeamPool"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ModelAccountTeamPool]",
+        "type": "object"
+      },
+      "ApiEnvelope_ModelAccount_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ModelAccount"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[ModelAccount]",
         "type": "object"
       },
       "ApiEnvelope_PermissionModeUpdate_": {
@@ -8370,6 +8586,58 @@
         "title": "ApiEnvelope[list[EnvironmentView]]",
         "type": "object"
       },
+      "ApiEnvelope_list_ModelAccountModel__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAccountModel"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[ModelAccountModel]]",
+        "type": "object"
+      },
+      "ApiEnvelope_list_ModelAccount__": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "items": {
+              "$ref": "#/components/schemas/ModelAccount"
+            },
+            "title": "Data",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[list[ModelAccount]]",
+        "type": "object"
+      },
       "ApiEnvelope_list_SessionRecord__": {
         "properties": {
           "code": {
@@ -9673,6 +9941,16 @@
             ],
             "title": "Primary"
           },
+          "runtime": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AssistantRuntimeSurface"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "runtime_profile_name": {
             "anyOf": [
               {
@@ -9738,6 +10016,29 @@
               }
             ],
             "title": "Updated At"
+          },
+          "workspace_action": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Action"
+          },
+          "workspace_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workspace Error"
           },
           "workspace_state": {
             "anyOf": [
@@ -10241,6 +10542,111 @@
         "title": "AssistantListPage",
         "type": "object"
       },
+      "AssistantOwnerSecretStatus": {
+        "additionalProperties": false,
+        "description": "One credential the Assistant's runtime asks its owner for; never its value.",
+        "properties": {
+          "configured": {
+            "title": "Configured",
+            "type": "boolean"
+          },
+          "deployment_default": {
+            "default": false,
+            "title": "Deployment Default",
+            "type": "boolean"
+          },
+          "help": {
+            "default": "",
+            "title": "Help",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "required": {
+            "default": true,
+            "title": "Required",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "configured"
+        ],
+        "title": "AssistantOwnerSecretStatus",
+        "type": "object"
+      },
+      "AssistantPanel": {
+        "additionalProperties": false,
+        "description": "A signed browser address for the Assistant runtime's panel.\n\nThe address carries the runtime's login. ``expires_at`` is when it stops\nrouting (``null`` when the deployment does not sign sandbox addresses);\nask for a new one before then.",
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "title": "AssistantPanel",
+        "type": "object"
+      },
+      "AssistantRuntimeSurface": {
+        "additionalProperties": false,
+        "description": "How the Assistant's runtime serves its owner.\n\n``conversations``: the console hosts its conversations. ``panel``: the\nruntime serves its own page, opened through ``GET .../panel``.",
+        "properties": {
+          "conversations": {
+            "title": "Conversations",
+            "type": "boolean"
+          },
+          "owner_secrets": {
+            "items": {
+              "$ref": "#/components/schemas/AssistantOwnerSecretStatus"
+            },
+            "title": "Owner Secrets",
+            "type": "array"
+          },
+          "panel": {
+            "title": "Panel",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "conversations",
+          "panel",
+          "owner_secrets"
+        ],
+        "title": "AssistantRuntimeSurface",
+        "type": "object"
+      },
       "AssistantWorkspace": {
         "additionalProperties": true,
         "description": "An Assistant workspace's posture after a wake.\n\nWaking is a request to reach ``READY``, not a wait for it. ``state`` says\nwhere the workspace is: ``READY`` names ``current_sandbox_id``;\n``MATERIALIZING`` names the ``provisioning_session_id`` that is building it,\nwhich the caller polls; ``RECOVERY_REQUIRED`` names the sandbox whose\ndestruction is unconfirmed, and blocks a rebuild until it is released.\nA completed hibernate has no sandbox to resume: wake materializes a fresh\none from the configured workspace medium.",
@@ -10452,6 +10858,56 @@
           "authorize_url"
         ],
         "title": "AuthorizeResponse",
+        "type": "object"
+      },
+      "BackgroundTaskStopResult": {
+        "additionalProperties": false,
+        "description": "Acknowledgement that the runtime was asked to stop one background task.\n\nThe task leaves the session's ``background_tasks`` when the runtime\nreports it ended.",
+        "properties": {
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "task_id",
+          "status"
+        ],
+        "title": "BackgroundTaskStopResult",
+        "type": "object"
+      },
+      "BackgroundTaskView": {
+        "additionalProperties": false,
+        "description": "Work the runtime keeps running in its box after its response ended.\n\n``kind`` is the engine's own name for the task's type, such as Claude\nCode's ``local_bash``; ``description`` is the engine's own label for it.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "kind",
+          "description"
+        ],
+        "title": "BackgroundTaskView",
         "type": "object"
       },
       "Body_transcribe_session_speech_api_v1_sessions__session_id__speech_input_post": {
@@ -10906,6 +11362,54 @@
         "title": "ChildRunStopResult",
         "type": "object"
       },
+      "CompleteAuthorizationRequest": {
+        "additionalProperties": false,
+        "description": "The query OpenAI redirected the browser to, as the client received it.",
+        "properties": {
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "CompleteAuthorizationRequest",
+        "type": "object"
+      },
       "ConfigureRequest": {
         "additionalProperties": false,
         "properties": {
@@ -11323,6 +11827,16 @@
               }
             ]
           },
+          "oauth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CredentialTokenGrant"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "refresh": {
             "anyOf": [
               {
@@ -11556,6 +12070,80 @@
         "title": "CredentialRefresh",
         "type": "object"
       },
+      "CredentialTokenGrant": {
+        "additionalProperties": true,
+        "description": "Non-secret half of the OAuth2 grant an environment credential obtains its value by.",
+        "properties": {
+          "auth_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Method"
+          },
+          "client_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Id"
+          },
+          "grant_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Grant Type"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "token_endpoint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Endpoint"
+          },
+          "username": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Username"
+          }
+        },
+        "title": "CredentialTokenGrant",
+        "type": "object"
+      },
       "CurrentEnvironment": {
         "additionalProperties": true,
         "properties": {
@@ -11732,6 +12320,33 @@
           "deleted"
         ],
         "title": "DeletedDeployment",
+        "type": "object"
+      },
+      "DeletedModelAccount": {
+        "additionalProperties": true,
+        "description": "A removed account, and whether OpenAI confirmed its session ended.",
+        "properties": {
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "revocation_confirmed": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revocation Confirmed"
+          }
+        },
+        "required": [
+          "account_id",
+          "revocation_confirmed"
+        ],
+        "title": "DeletedModelAccount",
         "type": "object"
       },
       "DeploymentExtensionProvider": {
@@ -12196,6 +12811,10 @@
             "title": "Custody Scope",
             "type": "string"
           },
+          "entry_policy": {
+            "title": "Entry Policy",
+            "type": "string"
+          },
           "scheduler_provider": {
             "anyOf": [
               {
@@ -12216,6 +12835,7 @@
           "agent_prewarm_enabled",
           "background_execution_enabled",
           "custody_scope",
+          "entry_policy",
           "scheduler_provider",
           "scheduler_worker_enabled"
         ],
@@ -17053,6 +17673,196 @@
         "title": "MkdirSessionFilesRequest",
         "type": "object"
       },
+      "ModelAccount": {
+        "additionalProperties": true,
+        "description": "One account, without its tokens or key.",
+        "properties": {
+          "access_expires_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Access Expires At"
+          },
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "is_default": {
+            "title": "Is Default",
+            "type": "boolean"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "last_error_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error At"
+          },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
+          "pool_last_used_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pool Last Used At"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          },
+          "shared": {
+            "title": "Shared",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          },
+          "usage_limited_until": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Usage Limited Until"
+          },
+          "vendor": {
+            "title": "Vendor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "account_id",
+          "vendor",
+          "label",
+          "email",
+          "status",
+          "is_default",
+          "scopes",
+          "access_expires_at",
+          "last_error_code",
+          "last_error_at",
+          "shared",
+          "usage_limited_until",
+          "pool_last_used_at",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ModelAccount",
+        "type": "object"
+      },
+      "ModelAccountAuthorization": {
+        "additionalProperties": true,
+        "description": "A started sign-in: where to send the browser, and until when it can complete.",
+        "properties": {
+          "authorization_id": {
+            "title": "Authorization Id",
+            "type": "string"
+          },
+          "authorize_url": {
+            "title": "Authorize Url",
+            "type": "string"
+          },
+          "expires_at": {
+            "title": "Expires At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "authorization_id",
+          "authorize_url",
+          "expires_at"
+        ],
+        "title": "ModelAccountAuthorization",
+        "type": "object"
+      },
+      "ModelAccountModel": {
+        "additionalProperties": true,
+        "description": "One model an account can use.",
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "ModelAccountModel",
+        "type": "object"
+      },
+      "ModelAccountTeamPool": {
+        "additionalProperties": true,
+        "description": "Whether the deployment's team pool of model accounts is on.",
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "ModelAccountTeamPool",
+        "type": "object"
+      },
       "MoveSessionFilesRequest": {
         "description": "Body for ``POST /sessions/{id}/files/move``.",
         "properties": {
@@ -17104,6 +17914,21 @@
           "sandbox_id"
         ],
         "title": "NativeStateInitialization",
+        "type": "object"
+      },
+      "OwnerSecretValue": {
+        "additionalProperties": false,
+        "description": "A write-only credential value.",
+        "properties": {
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "value"
+        ],
+        "title": "OwnerSecretValue",
         "type": "object"
       },
       "PerformUserAction": {
@@ -18410,6 +19235,20 @@
             ],
             "title": "Assistant Id"
           },
+          "background_tasks": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/BackgroundTaskView"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Background Tasks"
+          },
           "created_at": {
             "anyOf": [
               {
@@ -18516,6 +19355,17 @@
             ],
             "title": "Last Error"
           },
+          "last_error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error Code"
+          },
           "last_output_at": {
             "anyOf": [
               {
@@ -18536,6 +19386,17 @@
                 "type": "null"
               }
             ]
+          },
+          "model_account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Account Id"
           },
           "model_name": {
             "anyOf": [
@@ -19133,6 +19994,32 @@
         "title": "SpeechInputTranscript",
         "type": "object"
       },
+      "StartAuthorizationRequest": {
+        "additionalProperties": false,
+        "description": "Body for starting a ChatGPT sign-in.",
+        "properties": {
+          "account_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Id"
+          },
+          "redirect_uri": {
+            "title": "Redirect Uri",
+            "type": "string"
+          }
+        },
+        "required": [
+          "redirect_uri"
+        ],
+        "title": "StartAuthorizationRequest",
+        "type": "object"
+      },
       "StartConversationRequest": {
         "additionalProperties": false,
         "description": "Conversation start body.\n\nCredentials are deliberately absent. They are bound to the managed Agent or\nAssistant configuration; accepting a user-supplied Vault id here would let a\nconversation replace that management decision. Keeping an empty, strict\nmodel lets ``POST`` without a body and ``{}`` work while unknown fields fail.",
@@ -19431,6 +20318,58 @@
           }
         },
         "title": "UpdateMCPServerRequest",
+        "type": "object"
+      },
+      "UpdateModelAccountRequest": {
+        "additionalProperties": false,
+        "description": "Body for changing an account; an absent or null field is left as it is.",
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          },
+          "is_default": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Default"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "shared": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shared"
+          }
+        },
+        "title": "UpdateModelAccountRequest",
         "type": "object"
       },
       "UserActionCommandView": {
@@ -19778,7 +20717,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.14",
+    "version": "0.1.15",
     "x-web-identity": "OidcSessionWebIdentityResolver"
   },
   "openapi": "3.1.0",
@@ -23663,6 +24602,91 @@
                               }
                             ]
                           },
+                          "sandbox_container_engine": {
+                            "anyOf": [
+                              {
+                                "enum": [
+                                  "none",
+                                  "docker"
+                                ],
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": "none"
+                          },
+                          "sandbox_cpu": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sandbox_memory": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sandbox_mounts": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "additionalProperties": false,
+                                  "properties": {
+                                    "read_only": {
+                                      "anyOf": [
+                                        {
+                                          "type": "boolean"
+                                        },
+                                        {
+                                          "type": "null"
+                                        }
+                                      ],
+                                      "default": true
+                                    },
+                                    "source": {
+                                      "type": "string"
+                                    },
+                                    "target": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "source",
+                                    "target"
+                                  ],
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "sandbox_networks": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
                           "sandbox_permission_level": {
                             "anyOf": [
                               {
@@ -24110,6 +25134,91 @@
                       }
                     ]
                   },
+                  "sandbox_container_engine": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "none",
+                          "docker"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": "none"
+                  },
+                  "sandbox_cpu": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sandbox_memory": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sandbox_mounts": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "read_only": {
+                              "anyOf": [
+                                {
+                                  "type": "boolean"
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ],
+                              "default": true
+                            },
+                            "source": {
+                              "type": "string"
+                            },
+                            "target": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "source",
+                            "target"
+                          ],
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "sandbox_networks": {
+                    "anyOf": [
+                      {
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "sandbox_permission_level": {
                     "anyOf": [
                       {
@@ -24460,6 +25569,91 @@
                             }
                           ]
                         },
+                        "sandbox_container_engine": {
+                          "anyOf": [
+                            {
+                              "enum": [
+                                "none",
+                                "docker"
+                              ],
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "default": "none"
+                        },
+                        "sandbox_cpu": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sandbox_memory": {
+                          "anyOf": [
+                            {
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sandbox_mounts": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "additionalProperties": false,
+                                "properties": {
+                                  "read_only": {
+                                    "anyOf": [
+                                      {
+                                        "type": "boolean"
+                                      },
+                                      {
+                                        "type": "null"
+                                      }
+                                    ],
+                                    "default": true
+                                  },
+                                  "source": {
+                                    "type": "string"
+                                  },
+                                  "target": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "source",
+                                  "target"
+                                ],
+                                "type": "object"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "sandbox_networks": {
+                          "anyOf": [
+                            {
+                              "items": {
+                                "type": "string"
+                              },
+                              "type": "array"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
                         "sandbox_permission_level": {
                           "anyOf": [
                             {
@@ -24776,7 +25970,7 @@
     },
     "/api/v1/admin/sandbox-idle-sweep": {
       "post": {
-        "description": "Run the idle/expiry sweep once, now, and answer with what it did.\n\nThe expiration watcher normally invokes this sweep every 300 seconds. This\nendpoint invokes the same scan immediately, so checking idle parking or\ndead-binding convergence does not add the watcher interval to any cluster\noperation.\n\nRead-only in the sense that matters: it takes no arguments and can decide\nnothing the timer would not have decided on its next tick. It is a\n`POST` because it acts.\n\nThe summary is the tick's own — `idle_candidates` / `idle_parked` /\n`idle_active` / `idle_failed`, plus the dead-binding counters — so a caller\nsees why nothing happened, which is usually the question. An empty object\nmeans neither sweep found a candidate.",
+        "description": "Run the idle/expiry sweep once, now, and answer with what it did.\n\nThe expiration watcher normally invokes this sweep every 300 seconds. This\nendpoint invokes the same scan immediately, so checking idle parking or\ndead-binding convergence does not add the watcher interval to any cluster\noperation.\n\nRead-only in the sense that matters: it takes no arguments and can decide\nnothing the timer would not have decided on its next tick. It is a\n`POST` because it acts.\n\nThe summary is the tick's own — `idle_candidates` /\n`idle_parking_started` / `idle_parking_in_flight` / `idle_active`, plus\nthe dead-binding counters — so a caller sees why nothing happened, which\nis usually the question. A park runs on after the tick answers: its\noutcome is the session's parked mark and the box's state. An empty\nobject means neither sweep found a candidate.",
         "operationId": "run_sandbox_idle_sweep_api_v1_admin_sandbox_idle_sweep_post",
         "responses": {
           "200": {
@@ -27133,6 +28327,16 @@
                   "model": {
                     "type": "string"
                   },
+                  "model_account_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
                   "name": {
                     "type": "string"
                   },
@@ -27769,6 +28973,16 @@
                   },
                   "model": {
                     "type": "string"
+                  },
+                  "model_account_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "name": {
                     "type": "string"
@@ -35584,6 +36798,147 @@
         "x-required-api-scope": "astrabox:write"
       }
     },
+    "/api/v1/assistants/{assistant_id}/owner-secrets/{key}": {
+      "put": {
+        "operationId": "set_assistant_owner_secret_api_v1_assistants__assistant_id__owner_secrets__key__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "key",
+            "required": true,
+            "schema": {
+              "title": "Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerSecretValue"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_Assistant_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Set Assistant Owner Secret",
+        "tags": [
+          "Assistant"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/panel": {
+      "get": {
+        "operationId": "open_assistant_panel_api_v1_assistants__assistant_id__panel_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AssistantPanel_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Open Assistant Panel",
+        "tags": [
+          "Assistant"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
     "/api/v1/assistants/{assistant_id}/workspace": {
       "delete": {
         "operationId": "destroy_workspace_api_v1_assistants__assistant_id__workspace_delete",
@@ -37529,6 +38884,506 @@
         "x-required-api-scope": "astrabox:write"
       }
     },
+    "/api/v1/me/model-accounts": {
+      "get": {
+        "operationId": "list_model_accounts_api_v1_me_model_accounts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_ModelAccount__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "List Model Accounts",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/me/model-accounts/anthropic": {
+      "post": {
+        "operationId": "add_anthropic_api_key_api_v1_me_model_accounts_anthropic_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddAnthropicApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Add Anthropic Api Key",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts/chatgpt/authorizations": {
+      "post": {
+        "operationId": "start_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StartAuthorizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccountAuthorization_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Start Chatgpt Authorization",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts/chatgpt/authorizations/{authorization_id}/callback": {
+      "post": {
+        "operationId": "complete_chatgpt_authorization_api_v1_me_model_accounts_chatgpt_authorizations__authorization_id__callback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "authorization_id",
+            "required": true,
+            "schema": {
+              "title": "Authorization Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteAuthorizationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Complete Chatgpt Authorization",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts/team-pool": {
+      "get": {
+        "operationId": "get_model_account_team_pool_api_v1_me_model_accounts_team_pool_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccountTeamPool_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Get Model Account Team Pool",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/me/model-accounts/{account_id}": {
+      "delete": {
+        "operationId": "delete_model_account_api_v1_me_model_accounts__account_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_DeletedModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Delete Model Account",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      },
+      "patch": {
+        "operationId": "update_model_account_api_v1_me_model_accounts__account_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateModelAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ModelAccount_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Update Model Account",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/me/model-accounts/{account_id}/models": {
+      "get": {
+        "operationId": "list_model_account_models_api_v1_me_model_accounts__account_id__models_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "account_id",
+            "required": true,
+            "schema": {
+              "title": "Account Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The account's vendor, chatgpt_plan or anthropic_api_key; required with the account id default.",
+            "in": "query",
+            "name": "vendor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The account's vendor, chatgpt_plan or anthropic_api_key; required with the account id default.",
+              "title": "Vendor"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_list_ModelAccountModel__"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "List Model Account Models",
+        "tags": [
+          "Model Accounts"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
     "/api/v1/me/schedules": {
       "get": {
         "operationId": "list_personal_schedules_api_v1_me_schedules_get",
@@ -39044,6 +40899,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Keep the sessions of these Agents (comma-separated ids); used only with page=1.",
+            "in": "query",
+            "name": "agent_id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep the sessions whose runtime last reported one of these statuses (comma-separated: idle, working, waiting, background); used only with page=1.",
+            "in": "query",
+            "name": "runtime_status",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -39345,6 +41218,76 @@
           }
         ],
         "summary": "Archive Session",
+        "tags": [
+          "Sessions"
+        ],
+        "x-required-api-scope": "astrabox:write"
+      }
+    },
+    "/api/v1/sessions/{session_id}/background-tasks/{task_id}/stop": {
+      "post": {
+        "operationId": "stop_session_background_task_api_v1_sessions__session_id__background_tasks__task_id__stop_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_BackgroundTaskStopResult_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Stop Session Background Task",
         "tags": [
           "Sessions"
         ],

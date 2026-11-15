@@ -7,6 +7,7 @@ from contextlib import aclosing
 from typing import Protocol
 
 from a2a.auth.user import User
+from a2a.extensions.common import HTTP_EXTENSION_HEADER, get_requested_extensions
 from a2a.server.context import ServerCallContext
 from a2a.server.events.event_queue import Event
 from a2a.server.request_handlers.request_handler import RequestHandler
@@ -27,7 +28,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from astrabox.common.utils.user_context import (
     UserContext,
@@ -35,6 +36,7 @@ from astrabox.common.utils.user_context import (
     reset_current_user_context,
     set_current_user_context,
 )
+from astrabox.core.service.orchestrator.agent.agent_a2a_service import SUPPORTED_EXTENSIONS
 from astrabox.core.service.orchestrator.assistant_a2a_auth import resolve_assistant_a2a_user
 from astrabox.deploy.public_path import public_url
 
@@ -47,30 +49,40 @@ ASSISTANT_A2A_CARD_PATH = (
 
 
 class AgentA2ABackend(Protocol):
-    """Session-backed operations; every operation enforces live Agent and Session ACLs."""
+    """Session-backed operations; every operation enforces live Agent and Session ACLs.
+
+    ``extensions`` are the supported A2A extensions the caller activated for
+    the request; a task carries their data only then.
+    """
 
     async def send(
-        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest
+        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest,
+        *, extensions: frozenset[str],
     ) -> a2a.Task | a2a.Message: ...
 
     async def get(
-        self, user: UserContext, agent_id: str, params: a2a.GetTaskRequest
+        self, user: UserContext, agent_id: str, params: a2a.GetTaskRequest,
+        *, extensions: frozenset[str],
     ) -> a2a.Task: ...
 
     async def list(
-        self, user: UserContext, agent_id: str, params: a2a.ListTasksRequest
+        self, user: UserContext, agent_id: str, params: a2a.ListTasksRequest,
+        *, extensions: frozenset[str],
     ) -> a2a.ListTasksResponse: ...
 
     async def cancel(
-        self, user: UserContext, agent_id: str, params: a2a.CancelTaskRequest
+        self, user: UserContext, agent_id: str, params: a2a.CancelTaskRequest,
+        *, extensions: frozenset[str],
     ) -> a2a.Task: ...
 
     def stream(
-        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest
+        self, user: UserContext, agent_id: str, params: a2a.SendMessageRequest,
+        *, extensions: frozenset[str],
     ) -> AsyncGenerator[Event, None]: ...
 
     def subscribe(
-        self, user: UserContext, agent_id: str, params: a2a.SubscribeToTaskRequest
+        self, user: UserContext, agent_id: str, params: a2a.SubscribeToTaskRequest,
+        *, extensions: frozenset[str],
     ) -> AsyncGenerator[Event, None]: ...
 
     async def card(self, user: UserContext, agent_id: str, rpc_url: str) -> a2a.AgentCard: ...
@@ -135,6 +147,11 @@ def _caller(params: ProtoMessage, context: ServerCallContext) -> tuple[UserConte
     return context.user.platform_user, str(context.state["agent_id"])
 
 
+def _activated(context: ServerCallContext) -> frozenset[str]:
+    """The supported extensions the request's ``A2A-Extensions`` header activates."""
+    return frozenset(context.requested_extensions) & SUPPORTED_EXTENSIONS
+
+
 class AgentA2ARequestHandler(RequestHandler):
     """Delegate protocol operations without a separate TaskStore or executor."""
 
@@ -145,29 +162,29 @@ class AgentA2ARequestHandler(RequestHandler):
         self, params: a2a.SendMessageRequest, context: ServerCallContext
     ) -> a2a.Task | a2a.Message:
         user, agent_id = _caller(params, context)
-        return await self._backend.send(user, agent_id, params)
+        return await self._backend.send(user, agent_id, params, extensions=_activated(context))
 
     async def on_get_task(self, params: a2a.GetTaskRequest, context: ServerCallContext) -> a2a.Task:
         user, agent_id = _caller(params, context)
-        return await self._backend.get(user, agent_id, params)
+        return await self._backend.get(user, agent_id, params, extensions=_activated(context))
 
     async def on_list_tasks(
         self, params: a2a.ListTasksRequest, context: ServerCallContext
     ) -> a2a.ListTasksResponse:
         user, agent_id = _caller(params, context)
-        return await self._backend.list(user, agent_id, params)
+        return await self._backend.list(user, agent_id, params, extensions=_activated(context))
 
     async def on_cancel_task(
         self, params: a2a.CancelTaskRequest, context: ServerCallContext
     ) -> a2a.Task:
         user, agent_id = _caller(params, context)
-        return await self._backend.cancel(user, agent_id, params)
+        return await self._backend.cancel(user, agent_id, params, extensions=_activated(context))
 
     async def on_message_send_stream(
         self, params: a2a.SendMessageRequest, context: ServerCallContext
     ) -> AsyncGenerator[Event, None]:
         user, agent_id = _caller(params, context)
-        async with aclosing(self._backend.stream(user, agent_id, params)) as events:
+        async with aclosing(self._backend.stream(user, agent_id, params, extensions=_activated(context))) as events:
             async for event in events:
                 yield event
 
@@ -175,7 +192,9 @@ class AgentA2ARequestHandler(RequestHandler):
         self, params: a2a.SubscribeToTaskRequest, context: ServerCallContext
     ) -> AsyncGenerator[Event, None]:
         user, agent_id = _caller(params, context)
-        async with aclosing(self._backend.subscribe(user, agent_id, params)) as events:
+        async with aclosing(
+            self._backend.subscribe(user, agent_id, params, extensions=_activated(context))
+        ) as events:
             async for event in events:
                 yield event
 
@@ -208,6 +227,33 @@ class AgentA2ARequestHandler(RequestHandler):
     ) -> None:
         _caller(params, context)
         raise PushNotificationNotSupportedError
+
+
+def _echo_activated_extensions(app: ASGIApp) -> ASGIApp:
+    """Name in the response's ``A2A-Extensions`` header the extensions the request activated.
+
+    The A2A specification asks a server to list there every extension it
+    activated for the request; the SDK's JSON-RPC routes do not write it.
+    """
+
+    async def echoed(scope: Scope, receive: Receive, send: Send) -> None:
+        activated = sorted(
+            get_requested_extensions(Request(scope).headers.getlist(HTTP_EXTENSION_HEADER)) & SUPPORTED_EXTENSIONS
+        )
+        if not activated:
+            await app(scope, receive, send)
+            return
+
+        async def with_header(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers") or [])
+                headers.append((HTTP_EXTENSION_HEADER.lower().encode(), ", ".join(activated).encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await app(scope, receive, with_header)
+
+    return echoed
 
 
 def _assistant_capability_app(app: ASGIApp) -> ASGIApp:
@@ -243,6 +289,7 @@ def create_agent_a2a_routes(backend: AgentA2ABackend) -> list[Route]:
     handler = AgentA2ARequestHandler(backend)
     routes = create_jsonrpc_routes(handler, A2A_RPC_PATH, context_builder=builder)
     routes[0].name = "agent_a2a_rpc"
+    routes[0].app = _echo_activated_extensions(routes[0].app)
 
     async def agent_card(request: Request) -> Response:
         context = builder.build(request)
@@ -257,6 +304,7 @@ def create_agent_a2a_routes(backend: AgentA2ABackend) -> list[Route]:
         0
     ]
     assistant_rpc.name = "assistant_a2a_rpc"
+    assistant_rpc.app = _echo_activated_extensions(assistant_rpc.app)
     assistant_card = Route(ASSISTANT_A2A_CARD_PATH, endpoint=agent_card, methods=["GET"])
     for route in (assistant_rpc, assistant_card):
         route.app = _assistant_capability_app(route.app)

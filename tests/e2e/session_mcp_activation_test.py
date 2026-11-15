@@ -111,7 +111,7 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
             marker = "IDENTITY_OK_" + uuid.uuid4().hex
             reply = send_and_follow(client, sid,
                 "Call each of the three MCP whoami tools once: personal, shared, and the fixture-identity Plugin's personal server. "
-                "Return their exact JSON results, then " + marker + ". Do not use Bash or change files.", until="end", permission_mode="bypassPermissions")
+                "Return their exact JSON results, then " + marker + ". Do not use Bash or change files.", until="end")
             assert reply.error is None and marker in reply.text, reply
             wait_until_settled(client, sid)
             return marker, reply

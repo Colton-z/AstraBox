@@ -29,6 +29,9 @@ from astrabox.core.service.orchestrator.runtime.packages import (
     package_egress_hosts,
 )
 from astrabox.core.service.orchestrator.runtime.runtime_profile import (
+    resolve_sandbox_container_engine,
+    resolve_sandbox_mounts,
+    resolve_sandbox_networks,
     resolve_sandbox_permission_level,
     resolve_sandbox_tenancy,
 )
@@ -163,6 +166,7 @@ async def runtime_generations(
     provider = sandbox_for_template(template)
     resource_limits, resource_requests = provider.fit_resources(
         *sandbox_create_resources(
+            template,
             shared=resolve_sandbox_tenancy(template) != SANDBOX_TENANCY_CONVERSATION,
         )
     )
@@ -182,6 +186,12 @@ async def runtime_generations(
         "sandbox_backend": str(provider.name),
         "sandbox_tenancy": resolve_sandbox_tenancy(template),
         "permission_level": resolve_sandbox_permission_level(template),
+        "container_engine": resolve_sandbox_container_engine(template),
+        "networks": list(resolve_sandbox_networks(template)),
+        "shared_mounts": [
+            [mount.source, mount.target, mount.read_only]
+            for mount in resolve_sandbox_mounts(template)
+        ],
         "network_policy": network_policy,
         "box": {
             "resource_limits": resource_limits,

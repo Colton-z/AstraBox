@@ -68,6 +68,24 @@ ensure_workload_account() {
     fi
     return
   fi
+  # The image's own account (ASTRABOX_WORKLOAD_USER, which an Agent image
+  # declares to the base entrypoint) can still be absent: execd answers before
+  # the entrypoint reaches its useradd. Wait for it as the image's own launchers
+  # do; never create it here. A second account at the same uid fails the
+  # entrypoint's useradd, and the whole box dies with this bootstrap in it.
+  if [ -n "${ASTRABOX_WORKLOAD_USER:-}" ] && [ "$user" = "$ASTRABOX_WORKLOAD_USER" ]; then
+    account_waits=0
+    while ! getent passwd "$user" >/dev/null; do
+      account_waits=$((account_waits + 1))
+      if [ "$account_waits" -ge 300 ]; then
+        printf 'CONVERSATION_BOOTSTRAP_IMAGE_ACCOUNT_MISSING user=%s\n' "$user" >&2
+        exit 42
+      fi
+      sleep 0.1
+    done
+    ensure_workload_account
+    return
+  fi
   # The AIO base creates its image-declared workload identity as two commands:
   # groupadd, then useradd. The resident runner can accept a bootstrap between
   # those commands. A group with this exact name and no passwd row is therefore

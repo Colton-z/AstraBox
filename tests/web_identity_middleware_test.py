@@ -24,10 +24,6 @@ from astrabox.providers.identity import LocalNoAuthWebIdentityResolver
 from astrabox.web.identity_middleware import WebIdentityMiddleware
 
 
-@pytest.fixture(autouse=True)
-def _environment_membership(environment_member_accounts: set[str]) -> None:
-    environment_member_accounts.update({'bob'})
-
 # The env-derived default identity (USER / ASTRABOX_LOCAL_USER_ID / "local-user").
 _LOCAL_USER_ID = _build_local_debug_user().user_id
 

@@ -48,7 +48,9 @@
 # a regression is yours or upstream's.
 set -euo pipefail
 
-OSB_CONTROLLER_VERSION="${OSB_CONTROLLER_VERSION:-0.2.0}"
+# One OpenSandbox release line: the server AstraBox bundles (opensandbox-server
+# in pyproject.toml), the controller, its CRDs and the image committer.
+OSB_VERSION="1.2.1"
 # Where the CONTROLLER runs. Not where sandboxes land — the two are different by
 # design, and confusing them is the quickest way to a cluster that looks right
 # and creates nothing.
@@ -57,6 +59,8 @@ OSB_NAMESPACE="${OSB_NAMESPACE:-opensandbox-system}"
 # this is the default that variable already has.
 OSB_SANDBOX_NAMESPACE="${OSB_SANDBOX_NAMESPACE:-opensandbox}"
 OSB_RELEASE="${OSB_RELEASE:-osb-controller}"
+# The CRDs come from upstream's `base` chart, a release of their own.
+OSB_BASE_RELEASE="${OSB_BASE_RELEASE:-osb-base}"
 HELM_VERSION="${HELM_VERSION:-v3.16.3}"
 K3S_VERSION="${K3S_VERSION:-v1.36.3+k3s1}"
 # This script's kubeconfig stays out of $HOME/.kube/config so re-running `up`
@@ -72,7 +76,9 @@ fi
 REGISTRY_NAME="${REGISTRY_NAME:-osb-registry}"
 REGISTRY_STATE="${REGISTRY_STATE:-/var/lib/osb-registry}"
 AGENT_IMAGE="${AGENT_IMAGE:-astrabox/sandbox-claude-code:latest}"
-SNAPSHOT_COMMITTER_IMAGE="opensandbox/image-committer:v0.1.1"
+# Digests from the release's bill of materials (the 1.2.1.yaml asset of
+# https://github.com/opensandbox-group/OpenSandbox/releases/tag/release-1.2.1).
+SNAPSHOT_COMMITTER_IMAGE="docker.io/opensandbox/image-committer:release-${OSB_VERSION}@sha256:75ef864be01b81fc57d65624b5a371705580680b15c4eb6183faeecc584388a9"
 SNAPSHOT_COMMIT_JOB_TIMEOUT="10m"
 WORKSPACE_VOLUME="${WORKSPACE_VOLUME:-}"
 WORKSPACE_STORAGE_CLASS="${WORKSPACE_STORAGE_CLASS:-${ASTRABOX_SANDBOX_WORKSPACE_STORAGE_CLASS:-}}"
@@ -90,18 +96,20 @@ E2E_HTTPS_GATEWAY_URL="${ASTRABOX_E2E_HTTPS_MODEL_GATEWAY_URL:-}"
 E2E_CREDENTIAL_PROBE_MANIFEST="${TESTBED_REPO_ROOT}/tests/e2e-ui/fixtures/credential-request-probe.yaml"
 E2E_HTTPS_GATEWAY_CADDYFILE="${TESTBED_REPO_ROOT}/tests/e2e-ui/fixtures/secure-team-gateway.Caddyfile"
 
-# The controller chart is the only Helm artifact upstream publishes with an
-# attached tgz (the all-in-one `helm/opensandbox/0.2.0` tag ships no assets).
-CHART_URL="https://github.com/alibaba/OpenSandbox/releases/download/helm/opensandbox-controller/${OSB_CONTROLLER_VERSION}/opensandbox-controller-${OSB_CONTROLLER_VERSION}.tgz"
-CHART_SHA256="0e37b51da3f4e36a1d71c8bebbb41a58ba7f0aaf6d47916513fb2beb2d7a8925"
+# Upstream ships its charts in the repository at the release tag
+# (manifests/charts/) and publishes no chart archive for the release, so the
+# tag is cloned and its commit checked.
+OSB_REPOSITORY="https://github.com/opensandbox-group/OpenSandbox.git"
+OSB_RELEASE_TAG="release-${OSB_VERSION}"
+OSB_RELEASE_COMMIT="db708c218771a8d311356f0e96552c15df6e097a"
 # The chart's default controller image lives in a registry in mainland China,
 # which hosts elsewhere reach only intermittently: a pull that times out leaves
 # the controller in ImagePullBackOff and the install waiting it out. Docker Hub
 # publishes the same image under the same manifest digest, so the controller
 # comes from there, pinned by that digest.
 CONTROLLER_IMAGE_REPOSITORY="docker.io/opensandbox/controller"
-CONTROLLER_IMAGE_TAG="v${OSB_CONTROLLER_VERSION}@sha256:a9a5f73c1785ebd955336ffa313973a35c1a1b662cb7afc4ea82d92021b3532a"
-CHART_CACHE_PATH="${OSB_CONTROLLER_CHART_CACHE:-/opt/astrabox-worker-cache/opensandbox-controller-${OSB_CONTROLLER_VERSION}.tgz}"
+CONTROLLER_IMAGE_TAG="release-${OSB_VERSION}@sha256:cf44111b69920f711a245f8a7dea6be1709e2a135d0aa8be151978571e1b915f"
+CHARTS_CACHE_PATH="${OSB_CHARTS_CACHE:-/opt/astrabox-worker-cache/opensandbox-${OSB_RELEASE_TAG}}"
 
 # Cluster-scoped, so they survive a namespace delete and must be removed by name.
 CRDS=(
@@ -277,27 +285,42 @@ controller_state_evidence() {
 }
 
 install_controller() {
-  local tmp tgz output ip snapshot_registry
+  local tmp src charts output ip snapshot_registry
   tmp="$(mktemp -d)"
-  tgz="$tmp/opensandbox-controller.tgz"
+  src="$tmp/opensandbox"
   ip="$(node_ip)"
   [ -n "$ip" ] || die "no node IP — the snapshot registry cannot be addressed"
   snapshot_registry="${ip}:5000/opensandbox-snapshots"
-  if [ -r "$CHART_CACHE_PATH" ]; then
-    log "using cached controller chart ${OSB_CONTROLLER_VERSION}"
-    cp "$CHART_CACHE_PATH" "$tgz"
+  if [ -d "$CHARTS_CACHE_PATH/.git" ]; then
+    log "using cached OpenSandbox ${OSB_RELEASE_TAG}"
+    src="$CHARTS_CACHE_PATH"
   else
-    log "fetching controller chart ${OSB_CONTROLLER_VERSION}"
-    curl -fsSL -o "$tgz" "$CHART_URL" \
-      || die "chart ${OSB_CONTROLLER_VERSION} not downloadable — check the release has an attached tgz"
+    log "fetching OpenSandbox ${OSB_RELEASE_TAG}"
+    git clone --quiet --depth 1 --branch "$OSB_RELEASE_TAG" "$OSB_REPOSITORY" "$src" \
+      || die "OpenSandbox ${OSB_RELEASE_TAG} could not be cloned"
   fi
-  printf '%s  %s\n' "$CHART_SHA256" "$tgz" | sha256sum -c - >/dev/null \
-    || die "controller chart ${OSB_CONTROLLER_VERSION} checksum mismatch"
+  [ "$(git -C "$src" rev-parse HEAD)" = "$OSB_RELEASE_COMMIT" ] \
+    || die "OpenSandbox ${OSB_RELEASE_TAG} is not commit ${OSB_RELEASE_COMMIT}"
+  charts="$src/manifests/charts"
+  # The CRDs first: the controller chart carries none. Fast Sandbox is not used,
+  # and the controller release creates the namespace.
+  log "installing/upgrading release ${OSB_BASE_RELEASE} (CRDs) in ${OSB_NAMESPACE}"
+  if ! output="$(helm upgrade --install "$OSB_BASE_RELEASE" "$charts/base" \
+      --namespace "$OSB_NAMESPACE" --create-namespace \
+      --set fastSandbox.crds.install=false \
+      --set fastSandbox.namespaces.createSystem=false \
+      --set fastSandbox.namespaces.create=false \
+      --set fastSandbox.rbac.create=false \
+      --wait --timeout 3m 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    rm -rf "$tmp"
+    die "helm could not install the OpenSandbox CRDs"
+  fi
   # upgrade --install so a re-run converges instead of colliding. The output is
   # captured rather than piped: piping into a filter would make the FILTER's exit
   # status the pipeline's, so a failed install would read as a successful one.
   log "installing/upgrading release ${OSB_RELEASE} in ${OSB_NAMESPACE}"
-  if ! output="$(helm upgrade --install "$OSB_RELEASE" "$tgz" \
+  if ! output="$(helm upgrade --install "$OSB_RELEASE" "$charts/controller" \
       --namespace "$OSB_NAMESPACE" --create-namespace \
       --set-string "controller.image.repository=${CONTROLLER_IMAGE_REPOSITORY}" \
       --set-string "controller.image.tag=${CONTROLLER_IMAGE_TAG}" \
@@ -816,6 +839,7 @@ cmd_down() {
   fi
   log "uninstalling ${OSB_RELEASE}"
   helm uninstall "$OSB_RELEASE" -n "$OSB_NAMESPACE" 2>/dev/null || true
+  helm uninstall "$OSB_BASE_RELEASE" -n "$OSB_NAMESPACE" 2>/dev/null || true
   # CRDs are cluster-scoped: helm leaves them behind, and a leftover CRD carries
   # the old release's ownership annotations, which makes the NEXT install fail
   # with "invalid ownership metadata". Removing them is what makes `up` idempotent.

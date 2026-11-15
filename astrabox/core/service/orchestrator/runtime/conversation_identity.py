@@ -318,8 +318,8 @@ def _safe_session_id(session_id: str) -> str:
     return value
 
 
-def assistant_workspace_dir(user_id: str, assistant_id: str) -> str:
-    """The Assistant's workspace directory, rendered from its own profile.
+def assistant_workspace_dir(engine_kind: str, user_id: str, assistant_id: str) -> str:
+    """The Assistant's workspace directory, rendered from its runtime's profile.
 
     One renderer for a path several callers need. Composing it by hand is what
     the HTML preview did, and the copy drifted the moment the profile's
@@ -334,7 +334,7 @@ def assistant_workspace_dir(user_id: str, assistant_id: str) -> str:
     )
 
     profile = composed_runtime_profile(
-        "assistant", SANDBOX_TENANCY_AGENT, session_kind="assistant_chat"
+        engine_kind, SANDBOX_TENANCY_AGENT, session_kind="assistant_chat"
     )
     values = {
         "session_hash": _session_hash(f"{user_id}:{assistant_id}"),
@@ -348,7 +348,7 @@ def assistant_workspace_dir(user_id: str, assistant_id: str) -> str:
     )
 
 
-def assistant_config_dir(user_id: str, assistant_id: str) -> str:
+def assistant_config_dir(engine_kind: str, user_id: str, assistant_id: str) -> str:
     """The Assistant's engine config directory, rendered from its profile.
 
     The vendor's live SessionDB resides here. Deployments choose whether
@@ -361,7 +361,7 @@ def assistant_config_dir(user_id: str, assistant_id: str) -> str:
     )
 
     profile = composed_runtime_profile(
-        "assistant", SANDBOX_TENANCY_AGENT, session_kind="assistant_chat"
+        engine_kind, SANDBOX_TENANCY_AGENT, session_kind="assistant_chat"
     )
     name = str(profile.config_dir_name or "").strip()
     if not name:
@@ -370,10 +370,10 @@ def assistant_config_dir(user_id: str, assistant_id: str) -> str:
             message="the Assistant profile declares no engine config directory",
             status_code=500,
         )
-    return f"{assistant_profile_home(user_id, assistant_id)}/{name}"
+    return f"{assistant_profile_home(engine_kind, user_id, assistant_id)}/{name}"
 
 
-def assistant_profile_home(user_id: str, assistant_id: str) -> str:
+def assistant_profile_home(engine_kind: str, user_id: str, assistant_id: str) -> str:
     """The Assistant's profile home, rendered from the same template.
 
     The file panel serves the workspace; optional persistent storage mounts
@@ -390,7 +390,7 @@ def assistant_profile_home(user_id: str, assistant_id: str) -> str:
     )
 
     profile = composed_runtime_profile(
-        "assistant", SANDBOX_TENANCY_AGENT, session_kind="assistant_chat"
+        engine_kind, SANDBOX_TENANCY_AGENT, session_kind="assistant_chat"
     )
     values = {
         "session_hash": _session_hash(f"{user_id}:{assistant_id}"),
