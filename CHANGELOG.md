@@ -32,6 +32,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 
+- `POST /api/v1/admin/sandbox-idle-sweep` reports `idle_parking_started` and `idle_parking_in_flight` instead of `idle_parked` and `idle_failed`: a park continues after the call returns.
 - OpenSandbox moves to release 1.2.1 for the bundled lifecycle server, the SDK, the execd image and the egress sidecar image. On Kubernetes, install the controller, CRDs and ingress Gateway from the same release, with charts rendered from the `release-1.2.1` tag.
 - On Kubernetes, the bundled lifecycle server now sets the egress sidecar's and execd init container's resources itself (1 CPU / 128 MiB limit, 50m / 128 MiB request). The LimitRange the deployment guide asked for is no longer needed.
 - On Docker, sandboxes at the Advanced permission level now run without masked or read-only `/proc` and `/sys` paths. This is OpenSandbox's behaviour for isolation boxes; give that level only to trusted teams.
@@ -50,6 +51,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- Kubernetes: pausing an idle conversation's sandbox no longer loses it while OpenSandbox is still committing. AstraBox stopped waiting after 300 seconds for a commit OpenSandbox allows ten minutes (`--commit-job-timeout`), then treated the pausing sandbox as gone, unbound the conversation and deleted the sandbox with its workspace. It now waits for the controller's outcome: a paused sandbox resumes with its files on the next message, a pause the controller fails leaves the conversation on the same running sandbox, and a message sent during the commit is accepted at once and answered once the commit ends. A failed pause restarts the conversation's idle window, and idle parks no longer hold up the expiration watcher. A commit reads the whole sandbox image; see "Pause and resume sandboxes" in docs/providers/opensandbox.md for raising the commit timeout or installing the snapshot differ.
+- `astrabox verify-opensandbox-snapshots` gives its sandbox create the product's request budget, so a slow-starting Pod no longer fails the check with a timeout and leaves the sandbox behind.
 - A sandbox with a container engine no longer walks its whole filesystem at start to find setuid files; the image lists them at build. In a sandbox of the default size the walk could outlast the wait for the engine, and the conversation failed to start.
 - On the bundled Docker server, a sandbox CPU limit above the host's CPU count that is not a whole number (such as `12.5`) is lowered to the count instead of failing every create.
 - `POST /api/v1/sessions/{session_id}/inputs` refuses a field it does not take, naming it. It used to accept the request and drop the field, so a `permission_mode` sent with a message returned 200 and changed nothing; a mode is set with `POST /api/v1/sessions/{session_id}/permission-mode`.
