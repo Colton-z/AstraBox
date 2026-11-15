@@ -2676,6 +2676,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "containers/sandbox-hermes/astrabox-hermes-serve",
     ),
     (
+        "ASTRABOX_WORKLOAD_USER",
+        "internal",
+        "",
+        "Account an Agent sandbox image declares for its workload, set by the "
+        "image's Dockerfile and created by the image's entrypoint. The "
+        "conversation bootstrap waits for the entrypoint to create this account "
+        "and creates only accounts the image does not declare.",
+        "astrabox/core/service/orchestrator/runtime/provision-conversation",
+    ),
+    (
         "ASTRABOX_HERMES_PROFILE_WAIT_SECONDS",
         "internal",
         "1800",
