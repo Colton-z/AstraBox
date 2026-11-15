@@ -444,11 +444,7 @@ class AgentService:
             "prepared_at": str(upcoming.get("prepared_at") or "").strip() or None,
             "last_error": (
                 str(agent.get("_prepared_runtime_error") or "").strip()
-                or (
-                    "Sandbox provider reported a prewarm preparation failure."
-                    if pool is not None and pool.last_error
-                    else None
-                )
+                or (pool.last_error if pool is not None else None)
             ),
         }
 

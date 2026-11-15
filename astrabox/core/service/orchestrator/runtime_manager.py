@@ -2574,8 +2574,9 @@ class RemoteAgentRuntimeManager:
         it gone and resumes the conversation from its store on a new one, as
         after any out-of-band loss. The whole inventory is read, every page,
         because every stale box is both. Inventory the provider's own
-        preparation still owns is left to it; the provider refuses a stale
-        member when it is acquired.
+        preparation still owns is left to it: the provider refuses a stale
+        member when it is acquired, and the ownerless reap destroys one no
+        pool hands out (:meth:`SandboxProvider.unclaimed_sandbox_refusal`).
 
         Only this Environment's boxes are read. Other targets in the same
         installation can have different callbacks and sandbox edges while
@@ -2674,6 +2675,12 @@ class RemoteAgentRuntimeManager:
         published yet. Inventory is filtered by both create-time facts and
         checked again before any box is destroyed.
 
+        A box the provider's preparation still owns (its client pools'
+        unclaimed members) is the provider's to remove, unless the provider
+        says it will never be handed out
+        (:meth:`SandboxProvider.unclaimed_sandbox_refusal`): then it is
+        destroyed here like an ownerless box.
+
         The whole inventory is read, every page, before any box is given back.
         The control plane lists newest first, so one page would hold the same
         young and owned boxes on every tick and never reach an older ownerless
@@ -2718,16 +2725,21 @@ class RemoteAgentRuntimeManager:
                 continue
             summary["ownerless_scanned"] += 1
             try:
-                if (
-                    not _is_this_targets_box(descriptor, ownership)
-                    or provider.owns_unclaimed_sandbox(descriptor)
-                ):
+                if not _is_this_targets_box(descriptor, ownership):
                     summary["ownerless_kept"] += 1
                     continue
                 created_at = getattr(descriptor, "created_at", None)
                 if created_at is not None:
                     age = (now - created_at).total_seconds()
                     if age < grace_seconds:
+                        summary["ownerless_kept"] += 1
+                        continue
+                # The provider's unclaimed preparation is its own to remove,
+                # except a box it says will never be handed out.
+                refusal = None
+                if provider.owns_unclaimed_sandbox(descriptor):
+                    refusal = await provider.unclaimed_sandbox_refusal(descriptor)
+                    if refusal is None:
                         summary["ownerless_kept"] += 1
                         continue
                 owner = await self._sessions_repo.find_session_by_sandbox_id(sandbox_id)
@@ -2746,11 +2758,18 @@ class RemoteAgentRuntimeManager:
                 destruction = await provider.confirm_destroyed(sandbox_id)
                 if destruction.confirmed:
                     summary["ownerless_reaped"] += 1
-                    logger.info(
-                        "ownerless reap: gave back box=%s (no session or "
-                        "agent row names it)",
-                        sandbox_id,
-                    )
+                    if refusal is not None:
+                        logger.warning(
+                            "ownerless reap: destroyed unclaimed prepared box=%s: %s",
+                            sandbox_id,
+                            refusal,
+                        )
+                    else:
+                        logger.info(
+                            "ownerless reap: gave back box=%s (no session or "
+                            "agent row names it)",
+                            sandbox_id,
+                        )
                 else:
                     summary["ownerless_reap_failures"] += 1
                     logger.warning(

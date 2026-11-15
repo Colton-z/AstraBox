@@ -158,6 +158,11 @@ def entrypoint_without_token(entrypoint: tuple[str, ...]) -> tuple[str, ...]:
     return ("env", "-u", EXECD_ACCESS_TOKEN_ENV, *entrypoint)
 
 
+#: ``evidence["reason"]`` of a refusal from :func:`require_execd_access_enforced`.
+EXECD_ACCESS_UNREACHABLE = "unreachable"
+EXECD_ACCESS_NOT_ENFORCED = "not_enforced"
+
+
 async def require_execd_access_enforced(
     execd_url: str,
     *,
@@ -172,6 +177,11 @@ async def require_execd_access_enforced(
     before it validates, so a vendor build without ``access-token.patch``
     answers that last request with 400, and the sandbox's token could be
     replaced by any caller.
+
+    The refusal's ``evidence["reason"]`` is :data:`EXECD_ACCESS_UNREACHABLE`
+    when execd could not be asked, which says nothing about the box, and
+    :data:`EXECD_ACCESS_NOT_ENFORCED` when execd answered and does not hold
+    the box to its credential.
     """
 
     base = str(execd_url).rstrip("/")
@@ -191,6 +201,7 @@ async def require_execd_access_enforced(
             code="SANDBOX_EXECD_ACCESS_UNVERIFIED",
             message=f"could not check the sandbox's execd credential: {exc}",
             status_code=502,
+            evidence={"reason": EXECD_ACCESS_UNREACHABLE},
         ) from exc
     if anonymous.status_code != 401:
         raise APIError(
@@ -201,6 +212,7 @@ async def require_execd_access_enforced(
                 "environment did not reach execd"
             ),
             status_code=502,
+            evidence={"reason": EXECD_ACCESS_NOT_ENFORCED},
         )
     if admitted.status_code != 200:
         raise APIError(
@@ -210,6 +222,7 @@ async def require_execd_access_enforced(
                 f"{admitted.status_code}"
             ),
             status_code=502,
+            evidence={"reason": EXECD_ACCESS_NOT_ENFORCED},
         )
     if init.status_code != 401:
         raise APIError(
@@ -222,11 +235,14 @@ async def require_execd_access_enforced(
                 "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE to that image"
             ),
             status_code=502,
+            evidence={"reason": EXECD_ACCESS_NOT_ENFORCED},
         )
 
 
 __all__ = [
     "ENDPOINTS_OUTSIDE_EXECD",
+    "EXECD_ACCESS_NOT_ENFORCED",
+    "EXECD_ACCESS_UNREACHABLE",
     "EXECD_ACCESS_TOKEN_ENV",
     "EXECD_ACCESS_TOKEN_HEADER",
     "SANDBOX_EXECD_ACCESS_METADATA_KEY",

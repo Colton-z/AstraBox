@@ -48,8 +48,10 @@ from astrabox.providers.open_sandbox import _config
 from astrabox.providers.open_sandbox.aio_auth import AIO_HTTP_PORT
 from astrabox.providers.open_sandbox.execd_access import (
     ENDPOINTS_OUTSIDE_EXECD,
+    EXECD_ACCESS_NOT_ENFORCED,
     EXECD_ACCESS_TOKEN_HEADER,
     execd_access_headers,
+    execd_access_required,
     with_execd_access,
 )
 from astrabox.providers.open_sandbox._metadata import (
@@ -1011,6 +1013,46 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 str(metadata.get(SANDBOX_ASSIGNMENT_ID_METADATA_KEY) or ""),
             )
         )
+
+    async def unclaimed_sandbox_refusal(self, descriptor: SandboxDescriptor) -> str | None:
+        """Why an unclaimed client-pool box must never be handed out, or None.
+
+        A box created with network wiring other than the deployment's is
+        refused by every connect (:meth:`_require_current_network_wiring`), so
+        it is never handed out.
+
+        With ``ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN`` on, a box whose execd does
+        not hold it to its own credential is refused at create and at hand-out
+        (:func:`~.executor.require_open_sandbox_execd_access`). One whose create
+        check never finished, because the process died or its destruction was
+        not confirmed, stays outside the pool's inventory until its lease ends.
+        The same check answers for it here; only its verdict that execd does
+        not enforce the credential refuses, and a box that cannot be reached
+        or connected to is kept.
+        """
+        if not self.created_with_current_network_wiring(descriptor):
+            return (
+                "its recorded network wiring differs from this deployment's, "
+                "so every connect refuses it"
+            )
+        if not execd_access_required(self._settings()):
+            return None
+        from astrabox.providers.open_sandbox.executor import require_open_sandbox_execd_access
+
+        try:
+            handle = await self.connect(descriptor.sandbox_id)
+        except Exception:  # noqa: BLE001 - a box that cannot be connected to gives no verdict
+            return None
+        try:
+            await require_open_sandbox_execd_access(self, handle)
+        except APIError as exc:
+            if (exc.evidence or {}).get("reason") == EXECD_ACCESS_NOT_ENFORCED:
+                return exc.message
+            return None
+        finally:
+            with contextlib.suppress(Exception):
+                await handle.close()
+        return None
 
     # --- SDK plumbing (one object per op, closed in finally) ---------------
     def _sdk_connection_config(

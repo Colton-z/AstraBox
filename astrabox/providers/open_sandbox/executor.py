@@ -34,6 +34,7 @@ from astrabox.providers.open_sandbox._metadata import (
     session_metadata_value,
 )
 from astrabox.providers.open_sandbox.execd_access import (
+    EXECD_ACCESS_NOT_ENFORCED,
     EXECD_ACCESS_TOKEN_ENV,
     EXECD_ACCESS_TOKEN_HEADER,
     SANDBOX_EXECD_ACCESS_METADATA_KEY,
@@ -1383,7 +1384,7 @@ async def create_open_sandbox_box(
     handle = OpenSandboxHandle(sdk_sandbox)
     try:
         if execd_access_required_here:
-            await _require_execd_access(provider, handle)
+            await require_open_sandbox_execd_access(provider, handle)
         await require_open_sandbox_permission_level(handle, permission_level)
         if require_execd_command_stream:
             await _wait_for_execd_command_stream(handle, session_id=str(session_id))
@@ -1439,10 +1440,15 @@ async def create_open_sandbox_box(
     return handle
 
 
-async def _require_execd_access(
+async def require_open_sandbox_execd_access(
     provider: OpenSandboxSandboxProvider, handle: OpenSandboxHandle
 ) -> None:
-    """Refuse a new box unless its execd admits only the box's own credential.
+    """Refuse a box unless its execd admits only the box's own credential.
+
+    Every box this backend hands out passes it: a new box in the create guard
+    above, a prepared one again when its client pool hands it out
+    (``agent_pool``), and an unclaimed prepared one the ownerless reap finds
+    (:meth:`OpenSandboxSandboxProvider.unclaimed_sandbox_refusal`).
 
     The check goes where another container goes: execd's published port
     itself. OpenSandbox's Docker endpoint for an in-box port, execd's own
@@ -1465,6 +1471,7 @@ async def _require_execd_access(
                 "credential, which this deployment requires"
             ),
             status_code=502,
+            evidence={"reason": EXECD_ACCESS_NOT_ENFORCED},
         )
     direct = await provider._connect_handle(
         handle.sandbox_id, use_server_proxy_override=False
@@ -1487,6 +1494,7 @@ async def _require_execd_access(
 
 __all__ = [
     "create_open_sandbox_box",
+    "require_open_sandbox_execd_access",
     "require_open_sandbox_container_engine",
     "require_open_sandbox_permission_level",
 ]

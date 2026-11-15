@@ -346,7 +346,9 @@ class SandboxClientPoolStatus:
     failure_count: int | None = None
     backoff_active: bool | None = None
     in_flight_operations: int | None = None
-    last_error: bool | None = None
+    #: Why the pool's last member failed to be created or prepared, as
+    #: ``"<code>: <message>"``; None when the last one succeeded.
+    last_error: str | None = None
     idle_sandbox_ids: tuple[str, ...] = ()
 
 
@@ -1517,6 +1519,19 @@ class SandboxProvider(ABC):
         raise NotImplementedError(
             f"sandbox provider {self.name!r} must identify its unclaimed inventory"
         )
+
+    async def unclaimed_sandbox_refusal(self, descriptor: SandboxDescriptor) -> str | None:
+        """Why a resource :meth:`owns_unclaimed_sandbox` keeps must never be handed out, or None.
+
+        A box whose create or hand-out was interrupted (the process died, or
+        its destruction could not be confirmed) is in no idle inventory and no
+        session's, so neither the provider's preparation nor orphan
+        reclamation would ever remove it. A provider that can tell such a box
+        will never be handed out says why, and reclamation destroys it. Only a
+        definite verdict refuses; a box the provider cannot ask about is kept.
+        Default: none.
+        """
+        return None
 
     def runtime_defaults(self) -> SandboxRuntimeDefaults:
         """Deploy-time defaults (seed image / agent command). Default: no opinion."""

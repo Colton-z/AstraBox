@@ -270,7 +270,14 @@ the token and accepts it with the token, and that execd's token-replacing route
 refuses it; a sandbox that fails is destroyed and the conversation fails with
 `SANDBOX_EXECD_ACCESS_UNVERIFIED`. That happens when
 `ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE` names an execd image other than
-AstraBox's.
+AstraBox's. A sandbox an Agent prepares ahead of its conversations is checked
+when it is created and again when a conversation takes it, so one prepared
+before the setting was turned on is replaced rather than handed out. The
+Agent's prepared state then shows `SANDBOX_EXECD_ACCESS_UNVERIFIED` and its
+reason, and it tries again after 10 seconds, doubling the wait after each
+further failure up to five minutes. A prepared sandbox whose check was
+interrupted, by a server restart or a destruction that was not confirmed, is
+destroyed by the periodic sweep of sandboxes no conversation holds.
 
 The token reaches execd through the sandbox's create environment. The image's
 entrypoint is started without it, and execd removes it from every command,
