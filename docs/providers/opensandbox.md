@@ -367,6 +367,13 @@ Root in such a sandbox is root of the Pod's user namespace only. Its `/proc` is
 unmasked, but writing a host-wide kernel setting such as
 `/proc/sys/kernel/sysrq`, or reading `/proc/kcore`, is refused.
 
+Each Pod gets its own range of node ids, but the kubelet mounts its volumes
+idmapped, so a file the sandbox writes to [RuntimeProfile storage](#kubernetes-mounts)
+is owned on the node by the id it has in the sandbox: 1000 for the bundled
+images' workload account, also for a file an inner container writes as its
+root, which the rootless engine maps to that account. A later sandbox reads
+and writes the file with the same id.
+
 Such a sandbox cannot be paused, so a RuntimeProfile with the engine must set
 `idle_action` to `terminate`; `pause` is refused when it is saved. A pause
 commits the sandbox's writable layer with its files owned by the node ids of
@@ -383,7 +390,8 @@ The cluster must meet these prerequisites before the variable is set:
 | Kubernetes 1.33 or later with user namespaces (`UserNamespacesSupport`) | `hostUsers: false` and the kubelet's `userNamespaces.idsPerPod`, which 1.33 added. |
 | containerd 2.0 and runc 1.2, or later | The CRI and OCI runtimes that support Pod user namespaces. CRI-O 1.25 and crun 1.9 support them too; they are not tested with this capability. |
 | Linux 6.3 or later | The kubelet mounts every volume of a user-namespaced Pod idmapped, and tmpfs, which Secrets use, supports that from 6.3. |
-| An idmap-capable filesystem for `/var/lib/kubelet` and for every volume such a sandbox mounts | ext4, xfs, btrfs, tmpfs and overlayfs support idmapped mounts; NFS does not, so a workspace volume or RuntimeProfile storage on NFS cannot be mounted into these sandboxes. |
+| Linux 6.12 or later, with a workspace volume | A sandbox mounts its workspace from `ASTRABOX_SANDBOX_WORKSPACE_VOLUME` through a [mergerfs view](../deploy.md#where-conversation-workspaces-live), which is a FUSE mount. The kernel idmaps a FUSE mount from 6.12, and only when its server allows it with kernel permission checks on; the helper's mergerfs does both by default (`allow-idmap`, `kernel-permissions-check`). On an earlier kernel the sandbox's Pod does not start. This combination is not tested. |
+| An idmap-capable filesystem for `/var/lib/kubelet` and for every volume such a sandbox mounts | ext4, xfs, btrfs, tmpfs and overlayfs support idmapped mounts; NFS does not, so RuntimeProfile storage on NFS cannot be mounted into these sandboxes. A workspace volume is not mounted directly; the previous row applies to it. |
 | kubelet `userNamespaces.idsPerPod: 262144` | The engine maps its containers onto the sandbox user's subordinate ids 100000 to 165535, which the default 65536 ids per Pod do not hold. |
 | A tun device node on every node that runs sandboxes | Below. |
 
