@@ -554,8 +554,8 @@ printf '%s\n' "ASTRABOX_SERVER_HOST_PORT='9000'" >> ~/astrabox/containers/.env
 
 Every setting of the deployment goes in that file. `containers/settings.reference.env`,
 beside it, lists each one with its default and what it does; a setting the
-file leaves out keeps its default. [The complete list](configuration.md) has
-the same settings.
+file leaves out keeps its default. [The complete list](https://github.com/Colton-z/AstraBox/blob/main/docs/configuration.md)
+has the same settings.
 
 A few defaults are decisions about this host and your team: how much of the
 host's memory and CPU sandboxes may take (all but 4 GiB of memory, and every
