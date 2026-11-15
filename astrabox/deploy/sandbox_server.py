@@ -208,6 +208,17 @@ SIDECAR_KUBERNETES_LIMITS: Final = {"cpu": "1", "memory": "128Mi"}
 #: turning it off would reopen that bypass. See :func:`_docker_config_document`
 #: and :func:`batchsandbox_template_for_server`.
 SANDBOX_DROP_CAPABILITIES: Final = ("NET_RAW",)
+#: ``terminationGracePeriodSeconds`` of every Kubernetes sandbox Pod. A box is
+#: deleted only after the platform has saved what it keeps from it, and the
+#: Docker runtime removes a box's container with a kill, so the Pod gets no
+#: graceful shutdown either: under the 30 s default the sandbox image's
+#: services spend about 15 s stopping, and OpenSandbox's foreground deletion
+#: keeps the box listed until its Pod is gone, so every confirmed destruction
+#: (``SandboxProvider.confirm_destroyed``) waits for it. Not 0: a zero grace
+#: period lets the API server remove the Pod object before the kubelet has
+#: stopped its containers, and an absent box would not mean a stopped one.
+#: A platform constant, not a knob. See :func:`batchsandbox_template_for_server`.
+SANDBOX_TERMINATION_GRACE_SECONDS: Final = 1
 PUBLISH_HOST_IP_ENV = "ASTRABOX_PUBLISH_HOST_IP"
 #: Loopback by default: see :func:`publish_host_ip` for why.
 DEFAULT_PUBLISH_HOST_IP = "127.0.0.1"
@@ -1274,9 +1285,11 @@ def batchsandbox_template_for_server() -> Path:
     one pod-shaping input is ``kubernetes.batchsandbox_template_file``: the
     sandbox container's ``securityContext`` there is merged into every sandbox
     the server creates in template mode, which is every sandbox AstraBox
-    creates (it never uses ``poolRef``). The template carries only that
-    context: :data:`SANDBOX_DROP_CAPABILITIES` in ``capabilities.drop``, the
-    same drop the Docker runtime gets as ``cap_drop``.
+    creates (it never uses ``poolRef``). The template carries that context,
+    :data:`SANDBOX_DROP_CAPABILITIES` in ``capabilities.drop`` (the same drop
+    the Docker runtime gets as ``cap_drop``), and the Pod's
+    ``terminationGracePeriodSeconds``, :data:`SANDBOX_TERMINATION_GRACE_SECONDS`,
+    which the server's deep merge keeps because the runtime manifest sets none.
 
     The server replaces a template list with the runtime's own on a conflict,
     and a sandbox with a network policy gets ``drop: [NET_ADMIN]`` from the
@@ -1293,6 +1306,7 @@ def batchsandbox_template_for_server() -> Path:
         "spec": {
             "template": {
                 "spec": {
+                    "terminationGracePeriodSeconds": SANDBOX_TERMINATION_GRACE_SECONDS,
                     "containers": [
                         {
                             "name": "sandbox",
@@ -4050,6 +4064,7 @@ __all__ = [
     "SECURE_ACCESS_ENV",
     "SERVER_BIND_HOST",
     "SANDBOX_DROP_CAPABILITIES",
+    "SANDBOX_TERMINATION_GRACE_SECONDS",
     "SERVER_PORT_ENV",
     "SERVICE_ALLOCATE_PORTS_ATTR",
     "SERVICE_CLS_ATTR",

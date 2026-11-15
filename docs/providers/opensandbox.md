@@ -103,6 +103,21 @@ service is exposed beyond a trusted loopback network. The bundled lifecycle
 service listens only inside the AstraBox container and does not need a second
 public endpoint.
 
+On Kubernetes, set `terminationGracePeriodSeconds: 1` under
+`spec.template.spec` in the service's BatchSandbox template
+(`kubernetes.batchsandbox_template_file`). AstraBox counts a sandbox as
+destroyed only once the service no longer lists it, and waits up to 20 seconds
+for that. OpenSandbox 1.2.1 deletes a BatchSandbox with foreground
+propagation, so the sandbox stays listed until its Pod is gone. Under the
+Kubernetes default of 30 seconds, the Pod waits for the image's services to
+stop, about 15 seconds for the Hermes image, and every deletion or Assistant
+hibernation waits with it; a slower stop fails a session deletion with
+`SESSION_SANDBOX_DESTRUCTION_UNCONFIRMED`. AstraBox saves what it keeps from a
+box before it deletes the box, so nothing in the Pod needs a graceful stop.
+The bundled lifecycle service writes this setting into the template it
+renders. With the `agent-sandbox` workload provider it renders no template, and
+Pods keep the default.
+
 Persistent workspaces (`ASTRABOX_SANDBOX_WORKSPACE_VOLUME`) with an existing
 service require its Kubernetes runtime. OpenSandbox's Docker runtime mounts a
 volume sub-path by binding that directory under the volume's Docker mount
