@@ -103,6 +103,9 @@ PASS_THROUGH = frozenset(
         "ASTRABOX_SANDBOX_SECURE_ACCESS",
         "ASTRABOX_SANDBOX_SERVER_PORT_RANGE",
         "ASTRABOX_SANDBOX_SERVER_EXECD_IMAGE",
+        # The all-in-one runs the same bundled Docker lifecycle server and the
+        # same execd image, so the per-sandbox execd token applies there too.
+        "ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN",
         "ASTRABOX_SECRET_STORE",
         "ASTRABOX_AWS_KMS_KEY_ARN",
         "ASTRABOX_VAULT_MASTER_KEY",
