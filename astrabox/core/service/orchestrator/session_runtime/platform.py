@@ -156,7 +156,16 @@ class PlatformRuntimeConnector:
             # A parked box wakes for an input and for nothing else.
             if not await self._facts.undelivered_inputs(session_id):
                 raise RuntimeNotReady(session_id)
-            await self._runtime_manager.wake_parked_session(session)
+            try:
+                await self._runtime_manager.wake_parked_session(session)
+            except APIError as exc:
+                if exc.code != "SANDBOX_UNREACHABLE":
+                    raise
+                # The control plane is still pausing or restoring the box. The
+                # input stays waiting, so the host's sweep starts this reader
+                # again and the next attempt wakes the same box.
+                logger.info("session %s parked box not wakeable yet: %s", session_id, exc.message)
+                raise RuntimeNotReady(session_id) from exc
             session = await self._sessions.get_session(session_id)
             if session is None:
                 raise RuntimeNotReady(session_id)

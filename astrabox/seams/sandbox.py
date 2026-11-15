@@ -1269,6 +1269,12 @@ class SandboxProvider(ABC):
     #: conversation that comes back to an empty box. The caller refuses on the
     #: backend's behalf, naming it, rather than discovering this per session.
     supports_pause: bool = False
+    #: The longest a pause this backend accepted can stay undecided, in seconds:
+    #: within it the control plane reports the box paused, or running again
+    #: because the pause failed. A box this backend still reports running when
+    #: that time has passed since its pause was requested did not pause.
+    #: Meaningful only when :attr:`supports_pause` is True.
+    pause_verdict_seconds: float = 0.0
     #: Whether this backend exposes a maintained client-side pool that can
     #: coordinate ready sandboxes across platform replicas.  The platform
     #: supplies complete create and preparation callbacks; the provider owns
@@ -1689,9 +1695,13 @@ class SandboxProvider(ABC):
         filesystem snapshot, not a suspend-to-disk, so anything the box was
         running is gone and the next turn starts fresh against the same files.
 
-        As with ``kill``, the boolean is evidence rather than acknowledgement: a
-        pause the backend accepted but did not confirm is False, because a caller
-        that believes a box is paused will not renew its lease.
+        As with ``kill``, the boolean is evidence rather than acknowledgement:
+        True only once the backend reports the box paused, because a caller
+        that believes a box is paused will not renew its lease. False means
+        the pause ended without pausing — the box runs on, or it is gone. A
+        pause the backend has not decided within :attr:`pause_verdict_seconds`
+        raises ``SANDBOX_UNREACHABLE``: the box is neither running nor gone,
+        and the caller must keep treating it as parked.
         """
         _ = sandbox_id
         raise APIError(

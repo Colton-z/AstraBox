@@ -159,6 +159,9 @@ class StartupAllocationCleanup:
 
 
 _PARKED_SANDBOX_STATES = frozenset({"paused", "pausing"})
+#: A parked box the control plane is still committing or restoring: waking it
+#: waits for that operation's outcome instead of acting on the box.
+_PAUSE_IN_PROGRESS_STATES = frozenset({"pausing", "resuming"})
 
 #: How often the prewarm sweep reconciles an Agent's prepared capacity when no
 #: seat of it is stale: often enough that a restarted replica starts its pool
@@ -964,6 +967,8 @@ class RemoteAgentRuntimeManager:
     async def pause_sandbox_by_id(self, sandbox_id: str) -> bool:
         """Park a box: commit its filesystem, free its compute. True when PAUSED.
 
+        False when the pause ended without pausing, and ``SANDBOX_UNREACHABLE``
+        when the backend has not decided it (:meth:`SandboxProvider.pause`).
         The lease is not extended here. A paused box still expires on its lease and
         takes its snapshot with it, so whoever parks a box owns the retention
         decision and must have made it before this call: renewing a paused sandbox
@@ -1008,6 +1013,14 @@ class RemoteAgentRuntimeManager:
         durable comparison protects a binding replaced by another worker while
         the provider resumes compute; it never clears a newer parked mark. The
         write that clears the mark sends the session's ``reader`` notice.
+
+        The control plane's state decides what waking means. A Paused box is
+        resumed. A box still Pausing or Resuming raises ``SANDBOX_UNREACHABLE``
+        and keeps its mark: the controller is committing or restoring its files,
+        and a later attempt finds the outcome. A Running box with a mark younger
+        than its backend's ``pause_verdict_seconds`` raises the same, because
+        the pause that wrote the mark is undecided; once that time has passed
+        the pause did not happen, and the mark is cleared over the running box.
         """
         if not session.get("sandbox_parked_at"):
             return
@@ -1023,6 +1036,47 @@ class RemoteAgentRuntimeManager:
                 )
             parked_at = current.get("sandbox_parked_at")
             if not parked_at:
+                session["sandbox_parked_at"] = None
+                return
+            probe = await self.get_sandbox_lifecycle_probe(sandbox_id)
+            state = str(probe.sandbox_state or "").strip().lower()
+            if state in _PAUSE_IN_PROGRESS_STATES:
+                raise APIError(
+                    code="SANDBOX_UNREACHABLE",
+                    message=f"parked sandbox {sandbox_id} is {state}; it is woken once that ends",
+                    status_code=503,
+                )
+            if state == "running":
+                provider = await self.resolve_sandbox_provider(sandbox_id)
+                parked_for = time.time() - parse_iso(str(parked_at)).timestamp()
+                if parked_for < float(provider.pause_verdict_seconds):
+                    raise APIError(
+                        code="SANDBOX_UNREACHABLE",
+                        message=(
+                            f"parked sandbox {sandbox_id} is still running {parked_for:.0f}s "
+                            "after its pause was requested; the pause is undecided"
+                        ),
+                        status_code=503,
+                    )
+                if not await self._sessions_repo.compare_and_update_session(
+                    session_id,
+                    expected={"sandbox_id": sandbox_id, "sandbox_parked_at": parked_at},
+                    updates={"sandbox_parked_at": None},
+                    touch_updated_at=False,
+                    notify="reader",
+                ):
+                    raise APIError(
+                        code="AGENT_RUNTIME_ERROR",
+                        message="session sandbox binding changed while waking",
+                        status_code=409,
+                    )
+                logger.warning(
+                    "wake: sandbox=%s session=%s never paused (still running %.0fs after "
+                    "its pause was requested); the parked mark is cleared",
+                    sandbox_id,
+                    session_id,
+                    parked_for,
+                )
                 session["sandbox_parked_at"] = None
                 return
             if not await self.resume_sandbox_by_id(sandbox_id):

@@ -148,15 +148,24 @@ OPEN_SANDBOX_BACKEND_NAME = "open_sandbox"
 _TRAILING_INT_RE = re.compile(r"(-?\d+)\s*$")
 
 # Pause and resume are asynchronous on this control plane: the call returns
-# while a commit Job still runs. These bound the wait for the state to settle.
-# The timeout is generous because the commit is an image push whose duration is
-# the box's filesystem, not a fixed cost — and the caller's fallback for "not
-# settled" is simply to leave the sandbox alone, which is cheap.
-_PAUSE_SETTLE_TIMEOUT_SECONDS = 300.0
-_PAUSE_SETTLE_POLL_SECONDS = 3.0
-# Upstream's phase vocabulary, upper-cased at the comparison. `Succeed` is what
-# a box that finished pausing reports once its snapshot Job completed.
-_PAUSED_STATES = frozenset({"PAUSED", "SUCCEED"})
+# while the controller still works, so both poll the lifecycle state.
+_SETTLE_POLL_SECONDS = 3.0
+# A resume recreates the box's Pod from its snapshot image, whose parent layers
+# the node already holds; this bounds the wait for that Pod to report Running.
+_RESUME_SETTLE_TIMEOUT_SECONDS = 300.0
+# OpenSandbox ends every pause itself: the controller gives its commit Job
+# ``--commit-job-timeout`` (ten minutes by default), and a commit that fails or
+# runs out of time returns the sandbox to Running with its Pod kept (see
+# https://github.com/opensandbox-group/OpenSandbox/blob/main/docs/guides/pause-resume.md).
+# The commit reads the box's whole root filesystem, so its duration follows the
+# image size and the node's disk. This bound is twice the default deadline, so a
+# controller that is running answers first; a box still Pausing here stays
+# parked, and only a later read of its state decides it.
+_PAUSE_VERDICT_SECONDS = 20 * 60.0
+# The lifecycle API's public states, lower-cased as :meth:`probe` reports them.
+_PAUSE_DONE_STATES = frozenset({"paused", "resuming"})
+_PAUSE_PENDING_STATES = frozenset({"pausing"})
+_HELD_BY_PAUSE_STATES = _PAUSE_PENDING_STATES | _PAUSE_DONE_STATES
 _RUNNING_STATES = frozenset({"RUNNING", "READY"})
 _SETTLE_LOST_STATES = frozenset({"FAILED", "ERROR", "TERMINATED"})
 """States a pause or a resume can never leave for the one it was aiming at.
@@ -852,6 +861,7 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     sandbox_is_profile_exclusive = True
     supports_create_network_policy = True
     supports_pause = True
+    pause_verdict_seconds = _PAUSE_VERDICT_SECONDS
     supports_client_pool = True
     # The lifecycle API pages its sandbox list and describes one by id
     # (:meth:`list_sandboxes`, :meth:`describe_sandbox`).
@@ -1128,6 +1138,18 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     def _require_running(info: Any, *, sandbox_id: str, operation: str) -> None:
         state = str(getattr(info.status, "state", "") or "").strip()
         if state.lower() != "running":
+            if state.lower() in _HELD_BY_PAUSE_STATES:
+                # The control plane holds this box in a pause or a resume: its
+                # files are kept and its id comes back Running, so it is neither
+                # gone nor reachable now.
+                raise APIError(
+                    code="SANDBOX_UNREACHABLE",
+                    message=(
+                        f"open_sandbox {operation}: sandbox {sandbox_id!r} is "
+                        f"{state}; it is retained and answers again once resumed"
+                    ),
+                    status_code=503,
+                )
             if operation == "connect":
                 # Not running is gone, for a per-session box: identity IS
                 # addressing, so nothing restarts this instance in place. A
@@ -1889,17 +1911,23 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         )
 
     async def pause(self, sandbox_id: str) -> bool:
-        """Commit the box's filesystem, free its compute; True when PAUSED.
+        """Commit the box's filesystem, free its compute; True when Paused.
 
         The control plane does the work asynchronously — the pause call returns
-        while a commit Job is still running — so acknowledgement is not evidence.
-        This polls until the state settles, because the one caller that matters
-        stops renewing the lease on a True and a box that never actually paused
-        would then be reclaimed with its workspace.
+        while its commit Job still runs, and the box stays Pausing, frozen and
+        unreachable, until the controller decides. This waits for that verdict,
+        because the one caller that matters stops renewing the lease on a True
+        and a box that never actually paused would then be reclaimed with its
+        workspace.
 
-        A commit that fails leaves the sandbox RUNNING, which is the safe
-        outcome and is reported as False rather than raised: the box is still
-        usable, the deployment merely did not get to reclaim it.
+        * Paused, or already Resuming: True.
+        * Running again after Pausing was seen: the controller's failed pause,
+          which keeps the Pod and its files. False — the box runs on.
+        * Still Running, never seen Pausing, when :data:`_PAUSE_VERDICT_SECONDS`
+          has passed: the pause did not happen. False.
+        * Failed, terminated or not found: the box is gone. False.
+        * Still Pausing, or unreadable, at that point: ``SANDBOX_UNREACHABLE``.
+          The box is neither running nor gone, and stays parked.
         """
         settings = self._settings()
         secret = _config.resolve_api_key(settings)
@@ -1914,7 +1942,57 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             ) from exc
         finally:
             await manager.close()
-        return await self._settles_on(sandbox_id, wanted=_PAUSED_STATES, operation="pause")
+        return await self._pause_verdict(sandbox_id)
+
+    async def _pause_verdict(self, sandbox_id: str) -> bool:
+        """The controller's answer to an accepted pause (see :meth:`pause`)."""
+        deadline = time.monotonic() + _PAUSE_VERDICT_SECONDS
+        seen_pausing = False
+        state = ""
+        while True:
+            probe = await self.probe(sandbox_id)
+            if probe.probe_status == SANDBOX_LIFECYCLE_PROBE_NOT_FOUND:
+                logger.warning(
+                    "open_sandbox pause: sandbox %s disappeared while pausing", sandbox_id
+                )
+                return False
+            state = str(probe.sandbox_state or "")
+            if state in _PAUSE_DONE_STATES:
+                return True
+            if state in _PAUSE_PENDING_STATES:
+                seen_pausing = True
+            elif state.upper() in _RUNNING_STATES and seen_pausing:
+                logger.warning(
+                    "open_sandbox pause: sandbox %s went from Pausing back to Running — "
+                    "the controller failed the pause and kept its Pod",
+                    sandbox_id,
+                )
+                return False
+            elif state.upper() in _SETTLE_LOST_STATES:
+                logger.warning(
+                    "open_sandbox pause: sandbox %s settled on %s while pausing", sandbox_id, state
+                )
+                return False
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(_SETTLE_POLL_SECONDS)
+        if state.upper() in _RUNNING_STATES:
+            logger.warning(
+                "open_sandbox pause: sandbox %s still Running and never seen Pausing "
+                "after %ss — the pause did not happen",
+                sandbox_id,
+                _PAUSE_VERDICT_SECONDS,
+            )
+            return False
+        raise APIError(
+            code="SANDBOX_UNREACHABLE",
+            message=(
+                f"open_sandbox pause: the control plane has not decided the pause of "
+                f"sandbox {sandbox_id!r} within {_PAUSE_VERDICT_SECONDS:.0f}s (last "
+                f"state={state or probe.error_text or 'unknown'!r}); it stays parked"
+            ),
+            status_code=503,
+        )
 
     async def resume(self, sandbox_id: str) -> bool:
         """Restore a paused box from its snapshot, under the SAME id.
@@ -1942,11 +2020,11 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     async def _settles_on(self, sandbox_id: str, *, wanted: frozenset[str], operation: str) -> bool:
         """Poll until the control plane reports one of ``wanted``, or give up.
 
-        Returns False on the timeout rather than raising: a transition that has
-        not finished is not the same as an error, and every caller of pause and
-        resume has a correct thing to do with "not yet" (leave the box alone).
+        Returns False on the timeout rather than raising: a resume that has not
+        finished is not an error, and its caller keeps the parked mark, so the
+        next attempt resumes the same box.
         """
-        deadline = time.monotonic() + _PAUSE_SETTLE_TIMEOUT_SECONDS
+        deadline = time.monotonic() + _RESUME_SETTLE_TIMEOUT_SECONDS
         state = ""
         while time.monotonic() < deadline:
             probe = await self.probe(sandbox_id)
@@ -1963,12 +2041,12 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                     "/".join(sorted(wanted)),
                 )
                 return False
-            await asyncio.sleep(_PAUSE_SETTLE_POLL_SECONDS)
+            await asyncio.sleep(_SETTLE_POLL_SECONDS)
         logger.warning(
             "open_sandbox %s: sandbox %s did not settle within %ss (last state=%s)",
             operation,
             sandbox_id,
-            _PAUSE_SETTLE_TIMEOUT_SECONDS,
+            _RESUME_SETTLE_TIMEOUT_SECONDS,
             state or "unknown",
         )
         return False

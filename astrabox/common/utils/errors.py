@@ -661,8 +661,10 @@ for _code, _status, _category, _retryable, _owner in (
     ("BROWSER_TENANCY_UNSUPPORTED", 409, "runtime.sandbox", False, "runtime"),
     ("BROWSER_UNAVAILABLE", 502, "runtime.sandbox", False, "runtime"),
     ("FILE_PREVIEW_UNAVAILABLE", 502, "runtime.sandbox", False, "runtime"),
-    # A transport failure to the box: it proves nothing about whether the box
-    # exists, and the same request may succeed once the box answers again.
+    # The box does not answer now: a transport failure, or a control plane that
+    # is pausing, holding paused or resuming it. Either proves nothing about
+    # whether the box exists, and the same request may succeed once the box
+    # answers again.
     ("SANDBOX_UNREACHABLE", 503, "runtime.sandbox", True, "runtime"),
     # The box answered a probe in a form its provider cannot read; repeating
     # the request reads the same answer.

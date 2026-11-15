@@ -220,9 +220,25 @@ for production RuntimeProfiles:
 astrabox verify-opensandbox-snapshots
 ```
 
-For Linux overlayfs nodes, the optional
-[snapshot differ](opensandbox-snapshot-differ.md) avoids scanning unchanged
-parent image files when creating snapshots.
+A pause lasts as long as its commit, and the box is frozen meanwhile.
+containerd's default differ compares the box with its image file by file and
+reads the content of every file whose timestamp has whole-second precision,
+which includes every file unpacked from an image layer. The commit therefore
+reads the whole image, however little the box changed, at the speed of the
+node's disk. OpenSandbox gives each commit `--commit-job-timeout` (Helm value
+`controller.snapshot.commitJobTimeout`, ten minutes by default) and returns
+the box to Running, files intact, when that runs out. A node that cannot read
+the Agent image within it never pauses; the verification above, run with
+`--image` set to the Agent image, shows whether the default deadline is enough.
+AstraBox waits for the controller's outcome: a
+conversation whose box is still pausing keeps it, and its next message resumes
+the box once the commit completes.
+
+When the commit does not fit, either raise the commit timeout or, on Linux
+overlayfs nodes, install AstraBox's
+[snapshot differ](opensandbox-snapshot-differ.md), which builds the layer from
+the container's writable layer instead of reading the image. OpenSandbox does
+not ship a differ of its own.
 
 Apply a retention policy to the snapshot registry. Deleting OpenSandbox
 snapshot metadata does not by itself garbage-collect the OCI image data. See
