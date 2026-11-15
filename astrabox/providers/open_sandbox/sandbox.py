@@ -1607,8 +1607,10 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         (:meth:`_host_network_refusal` says what to use instead). The engine's
         grants are applied by the bundled server's hooks on both runtimes, and
         on Kubernetes need a setting of their own
-        (:meth:`_container_engine_refusal`). Mounts travel as the create's own ``volumes`` on both of the
-        bundled server's runtimes, which render the host-path allowlist into
+        (:meth:`_container_engine_refusal`); there such a box cannot be paused,
+        so ``idle_action: pause`` is refused with it. Mounts travel as the
+        create's own ``volumes`` on both of the bundled server's runtimes,
+        which render the host-path allowlist into
         the server's configuration (:meth:`_shared_mount_refusal`). On the
         bundled server, host networks also need a Docker Engine that can join a
         network below the box's own gateway (``network_attachment_refusal``);
@@ -1644,6 +1646,22 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         if engine == SANDBOX_CONTAINER_ENGINE_NONE:
             return
         refusal = self._container_engine_refusal()
+        if (
+            not refusal
+            and not self._bundled_docker()
+            and str(payload.get("idle_action") or "").strip().lower() == "pause"
+        ):
+            # A Kubernetes pause commits the box's writable layer as its files
+            # are on the node: owned by ids of the Pod's user namespace. The
+            # resumed Pod gets another range, so those files come back owned
+            # by an unmapped id and the restored egress sidecar cannot start.
+            refusal = (
+                "idle_action 'pause' cannot keep a container-engine box on the "
+                "Kubernetes runtime: the box runs in a user namespace, a pause commits "
+                "its files under that namespace's node ids, and the resumed Pod gets "
+                "other ids, so the files come back owned by an unmapped id and the box "
+                "does not start. Use idle_action 'terminate'"
+            )
         if refusal:
             raise APIError(
                 code="INVALID_REQUEST",
