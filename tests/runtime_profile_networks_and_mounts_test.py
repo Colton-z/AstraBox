@@ -117,6 +117,9 @@ def test_a_target_is_mounted_once(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_saving_checks_the_allowlists_and_keeps_what_was_granted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The bundled Docker server compares engine versions with the Docker SDK, which
+    # only its optional extra installs.
+    pytest.importorskip("docker")
     import astrabox.core.service.orchestrator.engine.claude_code  # noqa: F401 - registers the engine
     import astrabox.providers.open_sandbox.sandbox  # noqa: F401 - registers the backend
     from astrabox.common.utils.user_context import UserContext

@@ -157,7 +157,12 @@ async def test_the_quota_charges_a_box_what_its_profile_sized_it(
 # ── the prepared generation ──────────────────────────────────────────────────
 
 
-async def test_the_prepared_generation_changes_with_the_profile_size() -> None:
+async def test_the_prepared_generation_changes_with_the_profile_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The bundled Docker server lowers a CPU limit to the host's count, which
+    # would make two sizes one on a small machine.
+    monkeypatch.setattr("os.cpu_count", lambda: 64)
     manager = SimpleNamespace(
         resolve_model_access=lambda _configuration: ResolvedModelAccess(
             configuration={"model": "m"},
