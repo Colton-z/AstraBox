@@ -74,6 +74,35 @@ explain_userns_refusal() {
     printf '%s' "the workload account cannot create a user namespace with its own /proc (${detail})"
 }
 
+# Whether the box itself runs in a user namespace narrower than the host's,
+# as a Kubernetes box created with hostUsers: false does.
+in_user_namespace() {
+    ! awk 'NR == 1 && $1 == 0 && $2 == 0 && $3 == 4294967295 { full = 1 } END { exit !full }' \
+        /proc/self/uid_map
+}
+
+# The ids the box's user namespace holds, from its map file ($1).
+ids_held() {
+    awk '{ printf "%s%d-%d", sep, $1, $1 + $3 - 1; sep = ", " }' "$1"
+}
+
+# Whether every subordinate range of ${USER} in $1 (/etc/subuid or
+# /etc/subgid) lies inside one range of the box's own id map ($2). Prints the
+# first range that does not. newuidmap cannot map an id the box's namespace
+# does not hold; it fails with EPERM, and the daemon restarts without a reason.
+subid_ranges_fit() {
+    awk -v user="${USER}" '
+        FNR == NR { low[NR] = $1; high[NR] = $1 + $3; held = NR; next }
+        {
+            split($0, entry, ":")
+            if (entry[1] != user) next
+            start = entry[2]; end = entry[2] + entry[3]; inside = 0
+            for (i = 1; i <= held; i++) if (start >= low[i] && end <= high[i]) inside = 1
+            if (!inside) { printf "%d-%d", start, end - 1; outside = 1; exit }
+        }
+        END { exit outside }' "$2" "$1"
+}
+
 serve() {
     case "${ENGINE}" in
         none) exit 0 ;;
@@ -88,6 +117,12 @@ serve() {
     # allows the node, and the box holds no capability over the namespace the
     # device would be used in.
     if [ ! -c /dev/net/tun ]; then
+        # The kernel creates a device node only for CAP_MKNOD in the host's
+        # initial user namespace, which root of a user-namespaced box lacks.
+        in_user_namespace && fail "the box has no /dev/net/tun and runs in a user" \
+            "namespace, where no device node can be created; the device must be" \
+            "mounted into the box (on Kubernetes the lifecycle server mounts the node" \
+            "ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH names)"
         mkdir -p /dev/net
         mknod -m 0666 /dev/net/tun c 10 200 || fail "cannot create /dev/net/tun"
     fi
@@ -99,6 +134,15 @@ serve() {
 
     grep -q "^${USER}:" /etc/subuid && grep -q "^${USER}:" /etc/subgid \
         || fail "${USER} has no subordinate id range in /etc/subuid and /etc/subgid"
+    local ids outside
+    for ids in uid gid; do
+        if ! outside="$(subid_ranges_fit "/etc/sub${ids}" "/proc/self/${ids}_map")"; then
+            fail "the box's user namespace holds ${ids}s $(ids_held "/proc/self/${ids}_map")," \
+                "not ${USER}'s subordinate ${ids}s ${outside} (/etc/sub${ids}), so the" \
+                "engine cannot map its containers' ids; on Kubernetes the kubelet's" \
+                "userNamespaces.idsPerPod must be 262144 (docs/providers/opensandbox.md)"
+        fi
+    done
 
     # newuidmap and newgidmap must run setuid to map the engine's id range,
     # which no_new_privileges forbids. A box created for the engine runs

@@ -11,7 +11,9 @@ This module owns three integration boundaries:
 * Docker-only hooks where upstream exposes no public setting: Docker choosing
   published ports, volume sub-paths mounted by Docker, metadata storage, and
   leaving other installations' sandboxes and sidecars alone; and
-* Kubernetes startup checks for the API server, namespace, and workload CRD.
+* Kubernetes startup checks for the API server, namespace, and workload CRD,
+  and edits of the BatchSandbox the pinned server builds: the sandbox
+  container's ``NET_RAW`` drop and a container-engine box's grants.
 
 On one Docker host, sandbox traffic uses OpenSandbox execd's native port proxy.
 On Kubernetes, operators can deploy OpenSandbox's ingress gateway and configure
@@ -22,8 +24,10 @@ public service. Deployments using a separately operated server configure
 
 Per-sandbox resource limits belong to create requests. Kubernetes security
 contexts, runtime classes, and PID limits belong to the cluster workload
-template. Keeping those settings at their owning layer prevents this launcher
-from presenting configuration that upstream cannot apply.
+template, except the grants a container-engine box carries by itself
+(:func:`grant_container_engine_pods`). Keeping those settings at their owning
+layer prevents this launcher from presenting configuration that upstream
+cannot apply.
 
 The Docker hardening hooks rebind upstream module constants and verify the
 result through its public API. Replace each hook with public configuration when
@@ -265,6 +269,10 @@ KUBE_CREATE_TIMEOUT_ENV = "ASTRABOX_SANDBOX_SERVER_KUBE_CREATE_TIMEOUT_SECONDS"
 #: joining the cluster and pulling the agent image.
 DEFAULT_KUBE_CREATE_TIMEOUT_SECONDS = "60"
 
+#: The node path of the tun device node a container-engine box on Kubernetes
+#: gets at ``/dev/net/tun``; see :func:`container_engine_tun_host_path`.
+CONTAINER_ENGINE_TUN_HOST_PATH_ENV = "ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH"
+
 # OpenSandbox's multi-node data plane. The gateway component is installed in
 # the cluster; this launcher configures the lifecycle server to return its
 # routes and to mint OSEP-0011 signed URLs.
@@ -300,6 +308,7 @@ _KUBERNETES_ONLY_ENV = (
     INGRESS_ROUTE_MODE_ENV,
     INGRESS_SIGNING_KEY_ENV,
     INGRESS_SIGNING_KEY_ID_ENV,
+    CONTAINER_ENGINE_TUN_HOST_PATH_ENV,
 )
 
 #: Upstream's non-interactive acknowledgement that ``server.api_key`` is empty.
@@ -800,6 +809,36 @@ def kube_workload_provider() -> str:
             "chart reconciles)."
         )
     return provider
+
+
+def container_engine_tun_host_path() -> str:
+    """The node path of the tun device node a Kubernetes container-engine box gets, or "".
+
+    A container-engine box's rootless Docker Engine reaches the network through
+    slirp4netns, which opens ``/dev/net/tun``. On Kubernetes such a box runs in a
+    user namespace (:func:`grant_container_engine_pods`), where ``mknod`` of a
+    device is refused, so the device arrives as a ``hostPath`` volume of type
+    ``CharDevice``. The kubelet mounts every volume of a user-namespaced Pod
+    idmapped, and the node's ``/dev`` (devtmpfs) does not support idmapped
+    mounts: the source must be a node created with ``mknod <path> c 10 200`` on
+    a filesystem that does (ext4, xfs, btrfs; ``docs/providers/opensandbox.md``). Kubernetes
+    checks the type on the node that runs the Pod, so a missing or wrong node
+    fails that Pod's start, not this server's.
+
+    Empty means this deployment does not give Kubernetes boxes a container
+    engine; the AstraBox server refuses a RuntimeProfile that asks for one
+    (``OpenSandboxSandboxProvider._container_engine_refusal``).
+    """
+    configured = _env(CONTAINER_ENGINE_TUN_HOST_PATH_ENV, "")
+    if configured and (
+        not configured.startswith("/") or posixpath.normpath(configured) != configured
+    ):
+        raise SandboxServerConfigError(
+            f"{CONTAINER_ENGINE_TUN_HOST_PATH_ENV}={configured!r} must be an absolute, "
+            "normalised path of a tun device node on each node, such as "
+            "/var/lib/astrabox/dev/net-tun."
+        )
+    return configured
 
 
 def kube_image_pull_policy() -> str:
@@ -2659,9 +2698,10 @@ def attach_allowlisted_networks(
     setattr(ops_mixin, CREATE_AND_START_ATTR, _astrabox_create_and_start_container)
 
 
-#: Create metadata (a Docker label once OpenSandbox copies it) naming the
-#: container engine a box is created for. The OpenSandbox executor writes it;
-#: :func:`grant_container_engine_boxes` reads it.
+#: Create metadata (a Docker label, or a BatchSandbox and Pod label, once
+#: OpenSandbox copies it) naming the container engine a box is created for.
+#: The OpenSandbox executor writes it; :func:`grant_container_engine_boxes`
+#: (Docker) and :func:`grant_container_engine_pods` (Kubernetes) read it.
 CONTAINER_ENGINE_METADATA_KEY = "astrabox.container-engine"
 
 #: The HostConfig fields that cover parts of a container's ``/proc`` and
@@ -2836,6 +2876,146 @@ def grant_container_engine_boxes(
             "container-engine box could not mount /proc. Pin opensandbox-server to the "
             "release in pyproject.toml, or update astrabox/deploy/sandbox_server.py."
         )
+
+
+#: The pinned Kubernetes provider's class and the method its template-mode
+#: create calls once with the complete BatchSandbox manifest; see
+#: :func:`grant_container_engine_pods`.
+BATCHSANDBOX_PROVIDER_ATTR = "BatchSandboxProvider"
+MERGE_POD_SPEC_EXTRAS_ATTR = "_merge_pod_spec_extras"
+#: The sandbox container's name in the pinned server's Pod spec.
+SANDBOX_CONTAINER_NAME = "sandbox"
+#: Pod volumes :func:`grant_container_engine_pods` adds to a container-engine box.
+CONTAINER_ENGINE_DATA_VOLUME = "astrabox-container-engine"
+CONTAINER_ENGINE_TUN_VOLUME = "astrabox-container-engine-tun"
+TUN_DEVICE_PATH = "/dev/net/tun"
+
+
+def grant_container_engine_pods(provider_module: ModuleType, constants_module: ModuleType) -> None:
+    """Give a Kubernetes box created for an in-box container engine what the engine needs.
+
+    The Kubernetes counterpart of :func:`grant_container_engine_boxes`, keyed on
+    the same create metadata (:data:`CONTAINER_ENGINE_METADATA_KEY` ``docker``,
+    a label of the BatchSandbox and its Pod). Only such a box's Pod gets:
+
+    * ``hostUsers: false``: the Pod runs in a user namespace of its own, so
+      its root and every id the engine maps are unprivileged ids of the node.
+    * ``procMount: Unmasked`` on the sandbox container. Each inner container
+      mounts its own ``/proc`` from a nested user namespace, which the kernel
+      refuses while any part of the box's ``/proc`` is covered. Kubernetes
+      accepts ``Unmasked`` only together with ``hostUsers: false``.
+    * an ``emptyDir`` at the engine's data root
+      (:data:`astrabox.providers.sandbox_image.CONTAINER_ENGINE_DATA_ROOT`): the
+      engine's overlay snapshots cannot have their upper directory on the box's
+      overlay root. It has no size limit and is deleted with the Pod, which a
+      pause also deletes.
+    * the tun device node :func:`container_engine_tun_host_path` names, at
+      ``/dev/net/tun``, for the engine's slirp4netns network. A box in a user
+      namespace cannot create the device itself.
+
+    Everything else the create asked for stays: the ``advanced`` level's
+    execd-isolation grants (``SYS_ADMIN``, seccomp and AppArmor unconfined),
+    the dropped ``NET_ADMIN`` and ``NET_RAW``, the egress sidecar and execd's
+    init container. The sandbox container keeps no ``no_new_privileges``, which
+    ``newuidmap`` needs; Kubernetes sets it only for
+    ``allowPrivilegeEscalation: false``, which no AstraBox box carries.
+    ``SYS_ADMIN`` is required as well: the kernel lets ``newuidmap`` write the
+    engine's id map only with ``CAP_SYS_ADMIN`` over the engine's namespace,
+    held through the Pod's own. The hook refuses a container-engine create
+    without execd isolation, which grants it, and one this server has no tun
+    device path for.
+
+    ``_merge_pod_spec_extras`` is the pinned provider's last edit of the
+    manifest before it creates the BatchSandbox, called once per template-mode
+    create (every AstraBox create; ``poolRef`` is never used). A pause and a
+    resume only patch ``spec.pause``, and the controller recreates the Pod from
+    the stored template, so a resumed box keeps these fields.
+    """
+    from astrabox.providers.sandbox_image import CONTAINER_ENGINE_DATA_ROOT
+
+    purpose = "grant container-engine boxes on Kubernetes"
+    _require_attributes(provider_module, (BATCHSANDBOX_PROVIDER_ATTR,), purpose)
+    _require_attributes(constants_module, (ERROR_CODES_ATTR,), purpose)
+    provider_cls = getattr(provider_module, BATCHSANDBOX_PROVIDER_ATTR)
+    if not hasattr(provider_cls, MERGE_POD_SPEC_EXTRAS_ATTR):
+        raise SandboxServerConfigError(
+            "the installed opensandbox-server no longer exposes "
+            f"{provider_cls.__module__}.{provider_cls.__name__}.{MERGE_POD_SPEC_EXTRAS_ATTR}, "
+            "so AstraBox cannot grant container-engine boxes on Kubernetes. Pin "
+            "opensandbox-server to the release in pyproject.toml, or update "
+            "astrabox/deploy/sandbox_server.py."
+        )
+    from fastapi import HTTPException as http_exception
+    from fastapi import status as http_status
+
+    upstream_merge = getattr(provider_cls, MERGE_POD_SPEC_EXTRAS_ATTR)
+    error_codes = getattr(constants_module, ERROR_CODES_ATTR)
+    tun_host_path = container_engine_tun_host_path()
+
+    def _refuse(sandbox_id: str, reason: str) -> Exception:
+        return http_exception(
+            status_code=http_status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": error_codes.INVALID_PARAMETER,
+                "message": f"sandbox {sandbox_id}: {reason}",
+            },
+        )
+
+    def _astrabox_merge_pod_spec_extras(
+        self: Any,
+        batchsandbox: dict[str, Any],
+        extra_volumes: list[dict[str, Any]],
+        extra_mounts: list[dict[str, Any]],
+        extra_security_context: dict[str, Any] | None = None,
+    ) -> None:
+        upstream_merge(self, batchsandbox, extra_volumes, extra_mounts, extra_security_context)
+        template = (batchsandbox.get("spec") or {}).get("template") or {}
+        labels = (template.get("metadata") or {}).get("labels") or {}
+        if labels.get(CONTAINER_ENGINE_METADATA_KEY) != "docker":
+            return
+        sandbox_id = str((batchsandbox.get("metadata") or {}).get("name") or "")
+        pod_spec = template.get("spec") or {}
+        container = next(
+            (
+                candidate
+                for candidate in pod_spec.get("containers") or []
+                if candidate.get("name") == SANDBOX_CONTAINER_NAME
+            ),
+            None,
+        )
+        if container is None:
+            raise _refuse(sandbox_id, f"the Pod has no {SANDBOX_CONTAINER_NAME!r} container")
+        security_context = dict(container.get("securityContext") or {})
+        if "SYS_ADMIN" not in ((security_context.get("capabilities") or {}).get("add") or []):
+            raise _refuse(
+                sandbox_id,
+                "a container-engine box must be created with execd isolation, the "
+                "advanced permission level",
+            )
+        if not tun_host_path:
+            raise _refuse(
+                sandbox_id,
+                f"this server has no {CONTAINER_ENGINE_TUN_HOST_PATH_ENV}, the node path "
+                "of the tun device node a container-engine box needs",
+            )
+        pod_spec["hostUsers"] = False
+        security_context["procMount"] = "Unmasked"
+        container["securityContext"] = security_context
+        pod_spec["volumes"] = [
+            *(pod_spec.get("volumes") or []),
+            {"name": CONTAINER_ENGINE_DATA_VOLUME, "emptyDir": {}},
+            {
+                "name": CONTAINER_ENGINE_TUN_VOLUME,
+                "hostPath": {"path": tun_host_path, "type": "CharDevice"},
+            },
+        ]
+        container["volumeMounts"] = [
+            *(container.get("volumeMounts") or []),
+            {"name": CONTAINER_ENGINE_DATA_VOLUME, "mountPath": CONTAINER_ENGINE_DATA_ROOT},
+            {"name": CONTAINER_ENGINE_TUN_VOLUME, "mountPath": TUN_DEVICE_PATH},
+        ]
+
+    setattr(provider_cls, MERGE_POD_SPEC_EXTRAS_ATTR, _astrabox_merge_pod_spec_extras)
 
 
 def docker_engine_version() -> dict[str, Any]:
@@ -3621,6 +3801,7 @@ def prepare() -> dict[str, Any]:
             except Exception as exc:
                 raise missing_extra_error(exc) from exc
             drop_template_capabilities_with_the_runtime_ones(batchsandbox_provider_module)
+            grant_container_engine_pods(batchsandbox_provider_module, constants_module)
         else:
             logger.warning(
                 "%s=%s: sandbox containers keep %s. That workload provider reads "
@@ -3632,6 +3813,16 @@ def prepare() -> dict[str, Any]:
                 ", ".join(SANDBOX_DROP_CAPABILITIES),
                 DEFAULT_KUBE_WORKLOAD_PROVIDER,
             )
+            if container_engine_tun_host_path():
+                logger.warning(
+                    "%s is set but has no effect under %s=%s: only the %r provider "
+                    "gives a box a container engine, and the AstraBox server refuses "
+                    "a RuntimeProfile that asks for one.",
+                    CONTAINER_ENGINE_TUN_HOST_PATH_ENV,
+                    KUBE_WORKLOAD_PROVIDER_ENV,
+                    kube_workload_provider(),
+                    DEFAULT_KUBE_WORKLOAD_PROVIDER,
+                )
     else:
         require_docker_engine()
         warn_if_metadata_dir_is_ephemeral(root)

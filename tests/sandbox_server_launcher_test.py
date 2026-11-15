@@ -891,6 +891,98 @@ def test_the_upstream_merge_keeps_the_template_drop_once_hooked() -> None:
     assert merged["capabilities"]["drop"] == ["NET_ADMIN", "NET_RAW"]
 
 
+class _RecordingK8sClient:
+    """The Kubernetes API side of a create, for upstream's real provider: it keeps each body."""
+
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+
+    def create_custom_object(self, *, body: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+        self.created.append(body)
+        return {"metadata": {"name": body["metadata"]["name"], "uid": "uid"}}
+
+
+def test_only_a_container_engine_pod_gets_the_engine_grants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Upstream's real BatchSandbox build, hooked, for an ordinary box and an engine box.
+
+    The grants weaken a box's confinement, so an ordinary box must come out
+    exactly as upstream builds it. An engine box needs all four: without the
+    user namespace Kubernetes refuses the unmasked /proc, without the tun node
+    the engine has no network, without the emptyDir its snapshots land on the
+    box's overlay root. It is refused, not built half-granted, without execd
+    isolation (whose SYS_ADMIN newuidmap needs) or without the node path.
+    """
+    provider_module = _upstream("opensandbox_server.services.k8s.batchsandbox_provider")
+    constants_module = _upstream("opensandbox_server.services.constants")
+    from fastapi import HTTPException
+    from opensandbox_server.api.schema import ImageSpec
+
+    provider_cls = provider_module.BatchSandboxProvider
+    upstream_merge = provider_cls._merge_pod_spec_extras
+    monkeypatch.setattr(provider_cls, "_merge_pod_spec_extras", upstream_merge)
+    engine_label = {launcher.CONTAINER_ENGINE_METADATA_KEY: "docker"}
+    tun = "/var/lib/astrabox/dev/net-tun"
+
+    def hooked(tun_host_path: str) -> _RecordingK8sClient:
+        provider_cls._merge_pod_spec_extras = upstream_merge
+        monkeypatch.setenv(launcher.CONTAINER_ENGINE_TUN_HOST_PATH_ENV, tun_host_path)
+        launcher.grant_container_engine_pods(provider_module, constants_module)
+        return _RecordingK8sClient()
+
+    def pod_spec(
+        client: _RecordingK8sClient, labels: dict[str, str], *, isolation: bool = True
+    ) -> dict[str, Any]:
+        provider_cls(client).create_workload(
+            sandbox_id="box",
+            namespace="opensandbox",
+            image_spec=ImageSpec(uri="registry.example/box:1"),
+            entrypoint=["/boot.sh"],
+            env={},
+            resource_limits={"cpu": "1", "memory": "1Gi"},
+            labels={"astrabox.managed-by": "astrabox", **labels},
+            expires_at=None,
+            execd_image="registry.example/execd:1",
+            extensions={"bootstrap.execd.isolation": "enable"} if isolation else {},
+        )
+        return client.created[-1]["spec"]["template"]["spec"]
+
+    def sandbox_container(spec: dict[str, Any]) -> dict[str, Any]:
+        return next(c for c in spec["containers"] if c["name"] == "sandbox")
+
+    client = hooked(tun)
+    ordinary = pod_spec(client, {})
+    assert "hostUsers" not in ordinary
+    assert "procMount" not in (sandbox_container(ordinary).get("securityContext") or {})
+    assert {v["name"] for v in ordinary["volumes"]}.isdisjoint(
+        {launcher.CONTAINER_ENGINE_DATA_VOLUME, launcher.CONTAINER_ENGINE_TUN_VOLUME}
+    )
+
+    engine = pod_spec(client, engine_label)
+    container = sandbox_container(engine)
+    assert engine["hostUsers"] is False
+    assert container["securityContext"]["procMount"] == "Unmasked"
+    assert "SYS_ADMIN" in container["securityContext"]["capabilities"]["add"]
+    volumes = {v["name"]: v for v in engine["volumes"]}
+    assert volumes[launcher.CONTAINER_ENGINE_DATA_VOLUME] == {
+        "name": launcher.CONTAINER_ENGINE_DATA_VOLUME,
+        "emptyDir": {},
+    }
+    assert volumes[launcher.CONTAINER_ENGINE_TUN_VOLUME]["hostPath"] == {
+        "path": tun,
+        "type": "CharDevice",
+    }
+    mounts = {m["mountPath"]: m["name"] for m in container["volumeMounts"]}
+    assert mounts["/var/lib/astrabox/container-engine"] == launcher.CONTAINER_ENGINE_DATA_VOLUME
+    assert mounts["/dev/net/tun"] == launcher.CONTAINER_ENGINE_TUN_VOLUME
+
+    with pytest.raises(HTTPException, match="execd isolation"):
+        pod_spec(client, engine_label, isolation=False)
+    with pytest.raises(HTTPException, match=launcher.CONTAINER_ENGINE_TUN_HOST_PATH_ENV):
+        pod_spec(hooked(""), engine_label)
+
+
 def test_kubernetes_secure_gateway_requires_a_valid_signing_key(
     kubernetes: None, state_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

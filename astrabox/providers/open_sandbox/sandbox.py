@@ -894,9 +894,10 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         SANDBOX_PERMISSION_LEVEL_DEFAULT,
         SANDBOX_PERMISSION_LEVEL_ADVANCED,
     )
-    # The grants the engine needs (no masked /proc, no no_new_privileges) have
-    # no create field; the bundled server's Docker hooks apply them. Every
-    # other deployment of this backend is refused per RuntimeProfile
+    # The grants the engine needs (no masked /proc, no no_new_privileges, on
+    # Kubernetes also a user namespace and a tun device) have no create field;
+    # the bundled server's hooks apply them on either runtime. Every other
+    # deployment of this backend is refused per RuntimeProfile
     # (validate_runtime_profile_configuration).
     supported_container_engines = (SANDBOX_CONTAINER_ENGINE_DOCKER,)
     # Joining a host network goes through the bundled server's Docker hook
@@ -1597,15 +1598,16 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
 
     def validate_runtime_profile_configuration(self, payload: Mapping[str, Any]) -> None:
-        """Refuse a container engine and host networks anywhere but the bundled
-        server on Docker, and host mounts anywhere but the bundled server.
+        """Refuse host networks anywhere but the bundled server on Docker, and a
+        container engine and host mounts anywhere but the bundled server.
 
-        The engine's grants and a box's network attachment are applied by the
-        bundled lifecycle server's Docker hooks
-        (``astrabox.deploy.sandbox_server.grant_container_engine_boxes``,
-        ``attach_allowlisted_networks``); its Kubernetes runtime has no
-        networks to join (:meth:`_host_network_refusal` says what to use
-        instead). Mounts travel as the create's own ``volumes`` on both of the
+        A box's network attachment is applied by the bundled lifecycle server's
+        Docker hook (``astrabox.deploy.sandbox_server.attach_allowlisted_networks``);
+        its Kubernetes runtime has no networks to join
+        (:meth:`_host_network_refusal` says what to use instead). The engine's
+        grants are applied by the bundled server's hooks on both runtimes, and
+        on Kubernetes need a setting of their own
+        (:meth:`_container_engine_refusal`). Mounts travel as the create's own ``volumes`` on both of the
         bundled server's runtimes, which render the host-path allowlist into
         the server's configuration (:meth:`_shared_mount_refusal`). On the
         bundled server, host networks also need a Docker Engine that can join a
@@ -1639,19 +1641,67 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         engine = str(
             payload.get("sandbox_container_engine") or SANDBOX_CONTAINER_ENGINE_NONE
         ).strip().lower()
-        if engine == SANDBOX_CONTAINER_ENGINE_NONE or self._bundled_docker():
+        if engine == SANDBOX_CONTAINER_ENGINE_NONE:
             return
-        raise APIError(
-            code="INVALID_REQUEST",
-            message=(
-                f"environment payload: sandbox_container_engine {engine!r} runs only with "
-                "the bundled OpenSandbox server on the Docker runtime "
-                "(ASTRABOX_SANDBOX_SERVER_RUNTIME=docker, no "
-                "ASTRABOX_SANDBOX_OPENAPI_BASE_URL); the Kubernetes runtime and an "
-                "existing OpenSandbox service do not apply the grants it needs"
-            ),
-            status_code=400,
+        refusal = self._container_engine_refusal()
+        if refusal:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"environment payload: sandbox_container_engine {engine!r}: {refusal}",
+                status_code=400,
+            )
+
+    @staticmethod
+    def _container_engine_refusal() -> str | None:
+        """Why this deployment cannot create a container-engine box, or None when it can.
+
+        The bundled lifecycle server grants such a box what its engine needs
+        through a hook keyed on the box's ``astrabox.container-engine`` label:
+        on Docker ``grant_container_engine_boxes``, on Kubernetes
+        ``grant_container_engine_pods``, which only the ``batchsandbox``
+        workload provider runs and which needs the node path of a tun device
+        (``ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH``). An existing
+        OpenSandbox service applies only its own configuration. Shared by
+        :meth:`validate_runtime_profile_configuration` and
+        ``create_open_sandbox_box``.
+        """
+        from astrabox.deploy.sandbox_server import (
+            CONTAINER_ENGINE_TUN_HOST_PATH_ENV,
+            DEFAULT_KUBE_WORKLOAD_PROVIDER,
+            KUBE_WORKLOAD_PROVIDER_ENV,
+            RUNTIME_DOCKER,
+            container_engine_tun_host_path,
+            kube_workload_provider,
+            sandbox_runtime,
         )
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if existing_lifecycle_service_url():
+            return (
+                "a container engine runs only in boxes of the OpenSandbox server bundled "
+                "with AstraBox, whose hooks grant what the engine needs; an existing "
+                "OpenSandbox service (ASTRABOX_SANDBOX_OPENAPI_BASE_URL) applies only its "
+                "own configuration"
+            )
+        if sandbox_runtime() == RUNTIME_DOCKER:
+            return None
+        provider = kube_workload_provider()
+        if provider != DEFAULT_KUBE_WORKLOAD_PROVIDER:
+            return (
+                f"on the Kubernetes runtime only the {DEFAULT_KUBE_WORKLOAD_PROVIDER!r} "
+                f"workload provider creates container-engine boxes "
+                f"({KUBE_WORKLOAD_PROVIDER_ENV}={provider!r})"
+            )
+        if not container_engine_tun_host_path():
+            return (
+                f"on the Kubernetes runtime a container-engine box needs "
+                f"{CONTAINER_ENGINE_TUN_HOST_PATH_ENV}, the node path of a tun device node "
+                "on a filesystem that supports idmapped mounts, created on every node "
+                "(docs/providers/opensandbox.md, 'Run a container engine in sandboxes')"
+            )
+        return None
 
     @staticmethod
     def _bundled_docker() -> bool:

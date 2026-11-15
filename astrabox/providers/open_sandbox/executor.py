@@ -933,11 +933,19 @@ _CONTAINER_ENGINE_READY_TIMEOUT_SECONDS = 75.0
 def _container_engine_volume(container_engine: str) -> list[dict[str, Any]]:
     """The per-box volume the engine keeps its state on, created and deleted with the box.
 
-    A fresh name per create: the lifecycle server deletes a volume with its
-    sandbox only when that create made it, so a name another create could
-    already hold would outlive the box.
+    On the bundled server's Docker runtime, a Docker volume with a fresh name
+    per create: the lifecycle server deletes a volume with its sandbox only
+    when that create made it, so a name another create could already hold
+    would outlive the box. On its Kubernetes runtime the create carries none:
+    the server's hook mounts an ``emptyDir`` there
+    (``sandbox_server.grant_container_engine_pods``), where upstream would
+    otherwise provision a PersistentVolumeClaim from the cluster's default
+    StorageClass.
     """
-    if container_engine == SANDBOX_CONTAINER_ENGINE_NONE:
+    if (
+        container_engine == SANDBOX_CONTAINER_ENGINE_NONE
+        or not OpenSandboxSandboxProvider._bundled_docker()
+    ):
         return []
     return [
         {
@@ -1082,9 +1090,11 @@ async def create_open_sandbox_box(
     extension for ``advanced`` and then verified against the running box;
     ``privileged`` has no direct-create mapping and is refused before the API is
     called. ``container_engine`` ``docker`` is created only through the bundled
-    server on Docker, whose hooks grant it (``CONTAINER_ENGINE_METADATA_KEY``),
-    with a per-box engine volume, and the box is returned only once its engine
-    answers (:func:`require_open_sandbox_container_engine`). ``networks`` are
+    server, whose hooks grant it on either runtime
+    (``CONTAINER_ENGINE_METADATA_KEY``, ``_container_engine_refusal``), with a
+    per-box engine volume (:func:`_container_engine_volume`), and the box is
+    returned only once its engine answers
+    (:func:`require_open_sandbox_container_engine`). ``networks`` are
     likewise joined only by that server, from create metadata its hook reads;
     ``shared_mounts`` are the create's ``host`` and ``pvc`` volumes
     (:func:`_shared_mount_volumes`), mounted by the bundled server on either
@@ -1119,15 +1129,17 @@ async def create_open_sandbox_box(
             status_code=409,
             data={"sandbox_container_engine": container_engine},
         )
-    if (
-        container_engine != SANDBOX_CONTAINER_ENGINE_NONE
-        and not OpenSandboxSandboxProvider._bundled_docker()
-    ):
+    engine_refusal = (
+        OpenSandboxSandboxProvider._container_engine_refusal()
+        if container_engine != SANDBOX_CONTAINER_ENGINE_NONE
+        else None
+    )
+    if engine_refusal:
         raise APIError(
             code="SANDBOX_CONTAINER_ENGINE_UNAVAILABLE",
             message=(
-                f"open_sandbox creates sandbox_container_engine={container_engine!r} only "
-                "through the bundled lifecycle server on the Docker runtime"
+                f"open_sandbox cannot create sandbox_container_engine={container_engine!r}: "
+                f"{engine_refusal}"
             ),
             status_code=409,
             data={"sandbox_container_engine": container_engine},

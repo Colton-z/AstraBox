@@ -2080,6 +2080,19 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "astrabox.deploy.sandbox_server",
     ),
     (
+        "ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH",
+        "public",
+        "",
+        "Kubernetes runtime of the bundled OpenSandbox server only: the absolute node "
+        "path of a tun device node (mknod <path> c 10 200) on a filesystem that "
+        "supports idmapped mounts, such as ext4, xfs or btrfs, present on every node "
+        "that runs sandboxes. A box whose RuntimeProfile has sandbox_container_engine "
+        "docker gets it at /dev/net/tun; the node's own /dev/net/tun cannot be used, "
+        "because devtmpfs does not support idmapped mounts. Empty refuses such a "
+        "RuntimeProfile on Kubernetes. The Docker runtime ignores it and warns.",
+        "astrabox.deploy.sandbox_server",
+    ),
+    (
         "ASTRABOX_SANDBOX_SERVER_KUBE_IMAGE_PULL_POLICY",
         "internal",
         "IfNotPresent",
