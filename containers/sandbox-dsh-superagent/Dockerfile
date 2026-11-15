@@ -41,7 +41,7 @@ RUN set -eux; \
     test "$(/usr/local/bin/gh --version | head -1 | cut -d' ' -f3)" = "$GH_VERSION"
 
 COPY --chmod=0444 containers/sandbox-dsh-superagent/resolve-bundle.py /tmp/resolve-bundle.py
-# The patch over the pinned commit, offered upstream: GitHub becomes optional (an installation
+# The patch over the pinned commit: GitHub becomes optional (an installation
 # whose GitHub Source names no repository or CLI runs its other Sources), and the Source
 # plugin interface is exported as `dsh-superagent/sources` for plugins in their own package.
 COPY --chmod=0444 containers/sandbox-dsh-superagent/upstream-changes.patch /tmp/upstream-changes.patch
