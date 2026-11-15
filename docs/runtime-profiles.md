@@ -41,7 +41,7 @@ The console presents the following settings.
 | Idle sandbox behavior | No | Terminates an idle sandbox or, when the sandbox service supports snapshots, pauses it for later recovery. |
 | Sandbox sharing | No | Gives each conversation its own sandbox or shares one sandbox across the same Agent's conversations. Sharing runs each conversation in an isolated session, and is refused on a sandbox service that cannot. A pi Agent cannot share a Docker sandbox created with `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` ([Deploy](deploy.md#sandbox-execd-authentication)). Without sharing, an Agent program that runs as a long-lived process in the sandbox (pi), and an Agent's terminal panel, need a sandbox service that keeps such processes; they are refused on one that does not. |
 | Sandbox permissions | No | Grants the system permissions required by the selected Agent program and sandbox-sharing mode. |
-| Container engine | No | `None` (default) or `Docker`: runs a rootless Docker Engine in each sandbox so the Agent can build images, run containers and use Docker Compose. Requires a sandbox per conversation, `Advanced` sandbox permissions and the bundled OpenSandbox server on Docker. See [Container engine](#container-engine). |
+| Container engine | No | `None` (default) or `Docker`: runs a rootless Docker Engine in each sandbox so the Agent can build images, run containers and use Docker Compose. Requires a sandbox per conversation, `Advanced` sandbox permissions and the bundled OpenSandbox server; on Kubernetes, a cluster prepared for it and an idle behavior that terminates. See [Container engine](#container-engine). |
 | Host networks | No | Docker networks of the sandbox host that each sandbox joins (`sandbox_networks`), from those the deployment allows. Docker runtime only. See [Host networks and storage](#host-networks-and-storage). |
 | Host storage | No | Host directories and named volumes mounted into each sandbox (`sandbox_mounts`), read-only unless stated, from those the deployment allows: on Kubernetes, node directories and PersistentVolumeClaims. See [Host networks and storage](#host-networks-and-storage). |
 | Model connection | No | Selects the model gateway and its connection details for Agents in this RuntimeProfile. |
@@ -164,9 +164,16 @@ Requirements, checked when the RuntimeProfile is saved:
   to one conversation.
 - **Sandbox permissions** is `Advanced`.
 - The Agent program's image carries the engine: Codex and Claude Code.
-- The sandbox service is the OpenSandbox server bundled with AstraBox, on
-  Docker. It is refused on the Kubernetes runtime and on a separately operated
-  OpenSandbox service, which do not grant what the engine needs.
+- The sandbox service is the OpenSandbox server bundled with AstraBox. On its
+  Kubernetes runtime, the cluster must meet the prerequisites in
+  [OpenSandbox](providers/opensandbox.md#container-engine-kubernetes) and the
+  deployment must name a tun device node
+  (`ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH`). A separately operated
+  OpenSandbox service is refused: it does not grant what the engine needs.
+- On Kubernetes, **Idle sandbox behavior** terminates. Such a sandbox runs in a
+  user namespace, and pausing it commits its files under node ids the resumed
+  Pod does not hold: the files would come back owned by an unmapped id and the
+  sandbox would not start.
 
 The engine runs rootless and reaches the network through a user-mode network
 stack, so a container's connection leaves as an ordinary connection of the
@@ -191,23 +198,30 @@ What to expect:
   and not applied: a container sees the sandbox's own memory limit. A
   conversation's sandbox with its browser, the engine and a two-service Compose
   scene peaked at 266 of the default 512 processes and threads
-  (`ASTRABOX_SANDBOX_PIDS_LIMIT`, which applies to every sandbox).
+  (`ASTRABOX_SANDBOX_PIDS_LIMIT` on Docker; on Kubernetes the kubelet's
+  `podPidsLimit`).
 - Images, containers and build cache live on a volume created with the sandbox
-  and deleted with it. A replacement sandbox starts with none.
+  and deleted with it: a Docker volume on Docker, an `emptyDir` with no size
+  limit on Kubernetes. A replacement sandbox starts with none.
 - `docker run --privileged` fails, and a container cannot reach the sandbox's
   own services through the engine's host-loopback address.
 
 Enable the engine only for teams you trust. On the Docker backend, a sandbox
 created for the engine runs without masked `/proc` paths and without
 `no_new_privileges`: whoever gains root in it can change kernel settings of
-the Docker host. The image removes every setuid program but the two the engine
-needs, so `sudo` and `su` do not work in such a sandbox.
+the Docker host. On Kubernetes, such a sandbox's Pod runs in a user namespace
+of its own, so its root holds no privilege on the node: despite the unmasked
+`/proc`, writing a host-wide kernel setting such as `/proc/sys/kernel/sysrq`
+or reading `/proc/kcore` is refused. The image removes every setuid program
+but the two the engine needs, so `sudo` and `su` do not work in such a
+sandbox.
 
 The Docker host must allow unprivileged user namespaces. Ubuntu 23.10 and later
 restrict them through AppArmor by default; set
 `kernel.apparmor_restrict_unprivileged_userns=0` on the host (see
 [Deploy](deploy.md#container-engine-host)). Otherwise the sandbox is refused
-with a message naming that setting.
+with a message naming that setting. On Kubernetes, the same message names the
+node's setting when it is why the engine cannot start.
 
 ## Host networks and storage {#host-networks-and-storage}
 

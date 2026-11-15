@@ -143,8 +143,10 @@ the host never leaves it running on an engine it does not support.
 ### A container engine in sandboxes {#container-engine-host}
 
 A RuntimeProfile can give each of its sandboxes a rootless Docker Engine
-([RuntimeProfiles](runtime-profiles.md#container-engine)). The bundled server
-creates such a sandbox without masked `/proc` paths and without
+([RuntimeProfiles](runtime-profiles.md#container-engine)). This section is
+the Docker host's part; on Kubernetes, see
+[OpenSandbox](providers/opensandbox.md#container-engine-kubernetes). The
+bundled server creates such a sandbox without masked `/proc` paths and without
 `no_new_privileges`, which the engine needs to map its user ids and to give
 each container its own `/proc`. Whoever gains root in such a sandbox can
 therefore change kernel settings of this host; offer the engine only to teams

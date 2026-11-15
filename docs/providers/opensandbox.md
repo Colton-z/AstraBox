@@ -204,7 +204,8 @@ A RuntimeProfile can pause an idle sandbox instead of terminating it when the
 OpenSandbox deployment supports snapshots. Pause commits the sandbox root
 filesystem to an OCI image and releases its compute. Resume keeps the sandbox
 ID and restores the files, but starts new processes; ordinary process memory is
-not restored.
+not restored. A sandbox with a [container engine](#container-engine-kubernetes)
+cannot be paused on Kubernetes.
 
 The supported Kubernetes path requires:
 
@@ -312,11 +313,20 @@ and OpenSandbox's [native Git credential guide](https://github.com/opensandbox-g
 
 A RuntimeProfile whose `sandbox_container_engine` is `docker` gets a rootless
 Docker Engine in each sandbox ([RuntimeProfiles](../runtime-profiles.md#container-engine)).
-Only the bundled lifecycle server on the Docker runtime creates such a sandbox;
-the Kubernetes runtime and an existing OpenSandbox service are refused when the
-RuntimeProfile is saved. The create carries the `advanced` level's
-execd-isolation extension, a create metadata entry
-`astrabox.container-engine=docker`, and a Docker volume of its own mounted at
+Only the bundled lifecycle server creates such a sandbox, on either of its
+runtimes; an existing OpenSandbox service is refused when the RuntimeProfile
+is saved. The create carries the `advanced` level's execd-isolation extension
+and a create metadata entry `astrabox.container-engine=docker`, which
+OpenSandbox copies onto the container or Pod as a label. A hook of the bundled
+server keyed on that label grants the engine what it needs, to that sandbox
+only; every other sandbox is created as before. The sandbox is returned once
+`astrabox-container-engine ready` succeeds in it; otherwise it is deleted and
+the create fails with `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` and the sandbox's
+own diagnosis.
+
+### On Docker {#container-engine-docker}
+
+The create also carries a Docker volume of its own mounted at
 `/var/lib/astrabox/container-engine` with `deleteOnSandboxTermination`.
 OpenSandbox's Docker runtime creates every sandbox that carries the
 execd-isolation extension with empty `MaskedPaths` and `ReadonlyPaths`, which
@@ -325,10 +335,106 @@ field for `no-new-privileges`, so a hook of the bundled server
 (`grant_container_engine_boxes` in `astrabox/deploy/sandbox_server.py`) removes
 that option from a container carrying the label, refuses one created without
 execd isolation, and checks at startup that the server still empties both path
-lists; every other container is created as before. The sandbox is returned once
-`astrabox-container-engine ready` succeeds in it; otherwise it is deleted and
-the create fails with `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` and the sandbox's
-own diagnosis.
+lists.
+
+### On Kubernetes {#container-engine-kubernetes}
+
+The hook (`grant_container_engine_pods` in `astrabox/deploy/sandbox_server.py`)
+edits the BatchSandbox the server builds for a sandbox carrying the label:
+
+- `hostUsers: false`. The Pod runs in a user namespace of its own, so its root
+  and every id the engine maps are unprivileged ids of the node.
+- `procMount: Unmasked` on the sandbox container. Each inner container mounts
+  its own `/proc`, which the kernel refuses while any part of the sandbox's
+  `/proc` is covered; Kubernetes accepts `Unmasked` only with
+  `hostUsers: false`.
+- An `emptyDir` at `/var/lib/astrabox/container-engine` for images, containers
+  and build cache. It has no size limit, because AstraBox has no per-sandbox
+  disk setting to derive one from; the node's kubelet storage and its
+  ephemeral-storage eviction bound it.
+- The tun device node `ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH` names,
+  at `/dev/net/tun`, for the engine's user-mode network.
+
+The `advanced` level's grants stay: `SYS_ADMIN`, which `newuidmap` needs to
+write the engine's id map, seccomp and AppArmor unconfined, and the dropped
+`NET_ADMIN` and `NET_RAW`. The egress sidecar and execd's privileged init
+container run in the Pod's user namespace too, and the sidecar's rules apply
+to every inner container's traffic. Only the `batchsandbox` workload provider
+runs the hook; with `agent-sandbox`, a RuntimeProfile with the engine is
+refused.
+
+Root in such a sandbox is root of the Pod's user namespace only. Its `/proc` is
+unmasked, but writing a host-wide kernel setting such as
+`/proc/sys/kernel/sysrq`, or reading `/proc/kcore`, is refused.
+
+Such a sandbox cannot be paused, so a RuntimeProfile with the engine must set
+`idle_action` to `terminate`; `pause` is refused when it is saved. A pause
+commits the sandbox's writable layer with its files owned by the node ids of
+the Pod's user namespace, and the kubelet gives the resumed Pod a different
+range: every file written before the pause comes back owned by an unmapped id
+(shown as 65534), the restored egress sidecar cannot start, and OpenSandbox
+fails the resume. Neither OpenSandbox's committer nor AstraBox's
+[snapshot differ](opensandbox-snapshot-differ.md) maps the ids back.
+
+The cluster must meet these prerequisites before the variable is set:
+
+| Prerequisite | Why |
+|---|---|
+| Kubernetes 1.33 or later with user namespaces (`UserNamespacesSupport`) | `hostUsers: false` and the kubelet's `userNamespaces.idsPerPod`, which 1.33 added. |
+| containerd 2.0 and runc 1.2, or later | The CRI and OCI runtimes that support Pod user namespaces. CRI-O 1.25 and crun 1.9 support them too; they are not tested with this capability. |
+| Linux 6.3 or later | The kubelet mounts every volume of a user-namespaced Pod idmapped, and tmpfs, which Secrets use, supports that from 6.3. |
+| An idmap-capable filesystem for `/var/lib/kubelet` and for every volume such a sandbox mounts | ext4, xfs, btrfs, tmpfs and overlayfs support idmapped mounts; NFS does not, so a workspace volume or RuntimeProfile storage on NFS cannot be mounted into these sandboxes. |
+| kubelet `userNamespaces.idsPerPod: 262144` | The engine maps its containers onto the sandbox user's subordinate ids 100000 to 165535, which the default 65536 ids per Pod do not hold. |
+| A tun device node on every node that runs sandboxes | Below. |
+
+Set `idsPerPod` in the kubelet's configuration. On k3s, which reads drop-ins
+from its kubelet configuration directory:
+
+```bash
+sudo tee /var/lib/rancher/k3s/agent/etc/kubelet.conf.d/90-astrabox-userns.conf <<'EOF'
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+userNamespaces:
+  idsPerPod: 262144
+EOF
+sudo systemctl restart k3s
+```
+
+Elsewhere, set the same field in the kubelet's configuration file or a
+`--config-dir` drop-in and restart the kubelet. Two constraints of the kubelet
+decide the value and the timing:
+
+- With no `kubelet` entry in `/etc/subuid`, the kubelet takes Pod ids from
+  `idsPerPod` up to 2^32 and refuses to start unless that range divides by
+  `idsPerPod`, so the value must be a power-of-two multiple of 65536, such as
+  262144. With a `kubelet` entry, its start and length must be multiples of
+  `idsPerPod` and the length at least `idsPerPod` times the node's `maxPods`.
+- The kubelet refuses to start while a user-namespaced Pod with a different
+  number of ids runs on the node, so remove such Pods first. Other Pods keep
+  running while k3s restarts.
+
+Create the tun device node on every node that runs sandboxes, on a filesystem
+that supports idmapped mounts, and name it in the AstraBox server's
+environment:
+
+```bash
+sudo install -d -m 0755 /var/lib/astrabox/dev
+sudo mknod -m 0666 /var/lib/astrabox/dev/net-tun c 10 200
+```
+
+```bash
+ASTRABOX_SANDBOX_CONTAINER_ENGINE_TUN_HOST_PATH=/var/lib/astrabox/dev/net-tun
+```
+
+The node's own `/dev/net/tun` cannot be used: `/dev` is devtmpfs, which does
+not support idmapped mounts, and the Pod would fail to start with
+`failed to set MOUNT_ATTR_IDMAP on /dev/net/tun: invalid argument`. A sandbox
+in a user namespace cannot create the device itself. The node is a file on
+disk and survives reboots; its mode matches the node's own `/dev/net/tun`, and
+opening it creates a tun interface only in a network namespace the opener
+holds `CAP_NET_ADMIN` over. Kubernetes checks the path when it starts the Pod,
+so a node without it does not start the sandbox. Without the variable, a
+RuntimeProfile with the engine is refused when it is saved.
 
 ## Join host networks and mount host storage {#host-networks-and-storage}
 
