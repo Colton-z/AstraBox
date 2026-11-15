@@ -181,12 +181,17 @@ def test_document_binds_loopback_and_sets_no_endpoint_host(
     assert document["docker"]["host_ip"] == "127.0.0.1"
 
 
+@pytest.mark.parametrize("runtime", [launcher.RUNTIME_DOCKER, launcher.RUNTIME_KUBERNETES])
 def test_host_mounts_are_denied_unless_the_operator_lists_each_directory(
-    document: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, runtime: str
 ) -> None:
-    # An empty allowlist REJECTS (upstream's shipped example config comments the
+    # Both runtimes mount a host volume only under a prefix of this list, and
+    # on Kubernetes the path is a node directory that is created when missing,
+    # so the list rendered there must be exactly the operator's. An empty
+    # allowlist REJECTS (upstream's shipped example config comments the
     # opposite meaning for the same value).
-    assert document["storage"]["allowed_host_paths"] == []
+    monkeypatch.setenv(launcher.RUNTIME_ENV, runtime)
+    assert launcher.config_document()["storage"]["allowed_host_paths"] == []
     monkeypatch.setenv(launcher.MOUNTABLE_HOST_PATHS_ENV, "/srv/git-objects, /srv/cache")
     assert launcher.config_document()["storage"]["allowed_host_paths"] == [
         "/srv/git-objects",

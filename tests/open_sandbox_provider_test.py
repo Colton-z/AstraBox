@@ -599,7 +599,10 @@ async def test_a_create_names_its_networks_and_mounts_the_operators_storage(
     from astrabox.providers.open_sandbox.executor import create_open_sandbox_box
     from astrabox.seams.sandbox import SandboxSharedMount
 
-    monkeypatch.setattr(OpenSandboxSandboxProvider, "_bundled_docker", staticmethod(lambda: True))
+    # The fake lifecycle host stands in for the bundled server on Docker,
+    # the one deployment that joins networks as well as mounting storage.
+    for refusal in ("_host_network_refusal", "_shared_mount_refusal"):
+        monkeypatch.setattr(OpenSandboxSandboxProvider, refusal, staticmethod(lambda: None))
     fake = _FakeLifecycle()
     handle = await create_open_sandbox_box(
         environment_name="astrabox",
@@ -645,24 +648,34 @@ async def test_a_create_names_its_networks_and_mounts_the_operators_storage(
     ]
 
 
+_MOUNT = [{"source": "npm-cache", "target": "/mnt/npm", "read_only": True}]
+
+
 @pytest.mark.parametrize(
-    ("field", "value", "code"),
+    ("runtime", "field", "value", "code"),
     [
-        ("sandbox_networks", ["foundry-shared"], "SANDBOX_NETWORK_NOT_ALLOWED"),
-        (
-            "sandbox_mounts",
-            [{"source": "npm-cache", "target": "/mnt/npm", "read_only": True}],
-            "SANDBOX_MOUNT_NOT_ALLOWED",
-        ),
+        # The fixture points at an existing OpenSandbox service, which applies
+        # only its own configuration and does not say which runtime it uses.
+        (None, "sandbox_networks", ["foundry-shared"], "SANDBOX_NETWORK_NOT_ALLOWED"),
+        (None, "sandbox_mounts", _MOUNT, "SANDBOX_MOUNT_NOT_ALLOWED"),
+        # The bundled server on Kubernetes mounts the create's volumes, but a
+        # Pod has no host network to join.
+        ("kubernetes", "sandbox_networks", ["foundry-shared"], "SANDBOX_NETWORK_NOT_ALLOWED"),
+        ("kubernetes", "sandbox_mounts", _MOUNT, None),
     ],
 )
-def test_networks_and_mounts_are_refused_without_the_bundled_docker_server(
-    field: str, value: Any, code: str
+def test_networks_and_mounts_are_saved_only_where_the_server_applies_them(
+    monkeypatch: pytest.MonkeyPatch, runtime: str | None, field: str, value: Any, code: str | None
 ) -> None:
-    # The fixture points at an existing OpenSandbox service, which applies only
-    # its own configuration; Kubernetes is refused by the same check.
+    if runtime is not None:
+        monkeypatch.delenv("ASTRABOX_SANDBOX_OPENAPI_BASE_URL")
+        monkeypatch.setenv("ASTRABOX_SANDBOX_SERVER_RUNTIME", runtime)
+    provider = OpenSandboxSandboxProvider()
+    if code is None:
+        provider.validate_runtime_profile_configuration({field: value})
+        return
     with pytest.raises(APIError) as refused:
-        OpenSandboxSandboxProvider().validate_runtime_profile_configuration({field: value})
+        provider.validate_runtime_profile_configuration({field: value})
     assert refused.value.code == code
 
 

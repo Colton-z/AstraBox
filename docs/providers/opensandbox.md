@@ -332,22 +332,77 @@ own diagnosis.
 
 ## Join host networks and mount host storage {#host-networks-and-storage}
 
-A RuntimeProfile's `sandbox_networks` and `sandbox_mounts`
+A RuntimeProfile's `sandbox_mounts`
 ([RuntimeProfiles](../runtime-profiles.md#host-networks-and-storage)) are
-created only by the bundled lifecycle server on the Docker runtime; the
-Kubernetes runtime and an existing OpenSandbox service are refused when the
-RuntimeProfile is saved.
+mounted by the lifecycle server bundled with AstraBox on both of its runtimes;
+its `sandbox_networks` are joined only on the Docker runtime, because a
+Kubernetes sandbox has no Docker network of its host to join. An
+existing OpenSandbox service is refused both when the RuntimeProfile is saved:
+it checks host paths against its own `storage.allowed_host_paths`, and its
+Lifecycle API does not report which runtime it uses, so AstraBox cannot tell
+what a source names there.
 
-Storage uses OpenSandbox's own create `volumes`. A host directory is a `host`
-volume, allowed by the server's `storage.allowed_host_paths`, which AstraBox
-renders from `ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS`. OpenSandbox checks a host
-path by resolving it, and creating it when missing, in the lifecycle server's
-own filesystem; the bundled server runs in AstraBox's container, where the
-host's paths are absent, so a hook (`mount_volumes_through_docker` in
-`astrabox/deploy/sandbox_server.py`) accepts only a path the list names
-exactly and hands it to Docker as a bind mount, which Docker refuses when the
-source does not exist. A named volume is a `pvc` volume with
-`createIfNotExists` and `deleteOnSandboxTermination` off.
+Storage uses OpenSandbox's own create `volumes`. AstraBox creates every box of
+a RuntimeProfile, cold, prepared, shared by an Agent's conversations or
+replacing a lost one, with the same standard create, which never carries
+`extensions.poolRef`: OpenSandbox refuses a Pool reference together with
+`volumes`, and together with the network policy every box carries. Prepared
+capacity therefore has the same mounts as a cold box. A host directory is a
+`host` volume. AstraBox sends only a path that
+`ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS` names exactly, and renders the same
+list as the server's `storage.allowed_host_paths`. A named volume is a `pvc`
+volume with `createIfNotExists` and `deleteOnSandboxTermination` off, so the
+server neither creates nor deletes it.
+
+On Docker, OpenSandbox checks a host path by resolving it, and creating it
+when missing, in the lifecycle server's own filesystem; the bundled server
+runs in AstraBox's container, where the host's paths are absent, so a hook
+(`mount_volumes_through_docker` in `astrabox/deploy/sandbox_server.py`)
+accepts only a path the list names exactly and hands it to Docker as a bind
+mount, which Docker refuses when the source does not exist. A named volume is
+a Docker named volume, which must exist.
+
+### Mount storage on Kubernetes {#kubernetes-mounts}
+
+On the Kubernetes runtime OpenSandbox mounts each volume into the sandbox
+container of the box's Pod, and the two lists name cluster storage:
+
+- A host path is a `hostPath` volume of type `DirectoryOrCreate` on the node
+  that runs the Pod. The server compares it with `storage.allowed_host_paths`
+  as a lexical prefix and does not resolve it; AstraBox's exact match is what
+  keeps out a sub-directory. The directory belongs to the node: sandboxes on
+  different nodes see different directories, and a missing one is created by
+  the kubelet, owned by root with mode 0755, which the sandbox's workload
+  account (uid 1000 in the bundled images) cannot write. Create it with the
+  ownership the sandboxes need on every node that can run them. Pod Security
+  Admission's `baseline` and `restricted` levels forbid `hostPath` volumes, so
+  the sandbox namespace must not enforce either of them while host paths are
+  listed.
+- A named volume is the PersistentVolumeClaim of that name in the sandbox
+  namespace (`ASTRABOX_SANDBOX_SERVER_KUBE_NAMESPACE`), which the operator
+  creates. Its access mode decides which sandboxes can mount it at once:
+  `ReadWriteMany`, or `ReadOnlyMany` for read-only mounts, for sandboxes on
+  any node; `ReadWriteOnce` for sandboxes on one node; `ReadWriteOncePod` for
+  one sandbox. The server reads each claim before it creates a box, to refuse
+  one that another sandbox owns, so its Kubernetes identity needs `get` on
+  `persistentvolumeclaims` in that namespace; without it every create that
+  mounts a claim fails. A claim that does not exist, or that the Pod cannot
+  attach on its node, keeps the Pod from starting: the create fails when
+  `ASTRABOX_SANDBOX_SERVER_KUBE_CREATE_TIMEOUT_SECONDS` runs out, with the
+  Pod's scheduling reason in the error.
+
+Pausing a box commits only its root filesystem: files in a mounted volume are
+not in the snapshot and stay wherever the volume keeps them. Resume creates the
+Pod again from the same template, volumes included, possibly on another node,
+where a host path names that node's directory. See OpenSandbox's
+[Pause and Resume](https://open-sandbox.ai/guides/pause-resume) guide.
+
+AstraBox's check and the server's apply to the boxes AstraBox creates. To also
+enforce the host-path list for every Pod in the sandbox namespace, add a
+Kubernetes `ValidatingAdmissionPolicy` that rejects a Pod whose `hostPath`
+volumes are not on the list; AstraBox does not ship one.
+
+### Join host networks on Docker {#join-docker-networks}
 
 OpenSandbox has no create field for a second network: one
 `docker.network_mode` applies to every sandbox, and it refuses a network

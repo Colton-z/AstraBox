@@ -177,9 +177,10 @@ EPHEMERAL_PORT_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
 PIDS_LIMIT_ENV = "ASTRABOX_SANDBOX_PIDS_LIMIT"
 DEFAULT_PIDS_LIMIT = "512"
 #: The operator's allowlists of what a RuntimeProfile may give its sandboxes
-#: beyond the sandbox: host networks to join, host paths and named volumes to
-#: mount. The AstraBox server checks a RuntimeProfile against them; this server
-#: validates them at startup and enforces the first two again at create.
+#: beyond the sandbox: host networks to join (Docker runtime only), host paths
+#: and named volumes to mount (both runtimes). The AstraBox server checks a
+#: RuntimeProfile against them; this server validates them at startup and
+#: enforces the first two again at create.
 ATTACHABLE_NETWORKS_ENV = "ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS"
 MOUNTABLE_HOST_PATHS_ENV = "ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS"
 MOUNTABLE_VOLUMES_ENV = "ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES"
@@ -287,8 +288,6 @@ _DOCKER_ONLY_ENV = (
     PUBLISH_HOST_IP_ENV,
     EGRESS_DNS_UPSTREAM_ENV,
     ATTACHABLE_NETWORKS_ENV,
-    MOUNTABLE_HOST_PATHS_ENV,
-    MOUNTABLE_VOLUMES_ENV,
 )
 _KUBERNETES_ONLY_ENV = (
     KUBECONFIG_ENV,
@@ -1409,6 +1408,15 @@ def _kubernetes_config_document() -> dict[str, Any]:
     ``kubeconfig_path`` is omitted entirely when :data:`KUBECONFIG_ENV` is unset,
     which is how upstream spells "use the in-cluster ServiceAccount".
 
+    ``storage.allowed_host_paths`` is :func:`mountable_host_paths`, as on
+    Docker, and empty denies every host path. Upstream mounts a ``host`` volume
+    as a ``hostPath`` of type ``DirectoryOrCreate`` on the node that runs the
+    Pod (``apply_volumes_to_pod_spec`` in
+    ``opensandbox_server/services/k8s/volume_helper.py``) and checks the path
+    lexically against each entry as a prefix (``ensure_valid_host_path`` in
+    ``opensandbox_server/services/validators.py``); the AstraBox server sends
+    only a path the list names exactly (``resolve_sandbox_mounts``).
+
     The egress sidecar and execd's init container get the sidecar's ceiling
     (:data:`EGRESS_SIDECAR_CPU`, :data:`EGRESS_SIDECAR_MEMORY_BYTES`) through
     ``egress.limits`` and ``kubernetes.execd_init_resources``; without them
@@ -1445,7 +1453,7 @@ def _kubernetes_config_document() -> dict[str, Any]:
         },
         "kubernetes": kubernetes,
         "ingress": kubernetes_ingress(),
-        "storage": {"allowed_host_paths": []},
+        "storage": {"allowed_host_paths": list(mountable_host_paths())},
         "store": {
             "type": "sqlite",
             "path": str(metadata_root.parent / SNAPSHOT_STORE_FILENAME),
@@ -3552,6 +3560,7 @@ def prepare() -> dict[str, Any]:
     """
     runtime = sandbox_runtime()
     warn_about_inert_knobs(runtime)
+    mountable_volumes()
     document = config_document()
     config_path = write_config_file(document)
     # Handed TO upstream's own process-global config loader and startup guard,
@@ -3652,7 +3661,6 @@ def prepare() -> dict[str, Any]:
         except Exception as exc:
             raise missing_extra_error(exc) from exc
         grant_container_engine_boxes(container_ops_module, constants_module)
-        mountable_volumes()
         attach_allowlisted_networks(
             container_ops_module,
             networking_module,

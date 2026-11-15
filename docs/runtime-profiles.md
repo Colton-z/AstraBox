@@ -42,8 +42,8 @@ The console presents the following settings.
 | Sandbox sharing | No | Gives each conversation its own sandbox or shares one sandbox across the same Agent's conversations. Sharing runs each conversation in an isolated session, and is refused on a sandbox service that cannot. A pi Agent cannot share a Docker sandbox created with `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true` ([Deploy](deploy.md#sandbox-execd-authentication)). Without sharing, an Agent program that runs as a long-lived process in the sandbox (pi), and an Agent's terminal panel, need a sandbox service that keeps such processes; they are refused on one that does not. |
 | Sandbox permissions | No | Grants the system permissions required by the selected Agent program and sandbox-sharing mode. |
 | Container engine | No | `None` (default) or `Docker`: runs a rootless Docker Engine in each sandbox so the Agent can build images, run containers and use Docker Compose. Requires a sandbox per conversation, `Advanced` sandbox permissions and the bundled OpenSandbox server on Docker. See [Container engine](#container-engine). |
-| Host networks | No | Docker networks of the sandbox host that each sandbox joins (`sandbox_networks`), from those the deployment allows. See [Host networks and storage](#host-networks-and-storage). |
-| Host storage | No | Host directories and named volumes mounted into each sandbox (`sandbox_mounts`), read-only unless stated, from those the deployment allows. See [Host networks and storage](#host-networks-and-storage). |
+| Host networks | No | Docker networks of the sandbox host that each sandbox joins (`sandbox_networks`), from those the deployment allows. Docker runtime only. See [Host networks and storage](#host-networks-and-storage). |
+| Host storage | No | Host directories and named volumes mounted into each sandbox (`sandbox_mounts`), read-only unless stated, from those the deployment allows: on Kubernetes, node directories and PersistentVolumeClaims. See [Host networks and storage](#host-networks-and-storage). |
 | Model connection | No | Selects the model gateway and its connection details for Agents in this RuntimeProfile. |
 | Tracing | No | Sends supported OpenTelemetry data from the Agent program to your collector. |
 
@@ -242,8 +242,12 @@ into the sandbox. With one sandbox per Agent, every conversation of the Agent
 shares the joined networks.
 
 **Host storage.** A `source` that starts with `/` is a host directory; any
-other source is a named volume. Each is mounted at `target` in every sandbox
-of the RuntimeProfile, read-only unless `read_only` is `false`. The storage
+other source is a named volume. On Kubernetes the host directory is on the
+node that runs the sandbox, and the named volume is a PersistentVolumeClaim in
+the sandbox namespace
+([OpenSandbox](providers/opensandbox.md#kubernetes-mounts)). Each is mounted
+at `target` in every sandbox of the RuntimeProfile, cold or prepared, and in
+a replacement sandbox, read-only unless `read_only` is `false`. The storage
 is shared: every sandbox that mounts it sees the same files, and it outlives
 every sandbox. Files are read and written as the sandbox's own user, so the
 operator sets the directory's or volume's ownership. A target cannot be at,
@@ -262,18 +266,21 @@ Requirements, checked when the RuntimeProfile is saved:
   (`SANDBOX_NETWORK_NOT_ALLOWED`, `SANDBOX_MOUNT_NOT_ALLOWED`); a host directory
   is named exactly, not by a parent.
 - Each target is used once and stays clear of the directories above.
-- The sandbox service is the OpenSandbox server bundled with AstraBox, on
-  Docker. The Kubernetes runtime, where a Pod has one network and host paths
-  and volume claims are a cluster decision, and a separately operated
-  OpenSandbox service are refused.
+- The sandbox service is the OpenSandbox server bundled with AstraBox. A
+  separately operated OpenSandbox service is refused: AstraBox cannot tell
+  what a host path or volume name means there.
+- Host networks need that server's Docker runtime: on its Kubernetes runtime
+  a sandbox has no host network to join. Host storage works on both runtimes.
 - Host networks need Docker Engine 28.0 (API 1.48) or later, which can join a
   network without giving it the sandbox's default route and published ports.
   Docker 26 and 27, which AstraBox otherwise supports, are refused for this
   field; host storage works on them.
 
 When a sandbox is created, a network that is missing, has IPv6 enabled, or
-lies inside the deployment's denied networks, and a host directory or volume
-that does not exist, refuse the sandbox with the reason.
+lies inside the deployment's denied networks, and a Docker host directory or
+volume that does not exist, refuse the sandbox with the reason. On
+Kubernetes a missing host directory is created on the node, and a missing
+volume claim fails the sandbox when the create times out.
 
 Use these only for teams you trust with what they reach:
 

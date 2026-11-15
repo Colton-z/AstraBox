@@ -746,7 +746,7 @@
       },
       "sandbox_mounts": {
         "label": "宿主机存储",
-        "help": "挂载到每个沙箱中的宿主机目录和命名卷，格式为 {\"source\", \"target\", \"read_only\"} 列表。以 / 开头的 source 是 ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS 中的宿主机目录，其他是 ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES 中的卷。除非 read_only 为 false，挂载都是只读的。target 不能位于 /workspace、/home、/tmp 或平台、系统使用的其他目录之上、之中或其本身，请改为挂载到 /mnt 或 /srv 下。读写挂载让沙箱可以修改这些宿主机文件，所有挂载它的沙箱共享这些文件。只适用于部署自带、运行在 Docker 上的 OpenSandbox 服务。"
+        "help": "挂载到每个沙箱中的宿主机目录和命名卷，格式为 {\"source\", \"target\", \"read_only\"} 列表。以 / 开头的 source 是 ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS 中的宿主机目录，其他是 ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES 中的卷。除非 read_only 为 false，挂载都是只读的。target 不能位于 /workspace、/home、/tmp 或平台、系统使用的其他目录之上、之中或其本身，请改为挂载到 /mnt 或 /srv 下。读写挂载让沙箱可以修改这些文件，所有挂载它的沙箱共享这些文件。只适用于部署自带的 OpenSandbox 服务：在 Kubernetes 上，宿主机目录是运行该沙箱的节点上的目录，不存在时会被创建；卷是沙箱命名空间中的 PersistentVolumeClaim。"
       },
       "endpoint_provider": {
         "label": "模型连接方式",

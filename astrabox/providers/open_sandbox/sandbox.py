@@ -900,9 +900,10 @@ class OpenSandboxSandboxProvider(SandboxProvider):
     # (validate_runtime_profile_configuration).
     supported_container_engines = (SANDBOX_CONTAINER_ENGINE_DOCKER,)
     # Joining a host network goes through the bundled server's Docker hook
-    # (``attach_allowlisted_networks``); host paths and volumes through the
-    # create's ``volumes``. Both are refused per RuntimeProfile on every other
-    # deployment of this backend (validate_runtime_profile_configuration).
+    # (``attach_allowlisted_networks``) and is refused on its Kubernetes
+    # runtime; host paths and volumes go through the create's ``volumes`` on
+    # both of its runtimes. An existing OpenSandbox service is refused both
+    # (validate_runtime_profile_configuration).
     supports_network_attachment = True
     supports_shared_mounts = True
     # The unfenced pair (registration validates them together). Hard product
@@ -1596,56 +1597,43 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         return os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
 
     def validate_runtime_profile_configuration(self, payload: Mapping[str, Any]) -> None:
-        """Refuse a container engine, host networks and host mounts anywhere but
-        the bundled server on Docker.
+        """Refuse a container engine and host networks anywhere but the bundled
+        server on Docker, and host mounts anywhere but the bundled server.
 
         The engine's grants and a box's network attachment are applied by the
         bundled lifecycle server's Docker hooks
         (``astrabox.deploy.sandbox_server.grant_container_engine_boxes``,
-        ``attach_allowlisted_networks``), and only that server renders the
-        host-path allowlist and mounts host paths through Docker. Its
-        Kubernetes runtime has no such hooks: a Pod has one network, and a
-        host path or claim there is a cluster decision AstraBox has not
-        verified. An existing OpenSandbox service applies only its own
-        configuration. On the bundled server, host networks also need a Docker
-        Engine that can join a network below the box's own gateway
-        (``network_attachment_refusal``); the server asks the daemon again at
-        each create.
+        ``attach_allowlisted_networks``); its Kubernetes runtime has no
+        networks to join (:meth:`_host_network_refusal` says what to use
+        instead). Mounts travel as the create's own ``volumes`` on both of the
+        bundled server's runtimes, which render the host-path allowlist into
+        the server's configuration (:meth:`_shared_mount_refusal`). On the
+        bundled server, host networks also need a Docker Engine that can join a
+        network below the box's own gateway (``network_attachment_refusal``);
+        the server asks the daemon again at each create.
         """
-        if not self._bundled_docker():
-            if payload.get("sandbox_networks"):
-                raise APIError(
-                    code="SANDBOX_NETWORK_NOT_ALLOWED",
-                    message=(
-                        "environment payload: sandbox_networks joins sandboxes to host "
-                        "networks only with the bundled OpenSandbox server on the Docker "
-                        "runtime (ASTRABOX_SANDBOX_SERVER_RUNTIME=docker, no "
-                        "ASTRABOX_SANDBOX_OPENAPI_BASE_URL)"
-                    ),
-                    status_code=409,
+        if payload.get("sandbox_networks"):
+            refusal = self._host_network_refusal()
+            if refusal is None:
+                from astrabox.deploy.sandbox_server import (
+                    docker_engine_version,
+                    network_attachment_refusal,
                 )
-            if payload.get("sandbox_mounts"):
-                raise APIError(
-                    code="SANDBOX_MOUNT_NOT_ALLOWED",
-                    message=(
-                        "environment payload: sandbox_mounts mounts host paths and volumes "
-                        "only with the bundled OpenSandbox server on the Docker runtime "
-                        "(ASTRABOX_SANDBOX_SERVER_RUNTIME=docker, no "
-                        "ASTRABOX_SANDBOX_OPENAPI_BASE_URL)"
-                    ),
-                    status_code=409,
-                )
-        elif payload.get("sandbox_networks"):
-            from astrabox.deploy.sandbox_server import (
-                docker_engine_version,
-                network_attachment_refusal,
-            )
 
-            refusal = network_attachment_refusal(docker_engine_version())
+                engine_refusal = network_attachment_refusal(docker_engine_version())
+                refusal = f"sandbox_networks: {engine_refusal}" if engine_refusal else None
             if refusal:
                 raise APIError(
                     code="SANDBOX_NETWORK_NOT_ALLOWED",
-                    message=f"environment payload: sandbox_networks: {refusal}",
+                    message=f"environment payload: {refusal}",
+                    status_code=409,
+                )
+        if payload.get("sandbox_mounts"):
+            refusal = self._shared_mount_refusal()
+            if refusal:
+                raise APIError(
+                    code="SANDBOX_MOUNT_NOT_ALLOWED",
+                    message=f"environment payload: {refusal}",
                     status_code=409,
                 )
         engine = str(
@@ -1673,6 +1661,63 @@ class OpenSandboxSandboxProvider(SandboxProvider):
         )
 
         return not existing_lifecycle_service_url() and sandbox_runtime() == RUNTIME_DOCKER
+
+    @staticmethod
+    def _host_network_refusal() -> str | None:
+        """Why this deployment cannot join a box to host networks, or None when it can.
+
+        Only the bundled server's Docker runtime joins one
+        (``attach_allowlisted_networks``); a Kubernetes Pod has no Docker
+        network of its host to join. Shared by
+        :meth:`validate_runtime_profile_configuration` and
+        ``create_open_sandbox_box``.
+        """
+        from astrabox.deploy.sandbox_server import RUNTIME_KUBERNETES, sandbox_runtime
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if existing_lifecycle_service_url():
+            return (
+                "sandbox_networks joins sandboxes to Docker networks of their host only "
+                "through the OpenSandbox server bundled with AstraBox on its Docker "
+                "runtime; an existing OpenSandbox service (ASTRABOX_SANDBOX_OPENAPI_BASE_URL) "
+                "applies only its own configuration"
+            )
+        if sandbox_runtime() == RUNTIME_KUBERNETES:
+            return (
+                "sandbox_networks joins sandboxes to Docker networks of their host, and a "
+                "Kubernetes sandbox has none to join"
+            )
+        return None
+
+    @staticmethod
+    def _shared_mount_refusal() -> str | None:
+        """Why this deployment cannot mount host paths and volumes, or None when it can.
+
+        Both runtimes of the bundled server mount them from the create's own
+        ``volumes`` and take ``storage.allowed_host_paths`` from the same
+        allowlist the AstraBox server checks. An existing OpenSandbox service
+        has its own allowlist, and the Lifecycle API does not report which
+        runtime it uses, so whether a source names a node directory, a path in
+        that server's filesystem, a Docker volume or a PersistentVolumeClaim
+        is not known here. Shared by
+        :meth:`validate_runtime_profile_configuration` and
+        ``create_open_sandbox_box``.
+        """
+        from astrabox.providers.open_sandbox.workspace_route.mergerfs import (
+            existing_lifecycle_service_url,
+        )
+
+        if existing_lifecycle_service_url():
+            return (
+                "sandbox_mounts mounts host paths and volumes only through the OpenSandbox "
+                "server bundled with AstraBox: an existing OpenSandbox service "
+                "(ASTRABOX_SANDBOX_OPENAPI_BASE_URL) checks host paths against its own "
+                "storage.allowed_host_paths, and its Lifecycle API does not report which "
+                "runtime it uses, so what a source names there is not known"
+            )
+        return None
 
     def fit_resources(
         self, limits: Mapping[str, str], requests: Mapping[str, str]

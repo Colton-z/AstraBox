@@ -347,13 +347,18 @@ Prepare what you list before a sandbox uses it:
   missing volume is refused when a sandbox is created; sandboxes never create
   or delete one.
 
-Only the bundled OpenSandbox server on the Docker runtime applies these
-settings, and host networks also need Docker Engine 28.0 (API 1.48) or later:
-older engines give a joined network the sandbox's default route and published
-ports when its name sorts before `bridge`, so on them a RuntimeProfile with
-host networks is refused when it is saved and when a sandbox is created. With `ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes` or an existing
-OpenSandbox service, the server warns at startup that they have no effect, and
-RuntimeProfiles that use them are refused.
+Only the bundled OpenSandbox server applies these settings, and host networks
+also need Docker Engine 28.0 (API 1.48) or later: older engines give a joined
+network the sandbox's default route and published ports when its name sorts
+before `bridge`, so on them a RuntimeProfile with host networks is refused
+when it is saved and when a sandbox is created. With
+`ASTRABOX_SANDBOX_SERVER_RUNTIME=kubernetes`, the two storage lists name node
+directories and PersistentVolumeClaims in the sandbox namespace instead
+([OpenSandbox](providers/opensandbox.md#kubernetes-mounts)), and
+`ASTRABOX_SANDBOX_ATTACHABLE_NETWORKS` has no effect: the server warns at
+startup, and RuntimeProfiles with host networks are refused. With an
+existing OpenSandbox service, the server warns at startup that none of the
+three has an effect, and RuntimeProfiles that use them are refused.
 
 What you grant:
 

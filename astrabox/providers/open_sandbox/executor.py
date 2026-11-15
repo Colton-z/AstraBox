@@ -955,12 +955,19 @@ def _container_engine_volume(container_engine: str) -> list[dict[str, Any]]:
 def _shared_mount_volumes(mounts: tuple[SandboxSharedMount, ...]) -> list[dict[str, Any]]:
     """The create's volumes for a RuntimeProfile's host paths and named volumes.
 
-    A host path is OpenSandbox's ``host`` backend, which the bundled server
-    hands Docker as a bind mount that refuses a missing source
-    (``sandbox_server.mount_volumes_through_docker``). A named volume is the
-    ``pvc`` backend with neither ``createIfNotExists`` nor
-    ``deleteOnSandboxTermination``: the operator's volume must already exist,
-    and it outlives every box.
+    A host path is OpenSandbox's ``host`` backend. On Docker the bundled
+    server hands it to Docker as a bind mount that refuses a missing source
+    (``sandbox_server.mount_volumes_through_docker``); on Kubernetes upstream
+    mounts it as a ``hostPath`` of type ``DirectoryOrCreate`` on the node that
+    runs the Pod. A named volume is the ``pvc`` backend with neither
+    ``createIfNotExists`` nor ``deleteOnSandboxTermination``: a Docker named
+    volume, or a PersistentVolumeClaim in the sandbox namespace, that must
+    already exist and outlives every box.
+
+    Every box this backend creates, cold, prepared or shared, is a template
+    create without ``extensions.poolRef``, which upstream refuses together
+    with ``volumes`` (and with the network policy every box carries), so the
+    same volumes reach every box of a RuntimeProfile.
     """
     return [
         {
@@ -1077,10 +1084,11 @@ async def create_open_sandbox_box(
     called. ``container_engine`` ``docker`` is created only through the bundled
     server on Docker, whose hooks grant it (``CONTAINER_ENGINE_METADATA_KEY``),
     with a per-box engine volume, and the box is returned only once its engine
-    answers (:func:`require_open_sandbox_container_engine`). ``networks`` and
-    ``shared_mounts`` are likewise created only through that server: the
-    networks travel as create metadata its hook joins the box to, the mounts
-    as the create's ``host`` and ``pvc`` volumes (:func:`_shared_mount_volumes`).
+    answers (:func:`require_open_sandbox_container_engine`). ``networks`` are
+    likewise joined only by that server, from create metadata its hook reads;
+    ``shared_mounts`` are the create's ``host`` and ``pvc`` volumes
+    (:func:`_shared_mount_volumes`), mounted by the bundled server on either
+    runtime.
     ``credential_proxy_enabled`` creates the credential proxy without writing a
     vault yet; this is the safe Agent-prewarm state. A non-empty ``vault_write``
     also enables the proxy and immediately writes its contents. ``cwd``, when
@@ -1124,15 +1132,18 @@ async def create_open_sandbox_box(
             status_code=409,
             data={"sandbox_container_engine": container_engine},
         )
-    if (networks or shared_mounts) and not OpenSandboxSandboxProvider._bundled_docker():
+    network_refusal = OpenSandboxSandboxProvider._host_network_refusal() if networks else None
+    if network_refusal:
         raise APIError(
-            code=(
-                "SANDBOX_NETWORK_NOT_ALLOWED" if networks else "SANDBOX_MOUNT_NOT_ALLOWED"
-            ),
-            message=(
-                "open_sandbox joins host networks and mounts host paths and volumes "
-                "only through the bundled lifecycle server on the Docker runtime"
-            ),
+            code="SANDBOX_NETWORK_NOT_ALLOWED",
+            message=f"open_sandbox create: {network_refusal}",
+            status_code=409,
+        )
+    mount_refusal = OpenSandboxSandboxProvider._shared_mount_refusal() if shared_mounts else None
+    if mount_refusal:
+        raise APIError(
+            code="SANDBOX_MOUNT_NOT_ALLOWED",
+            message=f"open_sandbox create: {mount_refusal}",
             status_code=409,
         )
     assignment_metadata = assignment_metadata_value(assignment)

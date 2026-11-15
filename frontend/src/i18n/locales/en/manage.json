@@ -746,7 +746,7 @@
       },
       "sandbox_mounts": {
         "label": "Host storage",
-        "help": "Host directories and named volumes mounted into each sandbox, as a list of {\"source\", \"target\", \"read_only\"}. A source starting with / is a host directory from ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS; any other is a volume from ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES. Mounts are read-only unless read_only is false. A target cannot be at, under or above /workspace, /home, /tmp or another directory the platform or system uses; mount under /mnt or /srv instead. A read-write mount lets the sandbox change those host files, and every sandbox that mounts it shares them. Available only with the bundled OpenSandbox server on Docker."
+        "help": "Host directories and named volumes mounted into each sandbox, as a list of {\"source\", \"target\", \"read_only\"}. A source starting with / is a host directory from ASTRABOX_SANDBOX_MOUNTABLE_HOST_PATHS; any other is a volume from ASTRABOX_SANDBOX_MOUNTABLE_VOLUMES. Mounts are read-only unless read_only is false. A target cannot be at, under or above /workspace, /home, /tmp or another directory the platform or system uses; mount under /mnt or /srv instead. A read-write mount lets the sandbox change those files, and every sandbox that mounts it shares them. Available only with the bundled OpenSandbox server: on Kubernetes, a host directory is a directory of the node that runs the sandbox, created if missing, and a volume is a PersistentVolumeClaim in the sandbox namespace."
       },
       "endpoint_provider": {
         "label": "Model connection",
