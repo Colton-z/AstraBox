@@ -84,7 +84,7 @@ export async function expectChildToolCard(
     const card = cards.nth(index);
     const header = card.locator('[data-slot="collapsible-trigger"]');
     if (await header.getAttribute('aria-expanded') !== 'true') await header.click();
-    const content = card.locator('[data-slot="collapsible-content"]');
+    const content = card.locator('[data-slot="collapsible-panel"]');
     await expect(content).toBeVisible();
     // CodeBlock uses content-visibility:auto. Expanding its header does not
     // bring the parameters into view, so innerText can contain only the title.
@@ -100,7 +100,7 @@ export async function expectChildToolCard(
   const card = matches[0]!;
   await expect(card.locator('[data-slot="collapsible-trigger"] [data-slot="badge"]'))
     .toHaveText(receipt === undefined ? /^(Working|处理中)$/ : /^(Done|已完成)$/);
-  const content = card.locator('[data-slot="collapsible-content"]');
+  const content = card.locator('[data-slot="collapsible-panel"]');
   const parameters = content.getByRole('heading', { name: 'Parameters', exact: true }).locator('..');
   await expect(parameters).toContainText(gate.started, { useInnerText: true });
   await expect(parameters).toContainText(gate.release, { useInnerText: true });

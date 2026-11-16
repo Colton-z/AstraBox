@@ -48,10 +48,9 @@ function PartRow({ part, index }: { part: AdminTracePart; index: number }) {
           trigger advertises an `aria-controls` for a panel that is not on the
           page, which is a lie only a screen reader hears (§10). */}
       <CollapsibleTrigger className="console-row--click ring-inward group flex w-full items-center gap-3 px-3 py-1.5 text-left">
-        {/* The open state is the trigger's own `data-panel-open` — Base UI puts
-            it on the element that names the panel, and the chevron reads it off
-            the group it sits in. */}
-        <ChevronRight className="console-row-chevron size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
+        {/* The open state is the trigger's own `data-open`; the chevron reads
+            it off the group it sits in. */}
+        <ChevronRight className="console-row-chevron size-3.5 shrink-0 transition-transform group-data-open:rotate-90" />
         <span className="w-10 shrink-0 tabular-nums text-11 text-muted-foreground">
           {part.seq ?? index}
         </span>

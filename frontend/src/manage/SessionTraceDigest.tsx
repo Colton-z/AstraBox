@@ -69,11 +69,9 @@ export function TraceDigest({ trace }: { trace: AdminSessionTrace }) {
               }
               className="group flex w-full items-start gap-1.5 text-left"
             >
-              {/* The group is the Base UI collapsible trigger, which marks
-                  itself `data-panel-open`. Radix's `data-state=open` matches
-                  nothing on it, so a selector written that way leaves this
-                  arrow unturned. */}
-              <ChevronRight className="console-row-chevron mt-0.5 size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
+              {/* The group is the collapsible trigger, which marks itself
+                  `data-open`. Radix's `data-state=open` matches nothing on it. */}
+              <ChevronRight className="console-row-chevron mt-0.5 size-3.5 shrink-0 transition-transform group-data-open:rotate-90" />
               <span className="min-w-0 flex-1">{head}</span>
             </CollapsibleTrigger>
             <CollapsibleContent>

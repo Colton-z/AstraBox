@@ -85,7 +85,7 @@ const TOOL_STATE_ICON: Record<DynamicToolUIPart['state'], React.ReactNode> = {
  * The row is composed from the same primitives the vendored header uses rather
  * than edited into it, which is how a product decision survives the next
  * re-vendor (docs/maintainers/upstream-drift-ledger.md). The chevron turns on
- * `data-open`, the attribute Base UI's Collapsible actually sets.
+ * `data-open`, the attribute the collapsible sets.
  */
 export function ToolPartHeader({
   state,
@@ -243,11 +243,9 @@ function FileChangePartCard({
             {!isEdit && <span className="rounded-full border bg-muted px-1.5 text-10 text-muted-foreground">{t('chat:tool.new_file')}</span>}
           </span>
           <ToolStateBadge label={label} />
-          {/* `group-data-panel-open`, not `group-data-[state=open]`: the group
-              is the Base UI collapsible TRIGGER, which marks itself with
-              `data-panel-open` — `data-open`/`data-closed` are the root's. The
-              Radix spelling matched nothing, so the arrow never turned. */}
-          <ChevronDownIcon className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-data-panel-open:rotate-180" />
+          {/* The group is the collapsible trigger, which marks itself
+              `data-open`. Radix's `data-[state=open]` matches nothing on it. */}
+          <ChevronDownIcon className="ml-auto size-4 shrink-0 text-muted-foreground transition-transform group-data-open:rotate-180" />
         </div>
       </TaskTrigger>
       <TaskContent>
