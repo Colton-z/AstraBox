@@ -107,8 +107,12 @@ export function UserMessageStatus({ message, includedInResponse }: { message: UI
       </div>
     );
   }
-  const inputId = inputMetadata(message).input_id;
-  if (!included && inputId && state.heldInputIds.has(inputId) && pendingFor !== message.id) {
+  // Accepted and not yet with a runtime. The session's own list of what it
+  // holds arrives a read after the receipt, and the receipt already says so.
+  const input = inputMetadata(message);
+  const held = Boolean(input.input_id)
+    && (state.heldInputIds.has(String(input.input_id)) || input.state === 'pending');
+  if (!included && held && pendingFor !== message.id) {
     return <p role="status" className="text-xs text-muted-foreground">{t('misc:composer.queue_waiting')}</p>;
   }
   return included;

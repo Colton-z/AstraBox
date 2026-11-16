@@ -501,10 +501,12 @@
 .astra-enter {
   animation: astra-enter var(--dur-3) var(--astra-ease) both;
 }
-/* A line that only matters if its state lasts: it stays unpainted for the
-   first moments, so a state that passes within them never flashes. */
-.astra-enter-late {
-  animation: astra-enter var(--dur-3) var(--astra-ease) 400ms both;
+
+/* A spinner for a wait that is usually over at once. It stays unpainted for
+   its first moments, so a wait that ends within them shows nothing rather
+   than a flash of a spinner. */
+.appear-late {
+  animation: astra-enter var(--dur-3) var(--astra-ease) 300ms both;
 }
 
 /* Star-field backdrop motif (radial dot grid). Use as a faint layer behind

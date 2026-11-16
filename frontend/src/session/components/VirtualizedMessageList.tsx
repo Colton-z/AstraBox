@@ -37,6 +37,8 @@ interface VirtualizedMessageListProps {
   writingMessageId?: string | null;
   /** A reply is on its way: a message is being sent, or the runtime works. */
   responseExpected?: boolean;
+  /** What the session is doing to get a runtime, while it has none to answer with. */
+  startingLabel?: string;
   shouldAutoFollow: boolean;
   firstItemIndex: number;
   hasMore: boolean;
@@ -52,6 +54,7 @@ export function VirtualizedMessageList({
   pendingToolCallId,
   writingMessageId,
   responseExpected,
+  startingLabel,
   shouldAutoFollow,
   firstItemIndex,
   hasMore,
@@ -68,6 +71,11 @@ export function VirtualizedMessageList({
   const loadOlderStateRef = useRef({ hasMore, loadingMore, onLoadOlder });
   const [isAtBottom, setIsAtBottom] = useState(true);
   const followingRef = useRef(false);
+  // The reader is at the end and has not asked to leave it. Content growing
+  // under them does not count: the list reports "not at the bottom" for the
+  // frames before it follows, and taking that as the reader leaving is what
+  // lets every new block push the latest line out of view.
+  const pinnedRef = useRef(true);
   // Folded work a reader has already opened, kept here rather than in the row:
   // the list virtualizes, so the row that opened it is torn down when it
   // scrolls away and rebuilt when it comes back.
@@ -131,7 +139,7 @@ export function VirtualizedMessageList({
   }), [pendingToolCallId, writingMessageId]);
 
   loadOlderStateRef.current = { hasMore, loadingMore, onLoadOlder };
-  followingRef.current = shouldAutoFollow && isAtBottom && Boolean(writingMessageId || responseExpected);
+  followingRef.current = shouldAutoFollow && Boolean(writingMessageId || responseExpected);
 
   const lastItemIndex = displayFirstItemIndex + Math.max(0, items.length - 1);
 
@@ -149,6 +157,7 @@ export function VirtualizedMessageList({
     scrollerRef.current = element;
     let previousTouchY: number | null = null;
     const markOlderIntent = () => {
+      pinnedRef.current = false;
       if (loadOlderStateRef.current.loadingMore) return;
       userRequestedOlderRef.current = true;
     };
@@ -193,6 +202,7 @@ export function VirtualizedMessageList({
       if (event.target !== element) return;
       if (event.key === 'Home') {
         event.preventDefault();
+        pinnedRef.current = false;
         clearOlderIntent();
         virtuosoRef.current?.scrollIntoView({
           index: 0,
@@ -217,6 +227,15 @@ export function VirtualizedMessageList({
       }
     };
     const onScroll = () => {
+      const fromEnd = element.scrollHeight - element.scrollTop - element.clientHeight;
+      if (fromEnd < 2) {
+        pinnedRef.current = true;
+      } else if (followingRef.current && pinnedRef.current) {
+        // The reader did not move: every gesture that leaves the end clears
+        // the pin before its scroll arrives. This is the list scrolling to
+        // where the end was a measurement ago, so it is put back before paint.
+        element.scrollTop = element.scrollHeight;
+      }
       if (atOlderBoundary()) requestOlder();
     };
     // Opening a block while the reader follows a running response grows the
@@ -226,7 +245,7 @@ export function VirtualizedMessageList({
     const onClick = (event: MouseEvent) => {
       const target = event.target instanceof Element ? event.target : null;
       if (!target?.closest('[data-slot="collapsible-trigger"]')) return;
-      if (!followingRef.current) return;
+      if (!followingRef.current || !pinnedRef.current) return;
       const settle = () => element.scrollTo({ top: element.scrollHeight });
       window.requestAnimationFrame(() => {
         settle();
@@ -234,6 +253,17 @@ export function VirtualizedMessageList({
       });
     };
     element.addEventListener('click', onClick, { capture: true });
+    // Content that grows while the reader follows is pinned before it paints.
+    // The list's own following lands a few frames after the growth, and for
+    // those frames the newest line sits below the fold: every new card would
+    // make the activity line drop out of view and come back.
+    const pin = new ResizeObserver(() => {
+      if (followingRef.current && pinnedRef.current) element.scrollTop = element.scrollHeight;
+    });
+    for (let node = element.firstElementChild; node; node = node.firstElementChild) {
+      pin.observe(node);
+      if (node.hasAttribute('data-testid') && node.getAttribute('data-testid') === 'virtuoso-item-list') break;
+    }
     element.addEventListener('pointerdown', onPointerDown);
     element.addEventListener('wheel', onWheel, { passive: true });
     element.addEventListener('keydown', onKeyDown);
@@ -252,6 +282,7 @@ export function VirtualizedMessageList({
       element.removeEventListener('touchcancel', clearTouch);
       element.removeEventListener('scroll', onScroll);
       element.removeEventListener('click', onClick, { capture: true });
+      pin.disconnect();
     };
   }, [requestOlder]);
 
@@ -324,7 +355,9 @@ export function VirtualizedMessageList({
               <MessageContent className="clip-content w-full gap-2.5 overflow-clip">
                 <ResponsePending
                   announce
-                  label={t(pending === 'sending' ? 'misc:composer.queue_sending' : 'chat:message.generating')}
+                  label={pending === 'sending'
+                    ? t('misc:composer.queue_sending')
+                    : startingLabel || t('chat:process.thinking')}
                 />
               </MessageContent>
             </Message>

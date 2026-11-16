@@ -9,7 +9,7 @@ import { AssistantWelcome } from '../../assistant/AssistantWelcome';
 export function SessionConversationView({
   sessionId, messages, isWorking, pendingToolCallId,
   writingMessageId, hasPendingInteraction, pendingConversationScrollKey,
-  firstItemIndex, hasMore, loadingMore, loadMoreError, onLoadOlder, assistantId,
+  firstItemIndex, hasMore, loadingMore, loadMoreError, onLoadOlder, assistantId, startingLabel,
 }: {
   sessionId: string;
   messages: SDKUIMessage[];
@@ -23,6 +23,8 @@ export function SessionConversationView({
   loadingMore: boolean;
   loadMoreError: string | null;
   onLoadOlder: () => Promise<void>;
+  /** What the session is doing to get a runtime, while it has none to answer with. */
+  startingLabel?: string;
   /** Set for an Assistant's conversation, whose empty state says what it can use. */
   assistantId?: string | null;
 }) {
@@ -48,6 +50,7 @@ export function SessionConversationView({
       pendingToolCallId={pendingToolCallId}
       writingMessageId={writingMessageId}
       responseExpected={isWorking}
+      startingLabel={startingLabel}
       shouldAutoFollow
       firstItemIndex={firstItemIndex}
       hasMore={hasMore}

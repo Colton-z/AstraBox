@@ -271,7 +271,8 @@ export function SessionComposerBox({
                   data-testid="run-composer-stop"
                   className="size-8 rounded-lg"
                   disabled={isInterruptSettling || !isStreaming}
-                  status={isSubmitted ? 'submitted' : 'streaming'}
+                  // A response that runs can be stopped whatever else is on its way.
+                  status={isStreaming ? 'streaming' : 'submitted'}
                   isStopping={isInterruptSettling}
                   onStop={() => { void wrappedStopGeneration(); }}
                   variant="secondary"

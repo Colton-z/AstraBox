@@ -133,8 +133,8 @@
       "workers": 5
     },
     "parallel": {
-      "files": 38,
-      "tests": 55,
+      "files": 39,
+      "tests": 59,
       "workers": 5
     }
   },

@@ -108,6 +108,10 @@ export function useSessionChat({
   const [followFrom, setFollowFrom] = useState(() => ({ seq: history.outputSeq }));
   const followerRef = useRef<SessionFollower | null>(null);
   const [writing, setWriting] = useState<string | null>(null);
+  // The stream has seen the running response end and the session's own account
+  // has not been read since. Until that read lands the session still says it
+  // is working, about a response this page already knows is over.
+  const [endedAhead, setEndedAhead] = useState(false);
   const [unsent, setUnsent] = useState<ReadonlyMap<string, UnsentMessage>>(() => new Map());
   const sendsInFlightRef = useRef(0);
   const [sendsInFlight, setSendsInFlight] = useState(0);
@@ -350,6 +354,7 @@ export function useSessionChat({
     },
     responseStarted: (messageId, metadata, reopened) => {
       setWriting(messageId);
+      setEndedAhead(false);
       setStopping((current) => {
         if (!current) return current;
         if (current.responseIds.length === 0) return { ...current, responseIds: [messageId] };
@@ -371,7 +376,10 @@ export function useSessionChat({
     },
     responseEnded: (messageId) => {
       setWriting((current) => current === messageId ? null : current);
-      finishStopping(messageId);
+      setEndedAhead(true);
+      // A stop stays pending until the session itself reports the response
+      // ended: clearing it on the stream's word alone left the page showing
+      // the response as running again until that report arrived.
       closeInteractionsOf(messageId);
       void (async () => {
         const read = await refreshRef.current({ force: true }).catch(() => null);
@@ -665,6 +673,12 @@ export function useSessionChat({
     }
   }, [finishStopping, runtimeWorking, session.current_responses, session.last_response, stopping, writing]);
 
+  // A read made right after the stream's end can still carry the response as
+  // running, so the page's knowledge stands until the session stops saying so.
+  useEffect(() => {
+    if (session.state !== 'PROCESSING') setEndedAhead(false);
+  }, [session.state]);
+
   // ── What the page shows ─────────────────────────────────────────────
 
   const heldInputIds = useMemo(
@@ -677,7 +691,12 @@ export function useSessionChat({
     /** The response the stream is writing now. */
     writingMessageId: hasRuntimeProtocolError(session) ? null : writing,
     /** A response is running: on this page's stream, or by the session's own account. */
-    isWorking: !hasRuntimeProtocolError(session) && (writing !== null || session.state === 'PROCESSING'),
+    isWorking: !hasRuntimeProtocolError(session) && (
+      writing !== null
+      // With a message still held, the end of one response is the start of
+      // the next, and the session's account of working is the one to keep.
+      || (session.state === 'PROCESSING' && !(endedAhead && heldInputIds.size === 0))
+    ),
     /** A message is on its way to the session. */
     isSending: sendsInFlight > 0,
     isStopping: stopping !== null,

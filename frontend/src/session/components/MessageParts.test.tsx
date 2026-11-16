@@ -134,11 +134,9 @@ describe('tool part rendering', () => {
 /**
  * One state, one pulse.
  *
- * A streaming turn has exactly one live indicator on screen. The message-level
- * "Generating…" line is the fallback for a surface that says nothing itself;
- * a part that pulses on its own takes over, rather than pulsing beside it. A
- * reader who sees "Thinking…" and "Generating…" shimmering together reads two
- * concurrent activities where there is one.
+ * A streaming turn has exactly one live indicator on screen: the response's
+ * activity line, which says what it is doing now. A part that pulsed on its
+ * own beside it would read as two concurrent activities where there is one.
  */
 describe('a streaming message shows exactly one live indicator', () => {
   function renderStreaming(parts: unknown[], isStreaming = true) {
@@ -163,13 +161,14 @@ describe('a streaming message shows exactly one live indicator', () => {
     expect(pulses(container)).toHaveLength(1);
   });
 
-  it('hands the pulse to a streaming thinking block instead of doubling it', () => {
+  it('says a streaming thinking block is thinking, once, on the activity line', () => {
     const { container } = renderStreaming([{ type: 'reasoning', text: 'weighing options' }]);
     expect(pulses(container)).toHaveLength(1);
-    expect(container.querySelector('[data-testid="reasoning-part"] .astra-dot--live')).toBeTruthy();
+    expect(container.querySelector('[data-testid="reasoning-part"] .astra-dot--live')).toBeNull();
+    expect(container.querySelector('[data-testid="assistant-process-activity"]')?.textContent).toMatch(/Thinking|思考中/);
   });
 
-  it('takes the pulse back when a settled thinking block is no longer the active part', () => {
+  it('pulses once when text follows a settled thinking block', () => {
     const { container } = renderStreaming([
       { type: 'reasoning', text: 'weighing options' },
       { type: 'text', text: 'answering' },
