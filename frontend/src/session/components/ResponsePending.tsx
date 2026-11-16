@@ -24,9 +24,13 @@ export function ResponsePending({ label, announce, late }: {
     <div
       role={announce ? 'status' : undefined}
       data-testid="response-pending"
-      className={cn('flex items-center gap-2', late && 'astra-enter-late')}
+      className={cn('flex items-center gap-1', late && 'astra-enter-late')}
     >
-      <span className="astra-dot astra-dot--live" />
+      {/* The dot's halo reaches 7px past it. The slot holds the whole halo, so
+          no container that clips at its edge can cut the left of it off. */}
+      <span className="flex size-5 shrink-0 items-center justify-center">
+        <span className="astra-dot astra-dot--live" />
+      </span>
       <Shimmer duration={1.5}>{label}</Shimmer>
     </div>
   );

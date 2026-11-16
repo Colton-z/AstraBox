@@ -1158,19 +1158,43 @@ body {
   --tw-ring-inset: inset;
 }
 
-/* The tab TRIGGER is not here: it keeps its ring deliberately outward
+/* The default tab TRIGGER is not here: it keeps its ring outward
    (`border-ring` + `ring-[3px]` + `outline-1`), and `TabsList` wraps it in
    `p-[3px]` while declaring no clipping, so there is nothing cutting it off.
 
-   The tab PANEL carries upstream `outline-none`, which beats the
+   The LINE variant's trigger is: its strip runs edge to edge and scrolls
+   sideways when the tabs outgrow it, so the first and last triggers sit on a
+   clipping edge and lose that side of an outward ring. */
+[data-slot="tabs-list"][data-variant="line"] [data-slot="tabs-trigger"]:focus-visible {
+  --tw-ring-inset: inset;
+  outline-offset: -1px;
+}
+
+/* The tab PANEL carries upstream `outline-none`, which beats the
    zero-specificity `:where(..., [tabindex], ...)` outline even though Base UI
    gives it `tabIndex=0`. This unlayered `data-slot` rule restores a visible
    focus indicator while keeping `ui/tabs.tsx` byte-identical to the registry. */
 [data-slot="tabs-content"]:focus-visible {
   outline: 2px solid var(--ring);
   /* Inward: the panel fills its column and an outward ring would be drawn over
-     whatever sits beside it, the same reason `.console-scroll` draws inward. */
+     whatever sits beside it, the same reason `.console-scroll` draws inward.
+     Upstream also gives it `ring-[3px]`, a box-shadow the offset does not
+     move, so that half goes inward through the variable its shadow reads. */
   outline-offset: -2px;
+  --tw-ring-inset: inset;
+}
+
+/* A code block clips at its border, and the vendored container cannot take
+   `.clip-content`. A button laid directly in it, such as the copy control of a
+   one-line command, sits on that edge. */
+[data-language] [data-slot="button"]:focus-visible {
+  --tw-ring-inset: inset;
+}
+
+/* A sidebar row fills the rail's width, and a conversation row sits in an item
+   that clips for its archive animation, so an outward ring loses every side. */
+[data-slot="sidebar-menu-button"]:focus-visible {
+  --tw-ring-inset: inset;
 }
 
 /* The line variant's active indicator is an `::after` placed at `bottom-[-5px]`,

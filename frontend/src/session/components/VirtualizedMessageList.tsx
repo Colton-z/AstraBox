@@ -321,7 +321,7 @@ export function VirtualizedMessageList({
         itemContent={(index, item, context) => ('pending' in item ? (
           <div className="mx-auto w-full max-w-reading px-4 py-2" data-testid="response-pending-row">
             <Message from="assistant" className="astra-enter max-w-full">
-              <MessageContent className="w-full gap-2.5">
+              <MessageContent className="clip-content w-full gap-2.5 overflow-clip">
                 <ResponsePending
                   announce
                   label={t(pending === 'sending' ? 'misc:composer.queue_sending' : 'chat:message.generating')}

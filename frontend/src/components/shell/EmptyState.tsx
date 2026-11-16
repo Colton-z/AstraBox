@@ -52,7 +52,7 @@ export function EmptyState({
     // would move the copy in the parents that have any to give.
     <Empty
       data-testid="empty-state"
-      className={cn('relative flex-initial overflow-hidden', className)}
+      className={cn('clip-content relative flex-initial', className)}
     >
       {children}
       {/* `relative` on the parts, not only on the frame: a backdrop arrives as
