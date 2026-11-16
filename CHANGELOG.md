@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Fixed and improved
+
+- A console page whose scripts or stylesheet fail to load reloads itself until they arrive, at most five times in a row, and waits while the server is unreachable; a missing `/assets/` file is a 404 instead of the console page. [Upgrading replicas](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+
+## 中文
+
+### 修复与改进
+
+- 控制台页面的脚本或样式加载失败时会自动重新加载，直到加载成功，最多连续五次；服务端不可达时页面会等待。缺失的 `/assets/` 文件返回 404，不再返回控制台页面。[升级副本](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+
 ## [0.1.15] - 2026-11-15
 
 ## English

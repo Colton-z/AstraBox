@@ -8,37 +8,133 @@
     <meta name="astrabox-base-path" content="__ASTRABOX_BASE_PATH__" />
     <title>AstraBox</title>
     <script>
-      // The application cannot report a failure to download its own entry.
+      // The application cannot report a failure to download itself. Until the
+      // entry script has loaded, a failure of the entry, of any module it
+      // imports, or of this page's own stylesheet reloads the page: a browser
+      // may keep a failed module in the page's module map for the life of the
+      // document, so a new document is the one way to fetch it again in every
+      // browser. A reload waits until the page itself answers, so an
+      // unreachable server leaves this page retrying rather than replaced by
+      // the browser's error page. After MAX_RELOADS reloads in a row that did
+      // not start the application, the page offers a manual retry instead; the
+      // count lives in sessionStorage because each reload is a new document.
       (() => {
-        let entry;
-        let retryScript;
-        let attempts = 0;
-        let timer;
-        const retryEntry = (event) => {
-          const script = event.target;
-          if (!(script instanceof HTMLScriptElement) || script.type !== 'module') return;
-          if (!/\/(?:assets\/main-[\w-]+\.js|src\/main\.tsx)$/.test(new URL(script.src).pathname)) return;
-          if (entry && script !== entry && script !== retryScript) return;
-          entry = entry || script;
-          if (timer) return;
-          attempts += 1;
-          const status = document.getElementById('app-loading');
-          if (status) status.textContent = `Unable to load AstraBox. Retrying (${attempts})…`;
-          timer = setTimeout(() => {
-            timer = undefined;
-            if (retryScript) retryScript.remove();
-            retryScript = document.createElement('script');
-            retryScript.type = 'module';
-            retryScript.crossOrigin = entry.crossOrigin;
-            const url = new URL(entry.src);
-            // A failed module URL remains in the browser's module map.
-            url.searchParams.set('_entry_retry', String(attempts));
-            retryScript.src = url.href;
-            retryScript.onload = () => window.removeEventListener('error', retryEntry, true);
-            document.head.appendChild(retryScript);
-          }, Math.min(1000 * 2 ** Math.min(attempts - 1, 3), 5000));
+        const RELOADS_KEY = 'astrabox-boot-reloads';
+        const MAX_RELOADS = 5;
+        const PROBE_INTERVAL_MS = 5000;
+        const ENTRY_PATH = /\/(?:assets\/main-[\w-]+\.js|src\/main\.tsx)$/;
+        let storage;
+        let reloads = 0;
+        try {
+          storage = window.sessionStorage;
+          reloads = Number(storage.getItem(RELOADS_KEY)) || 0;
+        } catch {
+          storage = undefined;
+        }
+        let failed = false;
+        const bootAsset = (element) => {
+          let href;
+          if (element instanceof HTMLScriptElement && element.type === 'module') href = element.src;
+          else if (element instanceof HTMLLinkElement && element.rel === 'stylesheet') href = element.href;
+          if (!href) return null;
+          const url = new URL(href, location.href);
+          if (url.origin !== location.origin) return null;
+          if (element instanceof HTMLScriptElement) return ENTRY_PATH.test(url.pathname) ? 'entry' : null;
+          return url.pathname.includes('/assets/') ? 'stylesheet' : null;
         };
-        window.addEventListener('error', retryEntry, true);
+        const setStatus = (text) => {
+          const status = document.getElementById('app-loading');
+          if (status) status.textContent = text;
+          return status;
+        };
+        const forgetReloads = () => {
+          try {
+            if (storage) storage.removeItem(RELOADS_KEY);
+          } catch {
+            // Nothing to forget when storage refuses access.
+          }
+        };
+        const offerRetry = () => {
+          const status = setStatus('Unable to load AstraBox.');
+          if (!status) return;
+          status.style.alignContent = 'center';
+          status.style.gap = '12px';
+          const retry = document.createElement('button');
+          retry.type = 'button';
+          retry.textContent = 'Retry';
+          retry.addEventListener('click', () => {
+            forgetReloads();
+            location.reload();
+          });
+          status.append(retry);
+        };
+        const reloadWhenReachable = () => {
+          fetch(location.href, {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'text/html' },
+          })
+            .then((response) => response.ok, () => false)
+            .then((reachable) => {
+              if (!reachable) {
+                setTimeout(reloadWhenReachable, PROBE_INTERVAL_MS);
+                return;
+              }
+              try {
+                storage.setItem(RELOADS_KEY, String(reloads + 1));
+              } catch {
+                offerRetry();
+                return;
+              }
+              location.reload();
+            });
+        };
+        // Chromium applies a same-origin stylesheet whatever its MIME type and
+        // reports it with a load event, so a page shell answered in place of
+        // the stylesheet is visible only as the response's content type in
+        // Resource Timing. Where that is not reported, the stylesheet's own
+        // error event is the signal.
+        const stylesheetWasNotCss = () => Array.from(
+          document.querySelectorAll('link[rel="stylesheet"]'),
+        ).some((link) => {
+          if (bootAsset(link) !== 'stylesheet') return false;
+          const timing = performance.getEntriesByName(link.href).at(-1);
+          const type = timing && timing.contentType;
+          return typeof type === 'string' && type !== '' && type !== 'text/css';
+        });
+        const stop = () => {
+          document.removeEventListener('error', onError, true);
+          document.removeEventListener('load', onLoad, true);
+        };
+        const fail = () => {
+          failed = true;
+          stop();
+          if (!storage || reloads >= MAX_RELOADS) {
+            offerRetry();
+            return;
+          }
+          setStatus(`Unable to load AstraBox. Retrying (${reloads + 1})…`);
+          setTimeout(reloadWhenReachable, Math.min(1000 * 2 ** reloads, PROBE_INTERVAL_MS));
+        };
+        const onError = (event) => {
+          if (!failed && bootAsset(event.target)) fail();
+        };
+        // The entry runs only after this page's stylesheets have settled, so
+        // its load event is the point where both are known.
+        const onLoad = (event) => {
+          if (bootAsset(event.target) !== 'entry') return;
+          if (stylesheetWasNotCss()) {
+            fail();
+            return;
+          }
+          stop();
+          forgetReloads();
+        };
+        // On the document, not the window: a load event never reaches the
+        // window, and element errors do not bubble, so both are caught on the
+        // way down.
+        document.addEventListener('error', onError, true);
+        document.addEventListener('load', onLoad, true);
       })();
     </script>
     <!-- Fonts must not block first paint in restricted networks (e.g. no Internet). -->

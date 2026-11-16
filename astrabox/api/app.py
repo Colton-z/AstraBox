@@ -985,7 +985,11 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
     A single catch-all GET, registered after every API router, serves a real
     file from the dist when one matches (hashed assets get an immutable cache
     header) and otherwise falls back to ``index.html`` so the main SPA's
-    client-side routes (``/manage/*`` …) deep-link correctly. ``index.html``
+    client-side routes (``/manage/*`` …) deep-link correctly. A path under
+    ``assets/``, where ``frontend/vite.config.ts`` writes every built file,
+    is never a route: one that matches no file answers an uncacheable 404, so a
+    page built by another release fails to load the file instead of receiving
+    this release's shell as its script or stylesheet. ``index.html``
     itself, at any route or by name, is rendered for the public path prefix
     (:func:`~astrabox.api.frontend_cache.console_shell_response`). It never
     shadows the ``/api`` / ``/healthz`` surfaces.
@@ -1018,6 +1022,8 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
                     "Cache-Control", asset_cache_control_for_name(candidate.name)
                 )
                 return response
+            if full_path.startswith("assets/"):
+                return Response(status_code=404, headers={"Cache-Control": "no-store"})
         # SPA fallback: client-side routing resolves inside index.html.
         return console_shell_response(index_html, public_path_prefix())
 
