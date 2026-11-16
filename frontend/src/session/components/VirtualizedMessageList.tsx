@@ -1,11 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { UIMessage as SDKUIMessage } from 'ai';
 import { ArrowDownIcon } from 'lucide-react';
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
 import { Button } from '@/components/ui/button';
+import { Message, MessageContent } from '@/components/ai-elements/message';
 import { MessageBubble } from './MessageParts';
-import { conversationTimeline } from '../conversationTimeline';
+import { PendingResponseContext, ResponsePending } from './ResponsePending';
+import { SessionSendContext } from './UserMessageStatus';
+import { conversationTimeline, type ConversationItem } from '../conversationTimeline';
+import { inputFailure, inputMetadata } from '../sessionMessages';
 import {
   ProcessDetailsCache,
   ProcessOpenCache,
@@ -20,12 +24,19 @@ import {
 // sits a little below the edge, never on it.
 const OLDER_HISTORY_BOUNDARY_PX = 160;
 
+type PendingKind = 'sending' | 'working';
+// An accepted input the runtime has not finished with.
+const OWED_INPUT_STATES = new Set(['pending', 'delivered', 'admitted']);
+type ConversationRow = ConversationItem | { key: string; pending: true };
+
 interface VirtualizedMessageListProps {
   messages: SDKUIMessage[];
   sessionId?: string;
   pendingToolCallId?: string;
   /** The response the session's stream is writing now. */
   writingMessageId?: string | null;
+  /** A reply is on its way: a message is being sent, or the runtime works. */
+  responseExpected?: boolean;
   shouldAutoFollow: boolean;
   firstItemIndex: number;
   hasMore: boolean;
@@ -40,6 +51,7 @@ export function VirtualizedMessageList({
   sessionId,
   pendingToolCallId,
   writingMessageId,
+  responseExpected,
   shouldAutoFollow,
   firstItemIndex,
   hasMore,
@@ -55,6 +67,7 @@ export function VirtualizedMessageList({
   const userRequestedOlderRef = useRef(false);
   const loadOlderStateRef = useRef({ hasMore, loadingMore, onLoadOlder });
   const [isAtBottom, setIsAtBottom] = useState(true);
+  const followingRef = useRef(false);
   // Folded work a reader has already opened, kept here rather than in the row:
   // the list virtualizes, so the row that opened it is torn down when it
   // scrolls away and rebuilt when it comes back.
@@ -63,7 +76,46 @@ export function VirtualizedMessageList({
   const processOpenCache = useRef(new Map<string, boolean>());
   const [totalHeight, setTotalHeight] = useState(0);
 
-  const items = useMemo(() => conversationTimeline(messages), [messages]);
+  const sendState = useContext(SessionSendContext);
+  const timeline = useMemo(() => conversationTimeline(messages), [messages]);
+  // Between a message leaving and the reply's first content there is no
+  // response to show, so the list holds the reply's place with one line.
+  const lastMessage = timeline.at(-1)?.message;
+  // A response being written above a message that waits behind it is already
+  // on screen; one whose first frame has not reached the list is not.
+  const writingShown = Boolean(writingMessageId) && timeline.some((item) => item.message.id === writingMessageId);
+  const awaited = !writingShown && lastMessage?.role === 'user' ? lastMessage : null;
+  const sending = awaited ? sendState?.unsent.get(awaited.id)?.status === 'sending' : false;
+  // A message this page sent stays owed a reply from its acceptance on: the
+  // session's own state arrives a read later, and the line must not blink out
+  // in between.
+  const sentHere = useRef(new Set<string>());
+  if (awaited && sending) sentHere.current.add(awaited.id);
+  const owed = awaited && !sendState?.unsent.has(awaited.id) && !inputFailure(awaited)
+    && OWED_INPUT_STATES.has(String(inputMetadata(awaited).state));
+  const pending: PendingKind | null = sending
+    ? 'sending'
+    : owed && (responseExpected || sentHere.current.has(awaited.id)) ? 'working' : null;
+  const pendingFor = pending ? awaited!.id : null;
+  const items = useMemo<ConversationRow[]>(
+    () => (pendingFor ? [...timeline, { key: `pending:${pendingFor}`, pending: true }] : timeline),
+    [timeline, pendingFor],
+  );
+  // The reply that takes the pending line's place is the same line continuing,
+  // not a new block arriving.
+  const hadPending = useRef(false);
+  const continuesPending = useRef(new Set<string>());
+  const lastRow = items.at(-1);
+  if (hadPending.current && !pending && lastRow && !('pending' in lastRow) && lastRow.message.role === 'assistant') {
+    continuesPending.current.add(lastRow.key);
+  }
+  hadPending.current = pending !== null;
+  // The message keeps its one line until the reply's row has settled in: its
+  // own status must not flash in the frame between the two.
+  const lastPendingFor = useRef<string | null>(null);
+  if (pendingFor) lastPendingFor.current = pendingFor;
+  const quietMessageId = pendingFor
+    ?? (lastRow && !('pending' in lastRow) && continuesPending.current.has(lastRow.key) ? lastPendingFor.current : null);
   const pageAnchor = useRef({ sourceIndex: firstItemIndex, index: firstItemIndex, key: items[0]?.key });
   if (pageAnchor.current.sourceIndex !== firstItemIndex) {
     const retained = items.findIndex((item) => item.key === pageAnchor.current.key);
@@ -79,6 +131,7 @@ export function VirtualizedMessageList({
   }), [pendingToolCallId, writingMessageId]);
 
   loadOlderStateRef.current = { hasMore, loadingMore, onLoadOlder };
+  followingRef.current = shouldAutoFollow && isAtBottom && Boolean(writingMessageId || responseExpected);
 
   const lastItemIndex = displayFirstItemIndex + Math.max(0, items.length - 1);
 
@@ -166,6 +219,21 @@ export function VirtualizedMessageList({
     const onScroll = () => {
       if (atOlderBoundary()) requestOlder();
     };
+    // Opening a block while the reader follows a running response grows the
+    // list under them, which would otherwise leave them above the new content
+    // and end the following. They asked to see more of what is being written,
+    // so the view stays on its latest line.
+    const onClick = (event: MouseEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target?.closest('[data-slot="collapsible-trigger"]')) return;
+      if (!followingRef.current) return;
+      const settle = () => element.scrollTo({ top: element.scrollHeight });
+      window.requestAnimationFrame(() => {
+        settle();
+        window.requestAnimationFrame(settle);
+      });
+    };
+    element.addEventListener('click', onClick, { capture: true });
     element.addEventListener('pointerdown', onPointerDown);
     element.addEventListener('wheel', onWheel, { passive: true });
     element.addEventListener('keydown', onKeyDown);
@@ -183,6 +251,7 @@ export function VirtualizedMessageList({
       element.removeEventListener('touchend', clearTouch);
       element.removeEventListener('touchcancel', clearTouch);
       element.removeEventListener('scroll', onScroll);
+      element.removeEventListener('click', onClick, { capture: true });
     };
   }, [requestOlder]);
 
@@ -228,6 +297,7 @@ export function VirtualizedMessageList({
       <ProcessDetailsCache.Provider value={detailsCache.current}>
       <ProcessSummaryCache.Provider value={summaryCache.current}>
       <ProcessOpenCache.Provider value={processOpenCache.current}>
+      <PendingResponseContext.Provider value={quietMessageId}>
       <Virtuoso
         ref={virtuosoRef}
         data-testid="session-conversation"
@@ -248,7 +318,18 @@ export function VirtualizedMessageList({
         // Ids are stable from the moment a message is shown: a user message
         // is its client_message_id, a response its response id.
         computeItemKey={(_index, item) => item.key}
-        itemContent={(index, item, context) => (
+        itemContent={(index, item, context) => ('pending' in item ? (
+          <div className="mx-auto w-full max-w-reading px-4 py-2" data-testid="response-pending-row">
+            <Message from="assistant" className="astra-enter max-w-full">
+              <MessageContent className="w-full gap-2.5">
+                <ResponsePending
+                  announce
+                  label={t(pending === 'sending' ? 'misc:composer.queue_sending' : 'chat:message.generating')}
+                />
+              </MessageContent>
+            </Message>
+          </div>
+        ) : (
           <div
             className="mx-auto w-full max-w-reading px-4 py-2"
             data-message-virtual-index={index}
@@ -263,10 +344,12 @@ export function VirtualizedMessageList({
                 && item.responseSegment !== 'preceding'}
               includedInResponse={item.acceptedBy}
               responseSegment={item.responseSegment}
+              replacesPending={continuesPending.current.has(item.key)}
             />
           </div>
-        )}
+        ))}
       />
+      </PendingResponseContext.Provider>
       </ProcessOpenCache.Provider>
       </ProcessSummaryCache.Provider>
       </ProcessDetailsCache.Provider>

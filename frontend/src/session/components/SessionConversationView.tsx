@@ -47,6 +47,7 @@ export function SessionConversationView({
       sessionId={sessionId}
       pendingToolCallId={pendingToolCallId}
       writingMessageId={writingMessageId}
+      responseExpected={isWorking}
       shouldAutoFollow
       firstItemIndex={firstItemIndex}
       hasMore={hasMore}

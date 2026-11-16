@@ -6,6 +6,7 @@ import { ErrorNote } from '@/components/shell';
 import { Button } from '@/components/ui/button';
 import type { UnsentMessage } from '../hooks/useSessionChat';
 import { inputFailure, inputMetadata } from '../sessionMessages';
+import { PendingResponseContext } from './ResponsePending';
 import { UserActionNotice } from './SessionUserAction';
 
 /**
@@ -34,6 +35,7 @@ export const SessionSendContext = createContext<SessionSendState | null>(null);
 export function UserMessageStatus({ message, includedInResponse }: { message: UIMessage; includedInResponse?: string }) {
   const { t } = useTranslation();
   const state = useContext(SessionSendContext);
+  const pendingFor = useContext(PendingResponseContext);
   const included = includedInResponse ? (
     <p data-testid="input-response-association" data-response-id={includedInResponse} className="text-xs text-muted-foreground">
       {t('chat:message.included_in_response')}
@@ -42,6 +44,7 @@ export function UserMessageStatus({ message, includedInResponse }: { message: UI
   if (!state) return included;
   const unsent = state.unsent.get(message.id);
   if (unsent?.status === 'sending') {
+    if (pendingFor === message.id) return included;
     return <p role="status" className="text-xs text-teal-fg">{t('misc:composer.queue_sending')}</p>;
   }
   if (unsent?.status === 'failed') {
@@ -105,7 +108,7 @@ export function UserMessageStatus({ message, includedInResponse }: { message: UI
     );
   }
   const inputId = inputMetadata(message).input_id;
-  if (!included && inputId && state.heldInputIds.has(inputId)) {
+  if (!included && inputId && state.heldInputIds.has(inputId) && pendingFor !== message.id) {
     return <p role="status" className="text-xs text-muted-foreground">{t('misc:composer.queue_waiting')}</p>;
   }
   return included;

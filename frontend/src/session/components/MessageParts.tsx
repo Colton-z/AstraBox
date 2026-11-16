@@ -14,6 +14,7 @@ import { Shimmer } from '@/components/ai-elements/shimmer';
 */
 import { Image } from '@/components/ai-elements/image';
 import { Message, MessageContent } from '@/components/ai-elements/message';
+import { ResponsePending } from './ResponsePending';
 import { Reasoning, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
@@ -285,6 +286,7 @@ export function MessageBubble({
   sessionId,
   includedInResponse,
   responseSegment,
+  replacesPending,
 }: {
   message: SDKUIMessage;
   pendingToolCallId?: string;
@@ -292,6 +294,8 @@ export function MessageBubble({
   sessionId?: string;
   includedInResponse?: string;
   responseSegment?: 'preceding' | 'last';
+  /** The reply took the place of the pending line, so it does not enter again. */
+  replacesPending?: boolean;
 }) {
   const { t } = useTranslation();
   // A response that has not ended is still the runtime's: running, or paused
@@ -456,7 +460,7 @@ export function MessageBubble({
       from={message.role}
       data-testid={isUser ? 'user-message' : 'assistant-message'}
       data-streaming={!isUser && isStreaming ? 'true' : undefined}
-      className="astra-enter max-w-full"
+      className={cn(!replacesPending && 'astra-enter', 'max-w-full')}
     >
       {/*
         Two kinds of box share this element, and they want opposite widths. A
@@ -517,10 +521,7 @@ export function MessageBubble({
           line would give one state two names.
         */}
         {isStreaming && !pendingToolCallId && !groups.at(-1)?.process && (
-          <div className="flex items-center gap-2">
-            <span className="astra-dot astra-dot--live" />
-            <Shimmer duration={1.5}>{t('chat:message.generating')}</Shimmer>
-          </div>
+          <ResponsePending label={t('chat:message.generating')} />
         )}
       </MessageContent>
       {/* A schedule delivered this input, not the person typing it. */}

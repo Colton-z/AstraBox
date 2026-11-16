@@ -5,11 +5,17 @@
 // invariant in tests/e2e-ui/specs/console-screenshots.exclusive.spec.ts.
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
 import { MessageBubble, PartRenderer } from './MessageParts';
 import i18n from '../../i18n';
+
+// jsdom has no Web Animations API, and UI SDK's panels ask an element for its
+// running animations before they settle open. The stub stays in this file:
+// Base UI reads the same method and closes on a later tick when it exists.
+beforeAll(() => { Element.prototype.getAnimations = () => []; });
+afterAll(() => { delete (Element.prototype as Partial<Element>).getAnimations; });
 
 afterEach(cleanup);
 
