@@ -76,6 +76,7 @@ export function VirtualizedMessageList({
   // frames before it follows, and taking that as the reader leaving is what
   // lets every new block push the latest line out of view.
   const pinnedRef = useRef(true);
+  const pinObserverRef = useRef<ResizeObserver | null>(null);
   // Folded work a reader has already opened, kept here rather than in the row:
   // the list virtualizes, so the row that opened it is torn down when it
   // scrolls away and rebuilt when it comes back.
@@ -260,10 +261,7 @@ export function VirtualizedMessageList({
     const pin = new ResizeObserver(() => {
       if (followingRef.current && pinnedRef.current) element.scrollTop = element.scrollHeight;
     });
-    for (let node = element.firstElementChild; node; node = node.firstElementChild) {
-      pin.observe(node);
-      if (node.hasAttribute('data-testid') && node.getAttribute('data-testid') === 'virtuoso-item-list') break;
-    }
+    pinObserverRef.current = pin;
     element.addEventListener('pointerdown', onPointerDown);
     element.addEventListener('wheel', onWheel, { passive: true });
     element.addEventListener('keydown', onKeyDown);
@@ -283,10 +281,24 @@ export function VirtualizedMessageList({
       element.removeEventListener('scroll', onScroll);
       element.removeEventListener('click', onClick, { capture: true });
       pin.disconnect();
+      pinObserverRef.current = null;
     };
   }, [requestOlder]);
 
   useEffect(() => () => scrollerCleanupRef.current?.(), []);
+
+  // The list's own elements are created with its first rows and replaced when
+  // it remounts them, after the scroller was bound. Observing again is free for
+  // an element already observed.
+  useEffect(() => {
+    const element = scrollerRef.current;
+    const pin = pinObserverRef.current;
+    if (!element || !pin) return;
+    for (let node = element.firstElementChild; node; node = node.firstElementChild) {
+      pin.observe(node);
+      if (node.getAttribute('data-testid') === 'virtuoso-item-list') break;
+    }
+  });
 
   useEffect(() => {
     if (loadingMore) userRequestedOlderRef.current = false;

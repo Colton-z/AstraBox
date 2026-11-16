@@ -18,6 +18,15 @@ import type { Page } from '@playwright/test';
 /** Shorter than this, a state between two equal neighbours was never read. */
 export const FLICKER_MS = 400;
 
+/**
+ * A list that follows growing content lands on it within a few frames. For
+ * that long the newest line can sit lower than where it settles; the page pins
+ * the list before it paints, and that usually makes it zero, but a row being
+ * measured for the first time can still take a frame or two. A displacement
+ * shorter than this is that landing, not a line jumping away and back.
+ */
+export const SETTLE_MS = 100;
+
 /** One state that came and went. */
 export interface Flicker {
   /** Which surface: its test id or role, and the message it belongs to. */
@@ -33,7 +42,7 @@ export interface Flicker {
 
 declare global {
   interface Window {
-    __flicker?: { stop: () => void; timeline: Map<string, Array<{ t: number; text: string; top: string }>> };
+    __flicker?: { stop: () => void; timeline: Map<string, Array<{ t: number; text: string; top: string; seen: boolean }>> };
   }
 }
 
@@ -53,13 +62,13 @@ const install = () => {
     '[data-testid="run-composer-stop"]',
     '[data-testid="session-row"][data-active] [data-slot="sidebar-menu-button"]',
   ].join(', ');
-  const timeline = new Map<string, Array<{ t: number; text: string; top: string }>>();
+  const timeline = new Map<string, Array<{ t: number; text: string; top: string; seen: boolean }>>();
   const start = performance.now();
   let running = true;
   const tick = () => {
     if (!running) return;
     const now = Math.round(performance.now() - start);
-    const seen = new Map<string, { text: string; top: string }>();
+    const seen = new Map<string, { text: string; top: string; seen: boolean }>();
     const counts = new Map<string, number>();
     for (const el of Array.from(document.querySelectorAll<HTMLElement>(SURFACES))) {
       const box = el.getBoundingClientRect();
@@ -77,10 +86,12 @@ const install = () => {
         // Counters and clocks advance; they are not what flickers.
         text: `${label}${(el.textContent ?? '').replace(/\d+/g, 'N').replace(/\s+/g, ' ').trim()}`.slice(0, 80),
         top: String(Math.round(box.top)),
+        // In the window, where a reader could see it change.
+        seen: box.bottom > 0 && box.top < window.innerHeight,
       });
     }
     for (const key of new Set([...timeline.keys(), ...seen.keys()])) {
-      const value = seen.get(key) ?? { text: '∅', top: '∅' };
+      const value = seen.get(key) ?? { text: '∅', top: '∅', seen: false };
       const frames = timeline.get(key) ?? [];
       const last = frames[frames.length - 1];
       if (!last || last.text !== value.text || last.top !== value.top) frames.push({ t: now, ...value });
@@ -114,7 +125,7 @@ export async function recordFlickerFromLoad(page: Page): Promise<void> {
 
 /** Stop recording and return every state that came and went. */
 export async function stopFlickerRecording(page: Page): Promise<Flicker[]> {
-  return page.evaluate((limit) => {
+  return page.evaluate(({ limit, settle }) => {
     const recording = window.__flicker;
     if (!recording) return [];
     recording.stop();
@@ -122,20 +133,26 @@ export async function stopFlickerRecording(page: Page): Promise<Flicker[]> {
     for (const [surface, frames] of recording.timeline) {
       for (const what of ['text', 'top'] as const) {
         // One series per property: a change of place is not a change of words.
-        const series: Array<{ t: number; value: string }> = [];
+        const series: Array<{ t: number; value: string; seen: boolean }> = [];
         for (const frame of frames) {
-          if (series[series.length - 1]?.value !== frame[what]) series.push({ t: frame.t, value: frame[what] });
+          if (series[series.length - 1]?.value !== frame[what]) {
+            series.push({ t: frame.t, value: frame[what], seen: frame.seen });
+          }
         }
         for (let i = 1; i < series.length - 1; i += 1) {
           const held = series[i + 1].t - series[i].t;
           if (held >= limit || series[i - 1].value !== series[i + 1].value) continue;
+          // A long conversation keeps only the rows near the window mounted, so
+          // a row above the fold leaves the page and returns as the list
+          // scrolls. Nothing was on screen to flicker.
+          if (!series[i - 1].seen && !series[i].seen) continue;
           // A surface scrolling by a pixel or two is layout settling, not a jump.
           if (what === 'top' && series[i].value !== '∅' && series[i - 1].value !== '∅'
-            && Math.abs(Number(series[i].value) - Number(series[i - 1].value)) < 4) continue;
+            && (held < settle || Math.abs(Number(series[i].value) - Number(series[i - 1].value)) < 4)) continue;
           found.push({ surface, what, before: series[i - 1].value, during: series[i].value, heldMs: held, at: series[i].t });
         }
       }
     }
     return found.sort((a, b) => a.at - b.at);
-  }, FLICKER_MS);
+  }, { limit: FLICKER_MS, settle: SETTLE_MS });
 }

@@ -76,6 +76,25 @@ test('a message sent while a reply runs waits its turn without a flicker', async
   expect(await stopFlickerRecording(page)).toEqual([]);
 });
 
+test('opening and closing a block of work during a reply moves nothing it does not have to', async ({ page, request }) => {
+  test.setTimeout(TURN_MS * 2 + 60_000);
+  await open(page, new AstraApi(request));
+  // A screen of history first, so the list scrolls and has something to hold still.
+  await send(page, WORK);
+  await settled(page);
+
+  await startFlickerRecording(page);
+  await send(page, WORK);
+  const block = page.locator('[data-streaming="true"] [data-testid="assistant-process-trigger"]').last();
+  await expect(block).toBeVisible({ timeout: TURN_MS });
+  for (let press = 0; press < 3; press += 1) {
+    await page.waitForTimeout(1_500);
+    await block.click();
+  }
+  await settled(page);
+  expect(await stopFlickerRecording(page)).toEqual([]);
+});
+
 test('stopping a reply goes from working to stopping to ready, once', async ({ page, request }) => {
   test.setTimeout(TURN_MS + 60_000);
   await open(page, new AstraApi(request));

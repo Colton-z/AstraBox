@@ -686,10 +686,18 @@ export function useSessionChat({
     [session.held_inputs],
   );
 
+  // A page opened while a response runs has its parts from history and hears
+  // nothing from the stream until the runtime next writes, which a long
+  // command delays by its whole length. The session already says which
+  // response runs, so that one reads as running from the first paint.
+  const runningByAccount = session.state === 'PROCESSING' && !endedAhead
+    ? session.current_responses?.find((response) => response.status === 'running')?.response_id ?? null
+    : null;
+
   return {
     messages,
-    /** The response the stream is writing now. */
-    writingMessageId: hasRuntimeProtocolError(session) ? null : writing,
+    /** The response being written now: on this page's stream, or by the session's own account. */
+    writingMessageId: hasRuntimeProtocolError(session) ? null : writing ?? runningByAccount,
     /** A response is running: on this page's stream, or by the session's own account. */
     isWorking: !hasRuntimeProtocolError(session) && (
       writing !== null

@@ -134,7 +134,7 @@
     },
     "parallel": {
       "files": 39,
-      "tests": 59,
+      "tests": 60,
       "workers": 5
     }
   },
