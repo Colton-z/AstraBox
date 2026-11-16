@@ -237,20 +237,23 @@ export function MessageList({
   }, [loadingMore]);
 
   // A page loaded above must not move what the reader is looking at. The
-  // browser's scroll anchoring does this where it exists; where it does not,
-  // the height the page added is added to the scroll position before paint.
+  // browser's scroll anchoring cannot be relied on for it: it does nothing at
+  // the very top, which is where a reader asking for older history is, and
+  // nothing at all in a browser without it. So anchoring is off for this
+  // scroller, and the height the page added is added to the scroll position in
+  // the same commit, before it paints.
+  const shownFirstIndex = useRef(displayFirstItemIndex);
   const heightBeforePage = useRef<number | null>(null);
-  if (loadingMore && heightBeforePage.current === null) {
+  if (shownFirstIndex.current !== displayFirstItemIndex && heightBeforePage.current === null) {
     heightBeforePage.current = scrollRef.current?.scrollHeight ?? null;
   }
   useLayoutEffect(() => {
-    if (loadingMore) return;
     const element = scrollRef.current;
     const before = heightBeforePage.current;
     heightBeforePage.current = null;
-    if (!element || before === null || CSS.supports('overflow-anchor', 'auto')) return;
-    element.scrollTop += element.scrollHeight - before;
-  }, [loadingMore, displayFirstItemIndex, scrollRef]);
+    shownFirstIndex.current = displayFirstItemIndex;
+    if (element && before !== null) element.scrollTop += element.scrollHeight - before;
+  }, [displayFirstItemIndex, scrollRef]);
 
   // A first page of folded headers can be shorter than the viewport, and a
   // list that cannot scroll never reaches the boundary the gestures above
@@ -285,7 +288,7 @@ export function MessageList({
         data-testid="session-conversation"
         role="log"
         tabIndex={0}
-        className="console-scroll h-full overflow-y-auto"
+        className="console-scroll h-full overflow-y-auto [overflow-anchor:none]"
       >
         <div ref={contentRef} className="flex min-h-full flex-col justify-end">
           {items.map((item, offset) => ('pending' in item ? (
