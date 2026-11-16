@@ -521,7 +521,7 @@ export function MessageBubble({
           line would give one state two names.
         */}
         {isStreaming && !pendingToolCallId && !groups.at(-1)?.process && (
-          <ResponsePending label={t('chat:message.generating')} />
+          <ResponsePending label={t('chat:message.generating')} late={groups.length > 0} />
         )}
       </MessageContent>
       {/* A schedule delivered this input, not the person typing it. */}
@@ -620,14 +620,18 @@ function AssistantProcess({
   const tools = parts.filter((part) => part.type === 'dynamic-tool') as DynamicToolUIPart[];
   const completed = tools.filter((part) => part.state === 'output-available').length;
   const unfinished = tools.filter((part) => UNFINISHED_TOOL_STATES.has(part.state));
-  const current = unfinished[unfinished.length - 1];
+  const latestActivity = parts.findLast(
+    (part) => part.type === 'reasoning' || part.type === 'dynamic-tool' || part.type === 'text',
+  );
+  // Between one call returning and the next part arriving nothing is in
+  // flight. The line keeps naming the call that just finished rather than
+  // going blank and coming back, which reads as a flicker on every step.
+  const current = unfinished[unfinished.length - 1]
+    ?? (latestActivity?.type === 'reasoning' ? undefined : tools[tools.length - 1]);
   const input = current && typeof current.input === 'object' && current.input !== null
     ? current.input as Record<string, unknown>
     : {};
   const preview = current ? toolPreview(current.toolName, input) : '';
-  const latestActivity = parts.findLast(
-    (part) => part.type === 'reasoning' || part.type === 'dynamic-tool' || part.type === 'text',
-  );
   const verb = current
     ? (current.state === 'input-streaming'
       ? t('chat:process.preparing', { tool: current.toolName })

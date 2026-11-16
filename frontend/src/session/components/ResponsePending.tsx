@@ -1,5 +1,6 @@
 import { createContext } from 'react';
 import { Shimmer } from '@/components/ai-elements/shimmer';
+import { cn } from '@/lib/utils';
 
 /**
  * The user message whose pending line the conversation shows where the reply
@@ -13,12 +14,17 @@ export const PendingResponseContext = createContext<string | null>(null);
  * position and one shape from the moment a message is sent until the first
  * content arrives; only its words change.
  */
-export function ResponsePending({ label, announce }: { label: string; announce?: boolean }) {
+export function ResponsePending({ label, announce, late }: {
+  label: string;
+  announce?: boolean;
+  /** Between two steps of a running response, where the state is often over before it could be read. */
+  late?: boolean;
+}) {
   return (
     <div
       role={announce ? 'status' : undefined}
       data-testid="response-pending"
-      className="flex items-center gap-2"
+      className={cn('flex items-center gap-2', late && 'astra-enter-late')}
     >
       <span className="astra-dot astra-dot--live" />
       <Shimmer duration={1.5}>{label}</Shimmer>

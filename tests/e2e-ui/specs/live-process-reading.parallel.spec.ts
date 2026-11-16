@@ -109,7 +109,8 @@ test('continuous reasoning keeps earlier details open and respects manual choice
   await expect(group.getByText('Visible thought 0', { exact: true })).toBeVisible();
   await cards.first().getByRole('button').first().click();
   await send([output('next')]);
-  await expect(activity).toBeEmpty();
+  // Nothing is in flight until the next part: the line keeps the call that just returned.
+  await expect(activity).toContainText('echo process');
   await expect(cards.first().getByRole('button').first()).toHaveAttribute('aria-expanded', 'false');
   await send([{ type: 'finish', finishReason: 'stop' }]);
   await expect(page.getByTestId('assistant-process-activity')).toHaveCount(0);
@@ -118,7 +119,7 @@ test('continuous reasoning keeps earlier details open and respects manual choice
   await expect(group.getByText('Visible thought 0', { exact: true })).toBeVisible();
 });
 
-test('an empty live activity row preserves height with the process closed or open', async ({ page, request }) => {
+test('the live activity row keeps the returned call and its height with the process closed or open', async ({ page, request }) => {
   const { send, group, trigger, activity } = await openProcess(page, request);
   const heights: unknown[] = [];
   for (const open of [false, true]) {
@@ -128,7 +129,7 @@ test('an empty live activity row preserves height with the process closed or ope
     await expect(activity).toContainText('echo process');
     const before = { group: (await group.boundingBox())!.height, activity: (await activity.boundingBox())!.height };
     await send([output(id)]);
-    await expect(activity).toBeEmpty();
+    await expect(activity).toContainText('echo process');
     await expect(trigger).toHaveAttribute('aria-expanded', String(open));
     const after = { group: (await group.boundingBox())!.height, activity: (await activity.boundingBox())!.height };
     heights.push({ open, before, after });
