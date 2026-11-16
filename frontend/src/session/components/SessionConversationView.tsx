@@ -2,7 +2,7 @@ import { useTranslation } from 'react-i18next';
 import type { UIMessage as SDKUIMessage } from 'ai';
 import { EmptyState } from '@/components/shell';
 import { AstraMark } from '../../components/AstraConsole';
-import { VirtualizedMessageList } from './VirtualizedMessageList';
+import { MessageList } from './MessageList';
 import { AssistantWelcome } from '../../assistant/AssistantWelcome';
 
 // The scrollable message list and empty state for the main pane.
@@ -44,14 +44,13 @@ export function SessionConversationView({
     );
   }
   return (
-    <VirtualizedMessageList
+    <MessageList
       messages={messages}
       sessionId={sessionId}
       pendingToolCallId={pendingToolCallId}
       writingMessageId={writingMessageId}
       responseExpected={isWorking}
       startingLabel={startingLabel}
-      shouldAutoFollow
       firstItemIndex={firstItemIndex}
       hasMore={hasMore}
       loadingMore={loadingMore}

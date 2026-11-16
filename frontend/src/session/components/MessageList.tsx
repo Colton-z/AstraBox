@@ -1,10 +1,10 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { UIMessage as SDKUIMessage } from 'ai';
 import { ArrowDownIcon } from 'lucide-react';
-import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso';
-import { Button } from '@/components/ui/button';
+import { useStickToBottom } from 'use-stick-to-bottom';
 import { Message, MessageContent } from '@/components/ai-elements/message';
+import { Button } from '@/components/ui/button';
 import { MessageBubble } from './MessageParts';
 import { PendingResponseContext, ResponsePending } from './ResponsePending';
 import { SessionSendContext } from './UserMessageStatus';
@@ -19,9 +19,9 @@ import {
 } from './LazyProcessBlock';
 
 // How close to the top the scroller has to be for an upward gesture to ask
-// for the older page. Exactly zero is a transient position: prepending a page
-// compensates scrollTop the moment it lands, so a reader who keeps pulling up
-// sits a little below the edge, never on it.
+// for the older page. Exactly zero is a transient position: a page landing
+// above moves the scroll position the moment it does, so a reader who keeps
+// pulling up sits a little below the edge, never on it.
 const OLDER_HISTORY_BOUNDARY_PX = 160;
 
 type PendingKind = 'sending' | 'working';
@@ -29,7 +29,7 @@ type PendingKind = 'sending' | 'working';
 const OWED_INPUT_STATES = new Set(['pending', 'delivered', 'admitted']);
 type ConversationRow = ConversationItem | { key: string; pending: true };
 
-interface VirtualizedMessageListProps {
+interface MessageListProps {
   messages: SDKUIMessage[];
   sessionId?: string;
   pendingToolCallId?: string;
@@ -39,7 +39,6 @@ interface VirtualizedMessageListProps {
   responseExpected?: boolean;
   /** What the session is doing to get a runtime, while it has none to answer with. */
   startingLabel?: string;
-  shouldAutoFollow: boolean;
   firstItemIndex: number;
   hasMore: boolean;
   loadingMore: boolean;
@@ -48,42 +47,43 @@ interface VirtualizedMessageListProps {
   onLoadOlder: () => Promise<void> | void;
 }
 
-export function VirtualizedMessageList({
+/**
+ * The conversation, in one scrolling column held at its end.
+ *
+ * The browser keeps the end in place: `use-stick-to-bottom` sets the scroll
+ * position inside the resize notification of the content, which runs before
+ * the frame paints, so a reply that grows never shows a frame with its newest
+ * line below the fold. A list that measures a row after rendering it and then
+ * scrolls cannot do that, which is why this one renders its rows plainly.
+ * History arrives a page at a time, so the rows on the page are the pages a
+ * reader asked for.
+ */
+export function MessageList({
   messages,
   sessionId,
   pendingToolCallId,
   writingMessageId,
   responseExpected,
   startingLabel,
-  shouldAutoFollow,
   firstItemIndex,
   hasMore,
   loadingMore,
   loadMoreError,
   scrollToBottomKey,
   onLoadOlder,
-}: VirtualizedMessageListProps) {
+}: MessageListProps) {
   const { t } = useTranslation();
-  const virtuosoRef = useRef<VirtuosoHandle | null>(null);
-  const scrollerRef = useRef<HTMLElement | null>(null);
-  const scrollerCleanupRef = useRef<(() => void) | null>(null);
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
+    initial: 'instant',
+    resize: 'instant',
+  });
   const userRequestedOlderRef = useRef(false);
   const loadOlderStateRef = useRef({ hasMore, loadingMore, onLoadOlder });
-  const [isAtBottom, setIsAtBottom] = useState(true);
-  const followingRef = useRef(false);
-  // The reader is at the end and has not asked to leave it. Content growing
-  // under them does not count: the list reports "not at the bottom" for the
-  // frames before it follows, and taking that as the reader leaving is what
-  // lets every new block push the latest line out of view.
-  const pinnedRef = useRef(true);
-  const pinObserverRef = useRef<ResizeObserver | null>(null);
-  // Folded work a reader has already opened, kept here rather than in the row:
-  // the list virtualizes, so the row that opened it is torn down when it
-  // scrolls away and rebuilt when it comes back.
+  // Folded work a reader has already opened, and the labels already fetched,
+  // kept for the life of the list rather than of a row.
   const detailsCache = useRef<ProcessDetailsCacheValue>(new Map());
   const summaryCache = useRef<ProcessSummaryCacheValue>(new Map());
   const processOpenCache = useRef(new Map<string, boolean>());
-  const [totalHeight, setTotalHeight] = useState(0);
 
   const sendState = useContext(SessionSendContext);
   const timeline = useMemo(() => conversationTimeline(messages), [messages]);
@@ -125,6 +125,9 @@ export function VirtualizedMessageList({
   if (pendingFor) lastPendingFor.current = pendingFor;
   const quietMessageId = pendingFor
     ?? (lastRow && !('pending' in lastRow) && continuesPending.current.has(lastRow.key) ? lastPendingFor.current : null);
+
+  // Rows keep the number they were first given: a page loaded above counts
+  // down from the first row already shown.
   const pageAnchor = useRef({ sourceIndex: firstItemIndex, index: firstItemIndex, key: items[0]?.key });
   if (pageAnchor.current.sourceIndex !== firstItemIndex) {
     const retained = items.findIndex((item) => item.key === pageAnchor.current.key);
@@ -134,15 +137,8 @@ export function VirtualizedMessageList({
   }
   pageAnchor.current.key = items[0]?.key;
   const displayFirstItemIndex = pageAnchor.current.index;
-  const itemContext = useMemo(() => ({
-    pendingToolCallId,
-    writingMessageId,
-  }), [pendingToolCallId, writingMessageId]);
 
   loadOlderStateRef.current = { hasMore, loadingMore, onLoadOlder };
-  followingRef.current = shouldAutoFollow && Boolean(writingMessageId || responseExpected);
-
-  const lastItemIndex = displayFirstItemIndex + Math.max(0, items.length - 1);
 
   const requestOlder = useCallback(() => {
     const state = loadOlderStateRef.current;
@@ -151,14 +147,11 @@ export function VirtualizedMessageList({
     void state.onLoadOlder();
   }, []);
 
-  const bindScroller = useCallback((element: HTMLElement | Window | null) => {
-    scrollerCleanupRef.current?.();
-    scrollerCleanupRef.current = null;
-    if (!(element instanceof HTMLElement)) return;
-    scrollerRef.current = element;
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
     let previousTouchY: number | null = null;
     const markOlderIntent = () => {
-      pinnedRef.current = false;
       if (loadOlderStateRef.current.loadingMore) return;
       userRequestedOlderRef.current = true;
     };
@@ -197,24 +190,13 @@ export function VirtualizedMessageList({
     const clearTouch = () => {
       previousTouchY = null;
     };
-    // Home targets the first loaded item through Virtuoso so its measured
-    // heights participate in the jump. Relative keys keep native scrolling.
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.target !== element) return;
       if (event.key === 'Home') {
         event.preventDefault();
-        pinnedRef.current = false;
-        clearOlderIntent();
-        virtuosoRef.current?.scrollIntoView({
-          index: 0,
-          align: 'start',
-          behavior: 'auto',
-          done: () => {
-            if (!element.isConnected) return;
-            markOlderIntent();
-            if (atOlderBoundary()) requestOlder();
-          },
-        });
+        element.scrollTop = 0;
+        markOlderIntent();
+        requestOlder();
       } else if (
         event.key === 'ArrowUp' || event.key === 'PageUp'
         || (event.key === ' ' && event.shiftKey)
@@ -228,40 +210,8 @@ export function VirtualizedMessageList({
       }
     };
     const onScroll = () => {
-      const fromEnd = element.scrollHeight - element.scrollTop - element.clientHeight;
-      if (fromEnd < 2) {
-        pinnedRef.current = true;
-      } else if (followingRef.current && pinnedRef.current) {
-        // The reader did not move: every gesture that leaves the end clears
-        // the pin before its scroll arrives. This is the list scrolling to
-        // where the end was a measurement ago, so it is put back before paint.
-        element.scrollTop = element.scrollHeight;
-      }
       if (atOlderBoundary()) requestOlder();
     };
-    // Opening a block while the reader follows a running response grows the
-    // list under them, which would otherwise leave them above the new content
-    // and end the following. They asked to see more of what is being written,
-    // so the view stays on its latest line.
-    const onClick = (event: MouseEvent) => {
-      const target = event.target instanceof Element ? event.target : null;
-      if (!target?.closest('[data-slot="collapsible-trigger"]')) return;
-      if (!followingRef.current || !pinnedRef.current) return;
-      const settle = () => element.scrollTo({ top: element.scrollHeight });
-      window.requestAnimationFrame(() => {
-        settle();
-        window.requestAnimationFrame(settle);
-      });
-    };
-    element.addEventListener('click', onClick, { capture: true });
-    // Content that grows while the reader follows is pinned before it paints.
-    // The list's own following lands a few frames after the growth, and for
-    // those frames the newest line sits below the fold: every new card would
-    // make the activity line drop out of view and come back.
-    const pin = new ResizeObserver(() => {
-      if (followingRef.current && pinnedRef.current) element.scrollTop = element.scrollHeight;
-    });
-    pinObserverRef.current = pin;
     element.addEventListener('pointerdown', onPointerDown);
     element.addEventListener('wheel', onWheel, { passive: true });
     element.addEventListener('keydown', onKeyDown);
@@ -270,7 +220,7 @@ export function VirtualizedMessageList({
     element.addEventListener('touchend', clearTouch, { passive: true });
     element.addEventListener('touchcancel', clearTouch, { passive: true });
     element.addEventListener('scroll', onScroll, { passive: true });
-    scrollerCleanupRef.current = () => {
+    return () => {
       element.removeEventListener('pointerdown', onPointerDown);
       element.removeEventListener('wheel', onWheel);
       element.removeEventListener('keydown', onKeyDown);
@@ -279,57 +229,46 @@ export function VirtualizedMessageList({
       element.removeEventListener('touchend', clearTouch);
       element.removeEventListener('touchcancel', clearTouch);
       element.removeEventListener('scroll', onScroll);
-      element.removeEventListener('click', onClick, { capture: true });
-      pin.disconnect();
-      pinObserverRef.current = null;
     };
-  }, [requestOlder]);
-
-  useEffect(() => () => scrollerCleanupRef.current?.(), []);
-
-  // The list's own elements are created with its first rows and replaced when
-  // it remounts them, after the scroller was bound. Observing again is free for
-  // an element already observed.
-  useEffect(() => {
-    const element = scrollerRef.current;
-    const pin = pinObserverRef.current;
-    if (!element || !pin) return;
-    for (let node = element.firstElementChild; node; node = node.firstElementChild) {
-      pin.observe(node);
-      if (node.getAttribute('data-testid') === 'virtuoso-item-list') break;
-    }
-  });
+  }, [requestOlder, scrollRef]);
 
   useEffect(() => {
     if (loadingMore) userRequestedOlderRef.current = false;
   }, [loadingMore]);
+
+  // A page loaded above must not move what the reader is looking at. The
+  // browser's scroll anchoring does this where it exists; where it does not,
+  // the height the page added is added to the scroll position before paint.
+  const heightBeforePage = useRef<number | null>(null);
+  if (loadingMore && heightBeforePage.current === null) {
+    heightBeforePage.current = scrollRef.current?.scrollHeight ?? null;
+  }
+  useLayoutEffect(() => {
+    if (loadingMore) return;
+    const element = scrollRef.current;
+    const before = heightBeforePage.current;
+    heightBeforePage.current = null;
+    if (!element || before === null || CSS.supports('overflow-anchor', 'auto')) return;
+    element.scrollTop += element.scrollHeight - before;
+  }, [loadingMore, displayFirstItemIndex, scrollRef]);
 
   // A first page of folded headers can be shorter than the viewport, and a
   // list that cannot scroll never reaches the boundary the gestures above
   // ask at. Ask for the next page directly until the list fills or history
   // runs out; a failed page stops it, so the retry stays the reader's.
   useEffect(() => {
-    const element = scrollerRef.current;
-    if (!element || totalHeight <= 0 || totalHeight > element.clientHeight) return;
+    const element = scrollRef.current;
+    if (!element || element.scrollHeight > element.clientHeight) return;
     if (!hasMore || loadingMore || loadMoreError) return;
     void onLoadOlder();
-  }, [totalHeight, hasMore, loadingMore, loadMoreError, onLoadOlder]);
+  }, [items.length, hasMore, loadingMore, loadMoreError, onLoadOlder, scrollRef]);
 
+  // A question the response asks is at the end, and answering it is why the
+  // reader is here, wherever they had scrolled to.
   useEffect(() => {
     if (!scrollToBottomKey) return;
-    const scroll = () => virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
-    scroll();
-    const frame = window.requestAnimationFrame(scroll);
-    return () => window.cancelAnimationFrame(frame);
-  }, [lastItemIndex, scrollToBottomKey]);
-
-  const scrollToBottom = useCallback(() => {
-    virtuosoRef.current?.scrollToIndex({
-      index: 'LAST',
-      align: 'end',
-      behavior: 'auto',
-    });
-  }, [lastItemIndex]);
+    void scrollToBottom('instant');
+  }, [scrollToBottom, scrollToBottomKey]);
 
   return (
     <div
@@ -341,59 +280,51 @@ export function VirtualizedMessageList({
       <ProcessSummaryCache.Provider value={summaryCache.current}>
       <ProcessOpenCache.Provider value={processOpenCache.current}>
       <PendingResponseContext.Provider value={quietMessageId}>
-      <Virtuoso
-        ref={virtuosoRef}
+      <div
+        ref={scrollRef}
         data-testid="session-conversation"
         role="log"
-        className="h-full"
-        data={items}
-        firstItemIndex={displayFirstItemIndex}
-        initialTopMostItemIndex={{ index: 'LAST', align: 'end' }}
-        alignToBottom
-        skipAnimationFrameInResizeObserver
-        increaseViewportBy={{ top: 600, bottom: 900 }}
-        context={itemContext}
-        totalListHeightChanged={setTotalHeight}
-        atBottomStateChange={setIsAtBottom}
-        followOutput={(atBottom) => (shouldAutoFollow && atBottom ? 'auto' : false)}
-        startReached={requestOlder}
-        scrollerRef={bindScroller}
-        // Ids are stable from the moment a message is shown: a user message
-        // is its client_message_id, a response its response id.
-        computeItemKey={(_index, item) => item.key}
-        itemContent={(index, item, context) => ('pending' in item ? (
-          <div className="mx-auto w-full max-w-reading px-4 py-2" data-testid="response-pending-row">
-            <Message from="assistant" className="astra-enter max-w-full">
-              <MessageContent className="clip-content w-full gap-2.5 overflow-clip">
-                <ResponsePending
-                  announce
-                  label={pending === 'sending'
-                    ? t('misc:composer.queue_sending')
-                    : startingLabel || t('chat:process.thinking')}
-                />
-              </MessageContent>
-            </Message>
-          </div>
-        ) : (
-          <div
-            className="mx-auto w-full max-w-reading px-4 py-2"
-            data-message-virtual-index={index}
-            data-message-id={item.message.id}
-            data-response-segment={item.responseSegment}
-          >
-            <MessageBubble
-              message={item.message}
-              sessionId={sessionId}
-              pendingToolCallId={context.pendingToolCallId}
-              isStreaming={item.message.role === 'assistant' && item.message.id === context.writingMessageId
-                && item.responseSegment !== 'preceding'}
-              includedInResponse={item.acceptedBy}
-              responseSegment={item.responseSegment}
-              replacesPending={continuesPending.current.has(item.key)}
-            />
-          </div>
-        ))}
-      />
+        tabIndex={0}
+        className="console-scroll h-full overflow-y-auto"
+      >
+        <div ref={contentRef} className="flex min-h-full flex-col justify-end">
+          {items.map((item, offset) => ('pending' in item ? (
+            <div key={item.key} className="mx-auto w-full max-w-reading px-4 py-2" data-testid="response-pending-row">
+              <Message from="assistant" className="astra-enter max-w-full">
+                <MessageContent className="clip-content w-full gap-2.5 overflow-clip">
+                  <ResponsePending
+                    announce
+                    label={pending === 'sending'
+                      ? t('misc:composer.queue_sending')
+                      : startingLabel || t('chat:process.thinking')}
+                  />
+                </MessageContent>
+              </Message>
+            </div>
+          ) : (
+            <div
+              // Ids are stable from the moment a message is shown: a user message
+              // is its client_message_id, a response its response id.
+              key={item.key}
+              className="mx-auto w-full max-w-reading px-4 py-2"
+              data-message-virtual-index={displayFirstItemIndex + offset}
+              data-message-id={item.message.id}
+              data-response-segment={item.responseSegment}
+            >
+              <MessageBubble
+                message={item.message}
+                sessionId={sessionId}
+                pendingToolCallId={pendingToolCallId}
+                isStreaming={item.message.role === 'assistant' && item.message.id === writingMessageId
+                  && item.responseSegment !== 'preceding'}
+                includedInResponse={item.acceptedBy}
+                responseSegment={item.responseSegment}
+                replacesPending={continuesPending.current.has(item.key)}
+              />
+            </div>
+          )))}
+        </div>
+      </div>
       </PendingResponseContext.Provider>
       </ProcessOpenCache.Provider>
       </ProcessSummaryCache.Provider>
@@ -423,7 +354,7 @@ export function VirtualizedMessageList({
         <Button
           aria-label={t('chat:history.scroll_to_bottom')}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full dark:bg-background dark:hover:bg-muted"
-          onClick={scrollToBottom}
+          onClick={() => { void scrollToBottom('instant'); }}
           size="icon"
           type="button"
           variant="outline"

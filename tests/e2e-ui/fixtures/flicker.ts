@@ -19,13 +19,12 @@ import type { Page } from '@playwright/test';
 export const FLICKER_MS = 400;
 
 /**
- * A list that follows growing content lands on it within a few frames. For
- * that long the newest line can sit lower than where it settles; the page pins
- * the list before it paints, and that usually makes it zero, but a row being
- * measured for the first time can still take a frame or two. A displacement
- * shorter than this is that landing, not a line jumping away and back.
+ * A line that follows growing content trails it by a frame: the end is put
+ * back in the frame after the growth, and while a panel animates its height
+ * the line is one frame's worth of that motion behind. Two frames is where a
+ * displacement becomes one a reader could see.
  */
-export const SETTLE_MS = 100;
+export const TWO_FRAMES_MS = 34;
 
 /** One state that came and went. */
 export interface Flicker {
@@ -65,8 +64,35 @@ const install = () => {
   const timeline = new Map<string, Array<{ t: number; text: string; top: string; seen: boolean }>>();
   const start = performance.now();
   let running = true;
+  // The size each watched box had when the browser last told its observers.
+  // A box whose size has moved on since has observers still to run this frame,
+  // the one that holds the conversation at its end among them, so its layout
+  // is one no frame will show.
+  const reported = new Map<Element, number>();
+  const sizes = new ResizeObserver((entries) => {
+    for (const entry of entries) reported.set(entry.target, entry.target.getBoundingClientRect().height);
+  });
+  const midFrame = () => {
+    const scroller = document.querySelector('[data-testid="session-conversation"]');
+    const boxes = scroller ? [scroller, scroller.firstElementChild].filter((box): box is Element => Boolean(box)) : [];
+    let pending = false;
+    for (const box of boxes) {
+      const known = reported.get(box);
+      if (known === undefined) {
+        sizes.observe(box);
+        pending = true;
+      } else if (Math.abs(known - box.getBoundingClientRect().height) > 0.5) {
+        pending = true;
+      }
+    }
+    return pending;
+  };
   const tick = () => {
     if (!running) return;
+    if (midFrame()) {
+      requestAnimationFrame(afterPaint);
+      return;
+    }
     const now = Math.round(performance.now() - start);
     const seen = new Map<string, { text: string; top: string; seen: boolean }>();
     const counts = new Map<string, number>();
@@ -99,14 +125,15 @@ const install = () => {
     }
     requestAnimationFrame(afterPaint);
   };
-  // Read what the frame painted, not what it started from. An animation-frame
+  // Read what a frame painted, not what it started from. An animation-frame
   // callback runs before the frame's layout and resize observers, so a list
   // that grows and is pinned back within one frame would be read mid-way, as
   // a jump nobody saw. A task queued from the callback runs once the frame is
-  // on screen.
+  // on screen; the page may have changed again by then, which `midFrame`
+  // answers.
   const afterPaint = () => { setTimeout(tick, 0); };
   requestAnimationFrame(afterPaint);
-  window.__flicker = { stop: () => { running = false; }, timeline };
+  window.__flicker = { stop: () => { running = false; sizes.disconnect(); }, timeline };
 };
 
 /** Start recording the page as it stands. */
@@ -125,7 +152,7 @@ export async function recordFlickerFromLoad(page: Page): Promise<void> {
 
 /** Stop recording and return every state that came and went. */
 export async function stopFlickerRecording(page: Page): Promise<Flicker[]> {
-  return page.evaluate(({ limit, settle }) => {
+  return page.evaluate(({ limit, twoFrames }) => {
     const recording = window.__flicker;
     if (!recording) return [];
     recording.stop();
@@ -142,17 +169,16 @@ export async function stopFlickerRecording(page: Page): Promise<Flicker[]> {
         for (let i = 1; i < series.length - 1; i += 1) {
           const held = series[i + 1].t - series[i].t;
           if (held >= limit || series[i - 1].value !== series[i + 1].value) continue;
-          // A long conversation keeps only the rows near the window mounted, so
-          // a row above the fold leaves the page and returns as the list
-          // scrolls. Nothing was on screen to flicker.
+          // Only what a reader could see: a surface outside the window before
+          // and during the change showed nothing to flicker.
           if (!series[i - 1].seen && !series[i].seen) continue;
           // A surface scrolling by a pixel or two is layout settling, not a jump.
           if (what === 'top' && series[i].value !== '∅' && series[i - 1].value !== '∅'
-            && (held < settle || Math.abs(Number(series[i].value) - Number(series[i - 1].value)) < 4)) continue;
+            && (held < twoFrames || Math.abs(Number(series[i].value) - Number(series[i - 1].value)) < 4)) continue;
           found.push({ surface, what, before: series[i - 1].value, during: series[i].value, heldMs: held, at: series[i].t });
         }
       }
     }
     return found.sort((a, b) => a.at - b.at);
-  }, { limit: FLICKER_MS, settle: SETTLE_MS });
+  }, { limit: FLICKER_MS, twoFrames: TWO_FRAMES_MS });
 }

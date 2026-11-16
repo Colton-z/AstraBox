@@ -41,7 +41,7 @@ import { hasRuntimeProtocolError } from '../sessionAuthority';
  * omission.
  */
 const STREAM_TROUBLE_NOTICE_DELAY_MS = 10_000;
-/** The index Virtuoso numbers the first loaded message from; older pages count down from it. */
+/** The number the first loaded message is given; older pages count down from it. */
 const FIRST_ITEM_INDEX = 100_000;
 
 /** A message this page sent that the session has not accepted (yet). */

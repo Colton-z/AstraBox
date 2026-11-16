@@ -61,20 +61,17 @@ async function observeAnchorStability(page: Page, anchor: VisibleAnchor) {
           finalOffsetTop = match.getBoundingClientRect().top - viewport.top;
           const movement = Math.abs(finalOffsetTop - observed.offsetTop);
           if (measurements.length === 0 || movement > maxMovement) {
-            const list = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
             measurements.push({
               elapsedMs: performance.now() - startedAt,
               offsetTop: finalOffsetTop,
               scrollTop: scroller.scrollTop,
               scrollHeight: scroller.scrollHeight,
-              listStyle: list?.getAttribute('style'),
-              rows: Array.from(scroller.querySelectorAll<HTMLElement>('[data-known-size]'))
+              rows: Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'))
                 .map((element) => ({
-                  index: element.dataset.itemIndex,
-                  knownSize: element.dataset.knownSize,
+                  index: element.dataset.messageVirtualIndex,
                   height: element.getBoundingClientRect().height,
                   offsetTop: element.getBoundingClientRect().top - viewport.top,
-                  messageId: element.querySelector<HTMLElement>('[data-message-id]')?.dataset.messageId,
+                  messageId: element.dataset.messageId,
                 })),
             });
           }

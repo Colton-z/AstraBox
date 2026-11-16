@@ -196,8 +196,8 @@ test('a channel-created conversation accepts one browser turn without replacing 
   await openSessionView(page, sessionId);
   await expect(page.getByTestId('user-message')).toHaveText([channelPrompt]);
   await expect(page.getByTestId('assistant-text')).toHaveCount(1);
-  // Virtuoso can mount text in a hidden measurement pass. Capture the actual
-  // nonempty rendered baseline, not textContent followed by an empty innerText.
+  // Capture the nonempty rendered baseline, not textContent followed by an
+  // empty innerText while the row is still entering.
   let firstRenderedReply = '';
   await expect.poll(async () => {
     firstRenderedReply = await page.getByTestId('assistant-text').innerText();
