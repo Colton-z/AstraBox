@@ -21,10 +21,12 @@ export const FLICKER_MS = 400;
 /**
  * A line that follows growing content trails it by a frame: the end is put
  * back in the frame after the growth, and while a panel animates its height
- * the line is one frame's worth of that motion behind. Two frames is where a
- * displacement becomes one a reader could see.
+ * the line is one frame's worth of that motion behind. A displacement has to
+ * be on screen for more painted frames than that to be one a reader could
+ * see. Frames are counted rather than timed: a busy page paints one frame in
+ * the time a quiet one paints four.
  */
-export const TWO_FRAMES_MS = 34;
+export const TRAILING_FRAMES = 1;
 
 /** One state that came and went. */
 export interface Flicker {
@@ -41,7 +43,7 @@ export interface Flicker {
 
 declare global {
   interface Window {
-    __flicker?: { stop: () => void; timeline: Map<string, Array<{ t: number; text: string; top: string; seen: boolean }>> };
+    __flicker?: { stop: () => void; timeline: Map<string, Array<{ t: number; frame: number; text: string; top: string; seen: boolean }>> };
   }
 }
 
@@ -61,9 +63,10 @@ const install = () => {
     '[data-testid="run-composer-stop"]',
     '[data-testid="session-row"][data-active] [data-slot="sidebar-menu-button"]',
   ].join(', ');
-  const timeline = new Map<string, Array<{ t: number; text: string; top: string; seen: boolean }>>();
+  const timeline = new Map<string, Array<{ t: number; frame: number; text: string; top: string; seen: boolean }>>();
   const start = performance.now();
   let running = true;
+  let frame = 0;
   // The size each watched box had when the browser last told its observers.
   // A box whose size has moved on since has observers still to run this frame,
   // the one that holds the conversation at its end among them, so its layout
@@ -94,6 +97,7 @@ const install = () => {
       return;
     }
     const now = Math.round(performance.now() - start);
+    frame += 1;
     const seen = new Map<string, { text: string; top: string; seen: boolean }>();
     const counts = new Map<string, number>();
     for (const el of Array.from(document.querySelectorAll<HTMLElement>(SURFACES))) {
@@ -120,7 +124,7 @@ const install = () => {
       const value = seen.get(key) ?? { text: '∅', top: '∅', seen: false };
       const frames = timeline.get(key) ?? [];
       const last = frames[frames.length - 1];
-      if (!last || last.text !== value.text || last.top !== value.top) frames.push({ t: now, ...value });
+      if (!last || last.text !== value.text || last.top !== value.top) frames.push({ t: now, frame, ...value });
       timeline.set(key, frames);
     }
     requestAnimationFrame(afterPaint);
@@ -152,7 +156,7 @@ export async function recordFlickerFromLoad(page: Page): Promise<void> {
 
 /** Stop recording and return every state that came and went. */
 export async function stopFlickerRecording(page: Page): Promise<Flicker[]> {
-  return page.evaluate(({ limit, twoFrames }) => {
+  return page.evaluate(({ limit, trailing }) => {
     const recording = window.__flicker;
     if (!recording) return [];
     recording.stop();
@@ -160,10 +164,10 @@ export async function stopFlickerRecording(page: Page): Promise<Flicker[]> {
     for (const [surface, frames] of recording.timeline) {
       for (const what of ['text', 'top'] as const) {
         // One series per property: a change of place is not a change of words.
-        const series: Array<{ t: number; value: string; seen: boolean }> = [];
-        for (const frame of frames) {
-          if (series[series.length - 1]?.value !== frame[what]) {
-            series.push({ t: frame.t, value: frame[what], seen: frame.seen });
+        const series: Array<{ t: number; frame: number; value: string; seen: boolean }> = [];
+        for (const sample of frames) {
+          if (series[series.length - 1]?.value !== sample[what]) {
+            series.push({ t: sample.t, frame: sample.frame, value: sample[what], seen: sample.seen });
           }
         }
         for (let i = 1; i < series.length - 1; i += 1) {
@@ -174,11 +178,12 @@ export async function stopFlickerRecording(page: Page): Promise<Flicker[]> {
           if (!series[i - 1].seen && !series[i].seen) continue;
           // A surface scrolling by a pixel or two is layout settling, not a jump.
           if (what === 'top' && series[i].value !== '∅' && series[i - 1].value !== '∅'
-            && (held < twoFrames || Math.abs(Number(series[i].value) - Number(series[i - 1].value)) < 4)) continue;
+            && (series[i + 1].frame - series[i].frame <= trailing
+              || Math.abs(Number(series[i].value) - Number(series[i - 1].value)) < 4)) continue;
           found.push({ surface, what, before: series[i - 1].value, during: series[i].value, heldMs: held, at: series[i].t });
         }
       }
     }
     return found.sort((a, b) => a.at - b.at);
-  }, { limit: FLICKER_MS, twoFrames: TWO_FRAMES_MS });
+  }, { limit: FLICKER_MS, trailing: TRAILING_FRAMES });
 }
