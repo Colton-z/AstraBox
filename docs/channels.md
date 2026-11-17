@@ -159,6 +159,11 @@ Direct conversations, rooms, channels, and threads use the stable identifiers
 provided by the messaging platform. Those identifiers are separate from
 AstraBox authentication and resource ownership.
 
+Archiving the Session in the console ends it for the messaging conversation
+as well. The next message from that conversation starts a new Session under
+the same trigger and execution account; the archived Session keeps its
+history.
+
 :::warning
 The Agent or Assistant bound to a messaging trigger cannot be changed after
 creation. To route the platform connection elsewhere, create a new trigger.
