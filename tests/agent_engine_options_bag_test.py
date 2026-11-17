@@ -41,6 +41,7 @@ class _FakeAgentRepo:
         expected_version: int,
         changes: dict[str, Any],
         updated_by: str | None,
+        restored_from_version: int | None = None,
     ) -> dict[str, Any] | None:
         assert self.agent is not None
         if int(self.agent.get("version") or 1) != expected_version:

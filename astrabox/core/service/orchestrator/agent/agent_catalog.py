@@ -139,9 +139,12 @@ async def reorder_categories(category_ids: Any) -> list[dict[str, Any]]:
     return await list_categories()
 
 
-async def delete_category(category_id: str) -> int:
-    """Delete a category, taking it off every Agent; how many Agents it was on."""
-    unbound = await category_repository().delete(category_id)
+async def delete_category(category_id: str, *, deleted_by: str) -> int:
+    """Delete a category, taking it off every Agent; how many Agents it was on.
+
+    Each of those Agents gets a new version by ``deleted_by``.
+    """
+    unbound = await category_repository().delete(category_id, deleted_by=deleted_by)
     if unbound is None:
         raise _not_found(category_id)
     return unbound

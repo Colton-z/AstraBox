@@ -8,7 +8,9 @@ tables, keyed by the Agent. Reads hand services the familiar document shape.
 Every authored write goes through :meth:`AgentRepository.update_definition`,
 which applies the change only while the Agent is at the version the writer
 read and moves the version with it, so two writers that read the same
-definition cannot both succeed.
+definition cannot both succeed. Creating an Agent and each such write store
+the definition they produced as a row of ``agent_versions`` in the same
+transaction.
 
 The runtime state of the Agent's boxes is kept apart from the definition: one
 ``agent_runtimes`` row per Agent and Environment with its resident box,
@@ -56,6 +58,7 @@ from sqlalchemy.sql.functions import FunctionElement
 from sqlalchemy.sql import ColumnElement, Select
 
 from astrabox.config.settings import get_settings, validate_environment_name
+from astrabox.persistence.repository.agent_version_repository import record_version
 from astrabox.persistence.repository.assistant_catalog_repository import _ChildObject, _OrderedChildren
 from astrabox.persistence.sql.runtime_expressions import string_array_items
 from astrabox.persistence.sql import (
@@ -141,6 +144,11 @@ _CHILD_FIELDS = ("categories", "credential_vault_ids", "mcp_assignments", "conne
 
 #: Every field an authoring write may change.
 AUTHORED_FIELDS = frozenset((*_COLUMN_FIELDS, *_CHILD_FIELDS, "display_meta", "extension_catalog"))
+
+def authored_definition(agent: Mapping[str, Any]) -> dict[str, Any]:
+    """Every authored field of an Agent read, by name; ``None`` where the read omits it."""
+    return {field: agent.get(field) for field in sorted(AUTHORED_FIELDS)}
+
 
 #: Fields set once, when the Agent is created.
 _CREATE_FIELDS = frozenset({"agent_id", "created_by", "org_id", "state", "version", "updated_by"})
@@ -702,6 +710,26 @@ def manageable_by(viewer: str, *, platform_admin: bool) -> ColumnElement[bool]:
     return or_(_AGENTS.c.created_by == me, _ArrayMember(_AGENTS.c.admins, me))
 
 
+async def record_changed_definitions(
+    conn: AsyncConnection, agent_ids: Iterable[str], *, author_user_id: str | None,
+) -> None:
+    """Store the current definition of each Agent as the version it now has.
+
+    For a write outside :meth:`AgentRepository.update_definition` that changed
+    authored fields of several Agents and moved their versions in ``conn``.
+    """
+    for agent_id in agent_ids:
+        agent = await _read(conn, agent_id)
+        await record_version(
+            conn,
+            agent_id=agent_id,
+            version=int(agent["version"]),
+            definition=authored_definition(agent),
+            operation="update",
+            author_user_id=author_user_id,
+        )
+
+
 class AgentRepository:
     """Global authored definitions with compute ledgers bound to one Environment."""
 
@@ -732,7 +760,16 @@ class AgentRepository:
                 agent_id=agent_id, environment_name=self.environment_name,
             ))
             await _replace_children(conn, agent_id, _child_values(payload))
-            return await _read(conn, agent_id, environment_name=self.environment_name)
+            created = await _read(conn, agent_id, environment_name=self.environment_name)
+            await record_version(
+                conn,
+                agent_id=agent_id,
+                version=int(created["version"]),
+                definition=authored_definition(created),
+                operation="create",
+                author_user_id=created.get("updated_by") or created["created_by"],
+            )
+            return created
 
         try:
             return await transaction(create)
@@ -758,11 +795,14 @@ class AgentRepository:
         expected_version: int,
         changes: dict[str, Any],
         updated_by: str | None,
+        restored_from_version: int | None = None,
     ) -> dict[str, Any] | None:
         """Apply authored ``changes`` while the Agent is at ``expected_version``.
 
-        A change moves the version by one and stamps ``updated_at`` and
-        ``updated_by``; changes that leave every stored value as it is write
+        A change moves the version by one, stamps ``updated_at`` and
+        ``updated_by`` and stores the new definition as that version, naming
+        ``restored_from_version`` when the changes reapply an earlier one;
+        changes that leave every stored value as it is write
         nothing. Returns the Agent as stored afterwards, or ``None`` when its
         version moved since it was read or it is deleted. Raises
         :class:`AgentReferenceMissing` when a change names a RuntimeProfile,
@@ -806,7 +846,17 @@ class AgentRepository:
                 )
             )
             await _replace_children(conn, agent_id, changed_children)
-            return await _read(conn, agent_id, environment_name=self.environment_name)
+            written = await _read(conn, agent_id, environment_name=self.environment_name)
+            await record_version(
+                conn,
+                agent_id=agent_id,
+                version=int(written["version"]),
+                definition=authored_definition(written),
+                operation="update" if restored_from_version is None else "restore",
+                author_user_id=updated_by,
+                restored_from_version=restored_from_version,
+            )
+            return written
 
         try:
             return await transaction(change)

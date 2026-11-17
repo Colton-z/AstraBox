@@ -48,6 +48,8 @@ import type {
   AgentFavorite,
   AgentListPage,
   AgentTag,
+  AgentVersionChanges,
+  AgentVersionPage,
   DeletedAgentCategory,
   ListPageQuery,
   AgentPreparedRuntimeStatus,
@@ -1103,6 +1105,55 @@ export async function setAgentExtensions(
     params: { path: { agent_id: agentId } },
     body: selection,
   })) as Promise<AgentExtensionCatalog>;
+}
+
+/**
+ * One page of an Agent's versions, newest first, for a manager of the Agent.
+ * Pass a page's last version as `before` to read the page after it.
+ */
+export async function listAgentVersions(
+  agentId: string,
+  query: { limit?: number; before?: number } = {},
+): Promise<AgentVersionPage> {
+  return send((wire) => client.GET('/api/v1/agents/{agent_id}/versions', {
+    ...wire,
+    params: { path: { agent_id: agentId }, query },
+  }));
+}
+
+/**
+ * Each value `version` holds that `base` does not; without `base`, what
+ * `version` changed from the version before it. Naming the Agent's current
+ * version as `base` shows what restoring `version` would change.
+ */
+export async function getAgentVersionChanges(
+  agentId: string,
+  version: number,
+  base?: number,
+): Promise<AgentVersionChanges> {
+  return send((wire) => client.GET('/api/v1/agents/{agent_id}/versions/{version}/changes', {
+    ...wire,
+    params: { path: { agent_id: agentId, version }, query: { base } },
+  }));
+}
+
+/**
+ * Save the Agent with the editable fields `version` stored, as a new version.
+ *
+ * `comparedWith` is the Agent version the reader compared `version` against.
+ * The server answers 409 AGENT_VERSION_CONFLICT and writes nothing when the
+ * Agent changed since.
+ */
+export async function restoreAgentVersion(
+  agentId: string,
+  version: number,
+  comparedWith: number,
+): Promise<AgentConfig> {
+  return send((wire) => client.POST('/api/v1/agents/{agent_id}/versions/{version}/restore', {
+    ...wire,
+    params: { path: { agent_id: agentId, version } },
+    body: { version: comparedWith },
+  })) as Promise<AgentConfig>;
 }
 
 const CONVERSATION_CREATE_TIMEOUT_MS = 8_000;

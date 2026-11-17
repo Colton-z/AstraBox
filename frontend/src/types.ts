@@ -66,6 +66,10 @@ export type AdminAgentCategory = Schemas['AdminAgentCategory'];
 export type DeletedAgentCategory = Schemas['DeletedAgentCategory'];
 export type AgentTag = Schemas['AgentTag'];
 export type AgentFavorite = Schemas['AgentFavorite'];
+export type AgentVersionRecord = Schemas['AgentVersionRecord'];
+export type AgentVersionPage = Schemas['AgentVersionPage'];
+export type AgentVersionChange = Schemas['AgentVersionChange'];
+export type AgentVersionChanges = Schemas['AgentVersionChanges'];
 
 /**
  * A session's state as its read paths project it.

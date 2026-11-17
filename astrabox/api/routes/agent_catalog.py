@@ -147,6 +147,6 @@ def register_agent_catalog_routes(app: Any) -> None:
         response_model=ApiEnvelope[DeletedAgentCategory],
     )
     async def delete_agent_category(category_id: str, request: Request):
-        await get_current_user_context(request)
-        unbound = await agent_catalog.delete_category(category_id)
+        user = await get_current_user_context(request)
+        unbound = await agent_catalog.delete_category(category_id, deleted_by=user.user_id)
         return success_response({"category_id": category_id, "unbound_agents": unbound})

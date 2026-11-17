@@ -55,7 +55,13 @@ import {
   hasCatalogSelection,
 } from './UnavailableCatalogSelection';
 import { agentDisplayName, agentModel, formatDateTime } from './agentConfig';
-import { agentPayloadForProfile, buildAgentEditSections } from './agentEditConfig';
+import {
+  agentFieldLabels,
+  agentPayloadForProfile,
+  buildAgentEditSections,
+  type AgentEditOpts,
+} from './agentEditConfig';
+import { AgentVersionHistory } from './AgentVersionHistory';
 import { useAgentModelChoices } from './useAgentModelChoices';
 import { useFrontendReleaseHold } from '@/hooks/useFrontendReleaseHold';
 import { useExtensionProvider } from '@/hooks/useExtensionProvider';
@@ -186,21 +192,26 @@ export default function AgentDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, record]);
 
-  const sections: EditSectionSpec[] = useMemo(
-    () =>
-      buildAgentEditSections(schema, draft as Record<string, unknown> | null, {
-        nameEditable: false,
-        runtime_profiles,
-        engineOptionsSchema: profile?.engine_options_schema,
-        models,
-        ownerAccount,
-        catalogName: extensionProvider?.display_name,
-        categories,
-        agents,
-        tagSuggestions,
-      }).sections,
-    [schema, draft, runtime_profiles, profile, models, ownerAccount, extensionProvider, categories, agents, tagSuggestions, t],
+  const editOptions: AgentEditOpts = useMemo(
+    () => ({
+      nameEditable: false,
+      runtime_profiles,
+      engineOptionsSchema: profile?.engine_options_schema,
+      models,
+      ownerAccount,
+      catalogName: extensionProvider?.display_name,
+      categories,
+      agents,
+      tagSuggestions,
+    }),
+    [runtime_profiles, profile, models, ownerAccount, extensionProvider, categories, agents, tagSuggestions],
   );
+  const sections: EditSectionSpec[] = useMemo(
+    () => buildAgentEditSections(schema, draft as Record<string, unknown> | null, editOptions).sections,
+    [schema, draft, editOptions, t],
+  );
+  // The version history names a changed field the way its card does.
+  const fieldLabels = useMemo(() => agentFieldLabels(schema, editOptions), [schema, editOptions, t]);
 
   const isDirty = (fields: EditFieldSpec[]) =>
     sectionIsDirty(fields, draftRecordOf(draft), draftRecordOf(record));
@@ -364,6 +375,17 @@ export default function AgentDetailPage() {
     setDraft(next);
   };
 
+  /**
+   * A restore replaces the configuration the cards were seeded from, so the
+   * drafts are seeded again from the record this reload returns. Edits pending
+   * in a card are replaced with it; the restore dialog says so before it is
+   * confirmed.
+   */
+  const reloadRestored = async () => {
+    seededFor.current = null;
+    await load();
+  };
+
   const revertSection = (fields: EditFieldSpec[]) => {
     if (!draft || !record) return;
     editDraft(
@@ -481,6 +503,10 @@ export default function AgentDetailPage() {
             value={String(record.runtime_profile_name || '—')}
           />
           <ConsoleFact
+            label={t('manage:agent_versions.current_version')}
+            value={record.version ?? '—'}
+          />
+          <ConsoleFact
             label={t('common:updated_at')}
             value={formatDateTime(String(record.updated_at || '')) || '—'}
           />
@@ -549,6 +575,17 @@ export default function AgentDetailPage() {
         />
       )}
       {record?.can_manage && <ConnectorsCard kind="agent" targetId={record.agent_id} />}
+      {canManage && (
+        <AgentVersionHistory
+          key={agentId}
+          agentId={agentId}
+          currentVersion={Number(record.version ?? 0)}
+          fieldLabels={fieldLabels}
+          unsavedEdits={sections.some((section) => isDirty(section.fields))}
+          onRestored={reloadRestored}
+          onChanged={() => void load()}
+        />
+      )}
     </ConsoleRecordPage>
   );
 }

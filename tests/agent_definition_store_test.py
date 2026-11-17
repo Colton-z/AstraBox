@@ -119,7 +119,7 @@ async def test_deleting_a_category_unbinds_it_atomically_and_refuses_a_stale_dra
     )
     assert saved["categories"] == [category["category_id"]]
 
-    assert await agent_catalog.delete_category(category["category_id"]) == 1
+    assert await agent_catalog.delete_category(category["category_id"], deleted_by="admin") == 1
 
     stored = await service._agent_repo.get_agent("agent-1")
     assert stored is not None and stored["categories"] == [] and stored["version"] == 3

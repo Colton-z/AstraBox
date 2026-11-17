@@ -26,6 +26,7 @@ import {
   listAgentRuntimeProfileModels,
   listAgentRuntimeProfiles,
   listAgentTags,
+  listAgentVersions,
   listAgents,
   listConnectors,
 } from '@/api';
@@ -46,6 +47,7 @@ vi.mock('@/api', async (importOriginal) => ({
   listAgentRuntimeProfileModels: vi.fn(),
   listAgentRuntimeProfiles: vi.fn(),
   listAgentTags: vi.fn(),
+  listAgentVersions: vi.fn(),
   listAgents: vi.fn(),
   listConnectors: vi.fn(),
 }));
@@ -136,6 +138,11 @@ beforeEach(() => {
   vi.mocked(listAgentRuntimeProfileModels).mockReset().mockResolvedValue(['claude-opus-4-8']);
   vi.mocked(listAgentCategories).mockReset().mockResolvedValue([]);
   vi.mocked(listAgentTags).mockReset().mockResolvedValue([]);
+  vi.mocked(listAgentVersions).mockReset().mockResolvedValue({
+    current_version: RECORD.version!,
+    versions: [],
+    has_more: false,
+  });
   vi.mocked(getExtensionProvider).mockReset().mockResolvedValue(null);
   vi.mocked(getAgentPreparedRuntime).mockReset().mockResolvedValue({
     enabled: false,
