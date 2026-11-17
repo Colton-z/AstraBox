@@ -22,12 +22,9 @@ from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     AGENTS_PLATFORM_SERVER,
     ARTIFACTS_PLATFORM_SERVER,
     a2a_task_tools_enabled,
-    artifact_tools_enabled,
     binding_mcp_server_definitions,
-    binds_artifact_tools,
     CONNECTIONS_PLATFORM_SERVER,
     CONNECTOR_PLATFORM_SERVER,
-    personal_connections_enabled,
     EXPOSE_PORT_PLATFORM_SERVER,
     is_platform_mcp_server,
     mcp_server_enabled,
@@ -98,8 +95,6 @@ class PlatformMCPService:
             binding = await self._binding_repo.get_binding(deployment_id)
             sid = (binding or {}).get("session_id") or (deployment_id if not binding else None)
             session = await self._sessions_repo.get_session(sid) if sid else None
-            if not artifact_tools_enabled((session or binding or {}).get("source_type")):
-                return None
             if not binding and not session:
                 return None
             if not await self._origin_agent_artifacts_enabled(binding, session):
@@ -133,10 +128,7 @@ class PlatformMCPService:
             return None
         if platform_server not in self._servers:
             return None
-        if platform_server == ARTIFACTS_PLATFORM_SERVER and not binds_artifact_tools(
-            getattr(template, "session_source_type", None),
-            agent_artifacts_enabled=getattr(template, "artifacts_enabled", True),
-        ):
+        if platform_server == ARTIFACTS_PLATFORM_SERVER and not getattr(template, "artifacts_enabled", True):
             return None
         tools = config.get("tools")
         if isinstance(tools, list):
@@ -195,8 +187,6 @@ class PlatformMCPService:
             if exc.code == "MCP_BINDING_NOT_FOUND":
                 return None
             raise
-        if binding.get("source_type") == "channel":
-            return None
         agent_id = str(binding.get("agent_id") or binding.get("template_name") or "")
         if not agent_id:
             return None
@@ -436,7 +426,8 @@ class PlatformMCPService:
         An Assistant's engine serves all its owner's conversations through one
         address bound to the Assistant, and acts for that owner in each. An
         Agent's address is bound to one Session, or to a prepared runtime that
-        a Session claims, and acts for that Session's person.
+        a Session claims, and acts for that Session's person: whoever started
+        it, or a messaging-channel deployment's execution account.
         """
 
         binding = await self._binding_repo.get_binding(deployment_id)
@@ -445,10 +436,6 @@ class PlatformMCPService:
         session_id = (binding or {}).get("session_id") or (deployment_id if not binding else None)
         session = await self._sessions_repo.get_session(session_id) if session_id else None
         if not isinstance(session, dict):
-            return None
-        ref = session.get("workspace_ref") or {}
-        agent_id = None if ref.get("kind") == "assistant" else (session.get("agent_id") or ref.get("agent_id"))
-        if not personal_connections_enabled(session.get("source_type"), agent_id=agent_id):
             return None
         return str(session.get("user_id") or "").strip() or None
 
@@ -522,8 +509,6 @@ class PlatformMCPService:
     async def _artifact_tool(self, binding: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
         if not binding.get("user_id"):
             raise APIError(code="MCP_BINDING_NOT_FOUND", message="MCP binding has no user", status_code=404)
-        if not artifact_tools_enabled(binding.get("source_type")):
-            raise APIError(code="MCP_BINDING_NOT_FOUND", message="channel Sessions have no artifact tools", status_code=404)
         ref = binding.get("workspace_ref") or {}
         assistant_id = binding.get("assistant_id") or ref.get("assistant_id")
         agent_id = binding.get("agent_id") or ref.get("agent_id")
