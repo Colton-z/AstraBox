@@ -77,7 +77,7 @@ test.describe("management create flows", () => {
     // the selected RuntimeProfile's gateway advertises, so the picker has nothing
     // in it until a RuntimeProfile is chosen.
     await page
-      .getByRole("combobox", { name: "Runtime environment", exact: true })
+      .getByRole("combobox", { name: "Runtime profile", exact: true })
       .selectOption("environment-1");
     await page.getByRole("combobox", { name: "Model", exact: true }).click();
     await page.getByRole("option", { name: "claude-opus-5", exact: true }).click();

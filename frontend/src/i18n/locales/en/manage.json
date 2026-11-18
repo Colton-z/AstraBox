@@ -472,7 +472,7 @@
   "assistant_form": {
     "section_basic": "Basics",
     "section_preferences": "Runtime preferences",
-    "runtime_profile_label": "Runtime runtime profile",
+    "runtime_profile_label": "Runtime profile",
     "runtime_profile_select_help": "Select the runtime profile used by this Assistant. It supplies the Assistant runtime, sandbox settings, and model connection. Credential Vaults are assigned separately.",
     "runtime_profile_select_placeholder": "Select a runtime profile",
     "name_label": "Name",
@@ -795,7 +795,7 @@
     }
   },
   "agent_form": {
-    "select_runtime_profile_placeholder": "Select a runtime runtime profile",
+    "select_runtime_profile_placeholder": "Select a runtime profile",
     "select_placeholder": "Select…",
     "select_model_placeholder": "Select or enter a model",
     "search_model_placeholder": "Search models or enter a model id",
