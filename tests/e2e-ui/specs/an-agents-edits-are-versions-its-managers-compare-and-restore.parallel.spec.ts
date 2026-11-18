@@ -1,9 +1,10 @@
 /** An Agent's configuration history through its management page, by two managers and someone who is neither. */
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { expect, test, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 import { AstraApi, type AgentRecord } from '../fixtures/astraApi';
-import { apiPath, appPath } from '../fixtures/env';
+import { apiPath, appPath, appPrefix } from '../fixtures/env';
 import { deployedApiClient, issueToken, json, requiredEnvironment } from '../fixtures/oidcMachine';
 import { requireServiceContainer, SERVER_CONTAINER_HANDLE } from '../fixtures/serviceContainer';
 
@@ -129,10 +130,21 @@ test('an Agent keeps each edit as a version its managers compare and restore, an
       }
       expect((await readVersions(ownerApi, agentId)).current_version).toBe(beforeManaging);
 
+      // The console signs a browser in with a session cookie, not a bearer
+      // header, so the member's browser carries a session the deployed signer
+      // issues for the same principal; signing in itself is not under test.
+      const session = execFileSync('docker', ['exec', requireServiceContainer(SERVER_CONTAINER_HANDLE), 'python', '-c',
+        'import os; from astrabox.providers.identity_oidc import mint_session_token; '
+        + `print(mint_session_token(user_id=${JSON.stringify(member.user_id)}, email=None, display_name=None, roles=[], `
+        + 'casdoor_organization=os.environ.get("ASTRABOX_CASDOOR_ORGANIZATION", "")))',
+      ], { encoding: 'utf8', timeout: 15_000 }).trim();
       const visitor = await page.context().browser()!.newContext({
         baseURL: consoleUrl,
-        storageState: { cookies: [], origins: [] },
-        extraHTTPHeaders: { Authorization: `Bearer ${memberToken}` },
+        storageState: {
+          cookies: [{ name: 'astrabox_session', value: session, domain: new URL(consoleUrl).hostname,
+            path: appPrefix || '/', expires: -1, httpOnly: true, secure: consoleUrl.startsWith('https:'), sameSite: 'Lax' }],
+          origins: [],
+        },
       });
       try {
         const theirs = await visitor.newPage();
