@@ -39,6 +39,13 @@ const readVersion = (api: AstraApi, agentId: string, version: number) =>
   api.data<VersionDetail>('GET', `/agents/${agentId}/versions/${version}`);
 const readAgent = (api: AstraApi, agentId: string) =>
   api.data<StoredAgent>('GET', `/agents/${agentId}`);
+/** An authoring save through the API: it carries the schema's required fields with the change. */
+async function saveAgent(api: AstraApi, agentId: string, changes: Record<string, unknown>): Promise<StoredAgent> {
+  const current = await readAgent(api, agentId);
+  return api.data<StoredAgent>('PUT', `/agents/${agentId}`, {
+    name: current.name, model: current.model, runtime_profile_name: current.runtime_profile_name, ...changes,
+  });
+}
 
 /** The card that holds `inner`, or the one headed `inner`. */
 function card(page: Page, inner: Locator | string): Locator {
@@ -195,9 +202,7 @@ test('an Agent keeps each edit as a version its managers compare and restore, an
       // The history follows the save without a reload.
       await expect(versionRow(page, history, repoVersion)).toContainText('Project repository');
 
-      const edited = await managerApi.data<StoredAgent>(
-        'PUT', `/agents/${agentId}`, { description: DESCRIPTION_AFTER, version: repoVersion },
-      );
+      const edited = await saveAgent(managerApi, agentId, { description: DESCRIPTION_AFTER, version: repoVersion });
       expect(edited.version).toBe(descriptionVersion);
 
       const recorded = await readVersions(ownerApi, agentId);
@@ -316,8 +321,8 @@ test('an Agent keeps each edit as a version its managers compare and restore, an
       const dialog = page.getByRole('alertdialog');
       await expect(dialog.getByRole('list', { name: 'Will be restored', exact: true })).toBeVisible();
 
-      const meanwhile = await managerApi.data<StoredAgent>(
-        'PUT', `/agents/${agentId}`, { description: DESCRIPTION_MEANWHILE, version: restoredVersion },
+      const meanwhile = await saveAgent(
+        managerApi, agentId, { description: DESCRIPTION_MEANWHILE, version: restoredVersion },
       );
       expect(meanwhile.version).toBe(meanwhileVersion);
 
@@ -342,8 +347,8 @@ test('an Agent keeps each edit as a version its managers compare and restore, an
     });
 
     await test.step('a save that changes nothing adds no version', async () => {
-      const unchanged = await ownerApi.data<StoredAgent>(
-        'PUT', `/agents/${agentId}`, { description: DESCRIPTION_MEANWHILE, version: meanwhileVersion },
+      const unchanged = await saveAgent(
+        ownerApi, agentId, { description: DESCRIPTION_MEANWHILE, version: meanwhileVersion },
       );
       expect(unchanged.version).toBe(meanwhileVersion);
       const after = await readVersions(ownerApi, agentId);
@@ -354,8 +359,8 @@ test('an Agent keeps each edit as a version its managers compare and restore, an
     await test.step('older versions load on demand', async () => {
       let version = meanwhileVersion;
       for (let edit = 1; version <= HISTORY_PAGE; edit += 1) {
-        version = (await ownerApi.data<StoredAgent>(
-          'PUT', `/agents/${agentId}`, { description: `${DESCRIPTION_MEANWHILE} Edit ${edit}.`, version },
+        version = (await saveAgent(
+          ownerApi, agentId, { description: `${DESCRIPTION_MEANWHILE} Edit ${edit}.`, version },
         )).version;
       }
       const recorded = await readVersions(ownerApi, agentId);
