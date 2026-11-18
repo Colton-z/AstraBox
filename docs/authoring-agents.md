@@ -249,6 +249,13 @@ An Agent that existed before the server kept version history starts its history
 at the configuration it had when the server was upgraded. That version's `operation` is `baseline`;
 the versions before it were not kept.
 
+A conversation keeps the version its sandbox was prepared from. When it
+reconnects to that sandbox, after a server restart for example, AstraBox
+launches the Agent program with that version's configuration, so the Plugins
+and Skills it names are the ones the sandbox installed. A conversation that
+gets a new sandbox, its first or one that replaces a lost sandbox, is prepared
+from the current version.
+
 #### Restore a version
 
 Compare the version with the current one first: request its changes with `base`

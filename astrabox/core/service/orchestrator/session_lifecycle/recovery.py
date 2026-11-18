@@ -159,10 +159,18 @@ class SessionRecovery:
             and session.get("state") != SessionState.TERMINATED.value
             and not session.get("runtime_unavailable")
         ):
+            # The box holds what the Agent version its plan records installed.
+            bound = await self._agent_config.resolve_bound_session_harness(session)
+            if bound is None:
+                raise APIError(
+                    code="TEMPLATE_NOT_ALLOWED",
+                    message="agent configuration not found",
+                    status_code=403,
+                )
             await self._reattach(
                 session,
                 ownership,
-                template=template,
+                template=bound,
                 sandbox_id=previous_sandbox_id,
                 engine_session_key=engine_session_key,
                 observed_runtime=observed_runtime,

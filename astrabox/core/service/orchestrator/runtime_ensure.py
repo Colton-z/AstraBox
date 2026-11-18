@@ -146,7 +146,7 @@ class RuntimeEnsure:
                 message="agent_chat runtime_identity is required",
                 status_code=409,
             )
-        template = await self._agent_config.resolve_session_harness(session)
+        template = await self._agent_config.resolve_bound_session_harness(session)
         if template is None:
             raise APIError(
                 code="TEMPLATE_NOT_ALLOWED",
@@ -643,7 +643,7 @@ class RuntimeEnsure:
                     sandbox_id,
                     lightweight_exc,
                 )
-                template = await self._agent_config.resolve_session_harness(session)
+                template = await self._agent_config.resolve_bound_session_harness(session)
                 if template is None:
                     raise lightweight_exc
                 runtime = await self._runtime_manager.ensure_runtime(

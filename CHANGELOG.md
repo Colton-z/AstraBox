@@ -13,9 +13,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - **Agent version history and restore.** AstraBox keeps every version of an Agent's configuration with who changed it and when; a manager can compare any two versions field by field and restore one, in the console or through the API. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
 
+### Fixed
+
+- **A conversation reconnects with the Agent version its sandbox was prepared from.** After an Agent's Plugins changed, reconnecting an existing Claude Code conversation failed with `PACKAGE_INVALID` and left its message waiting. A new sandbox still uses the current version. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
+
 ### Upgrading
 
 - Schema revision `0028` adds `agent_versions` and records each existing Agent's current configuration as the start of its history.
+- Schema revision `0029` records that version on each existing Agent conversation as the one its sandbox was prepared from.
 
 ## 中文
 
@@ -23,9 +28,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - **Agent 版本历史与恢复。** AstraBox 保存 Agent 配置的每个版本及其修改人和时间；管理者可以在控制台或通过 API 逐字段比较任意两个版本，并恢复到其中一个。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
 
+### 修复
+
+- **对话重连时沿用其沙箱准备时的 Agent 版本。** 此前 Agent 的插件改动后，已有 Claude Code 对话重连会报 `PACKAGE_INVALID`，消息一直等待。新沙箱仍使用当前版本。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
+
 ### 升级说明
 
 - Schema 修订 `0028` 新增 `agent_versions` 表，并把每个现有 Agent 的当前配置记录为其历史起点。
+- Schema 修订 `0029` 把该版本记为每个现有 Agent 对话的沙箱准备版本。
 
 ## [0.1.15] - 2026-11-15
 

@@ -508,6 +508,10 @@ def plan_capabilities(template: Any | None, identity: dict[str, Any]) -> dict[st
             )
 
     plan = {
+        # The Agent version whose definition this plan installs. Reconnecting to
+        # the sandbox launches that version (AgentConfigService.
+        # resolve_bound_session_harness); None for an Assistant view.
+        "agent_version": _template_value(template, "version"),
         "skill_install_plan": [
             {
                 "kind": "skill",
