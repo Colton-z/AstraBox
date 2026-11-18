@@ -280,6 +280,49 @@ class AgentConfigService:
         # the Agent's, which its runtime generation is computed from.
         return replace(view, session_source_type=session.get("source_type"))
 
+    async def resolve_bound_session_harness(self, session: dict[str, Any]) -> AgentView | None:
+        """Resolve the runtime view a Session's bound sandbox was prepared from.
+
+        Reconnecting to that sandbox launches the engine over what its
+        preparation installed there, Plugin checkouts included, so an Agent
+        Session resolves the Agent version its capability plan records: the
+        editable fields that version stored, with access settings and the
+        bindings made through their own endpoints as they are now, the same
+        split restoring that version makes. A new sandbox is prepared from the
+        latest version instead (:meth:`resolve_session_harness`), as is every
+        Assistant Session, which keeps no Agent version.
+        """
+        if not isinstance(session, dict) or session.get("session_kind") != "agent_chat":
+            return await self.resolve_session_harness(session)
+        identity = session.get("runtime_identity")
+        plan = identity.get("capability_plan") if isinstance(identity, dict) else None
+        version = plan.get("agent_version") if isinstance(plan, dict) else None
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise APIError(
+                code="CONVERSATION_IDENTITY_REQUIRED",
+                message=(
+                    "the Session's capability plan names no Agent version, so the "
+                    "configuration its sandbox was prepared from is unknown"
+                ),
+                status_code=409,
+            )
+        agent_id = str(session.get("agent_id") or "").strip()
+        item = await self._agent_repo.get_agent(agent_id) if agent_id else None
+        if item is None:
+            return None
+        if int(item["version"]) != version:
+            stored = await self._agent_versions.get(agent_id, version)
+            if stored is None:
+                raise _version_not_found(version)
+            definition = stored["definition"]
+            item = {
+                **item,
+                **{field: definition.get(field) for field in AGENT_EDITABLE_REQUEST_FIELDS},
+                "version": version,
+            }
+        view = await self._build_agent_view(item, {})
+        return replace(view, session_source_type=session.get("source_type"))
+
     async def _resolve_assistant_harness(
         self, assistant_id: str, *, require_enabled_runtime_profile: bool = True
     ) -> AgentView | None:

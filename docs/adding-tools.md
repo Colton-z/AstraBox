@@ -254,7 +254,7 @@ does not drop it and does not run without it:
 Open the Agent in **Console > Agents**. Change the selected MCP servers or Skills in the extension card, or edit the direct MCP, Skill, and Plugin repository fields, then click **Save** for that section.
 
 :::note
-Saving does not reconfigure a task already running. AstraBox uses the latest saved Agent when it first prepares or rebuilds a Session runtime. If another user saves the same Agent first, the console reports a conflict instead of overwriting that change.
+Saving does not reconfigure a task already running. AstraBox uses the latest saved Agent when it first prepares or rebuilds a Session runtime; a Session that reconnects to its existing sandbox keeps the Agent version that sandbox was prepared from ([Version history](authoring-agents.md#version-history)). If another user saves the same Agent first, the console reports a conflict instead of overwriting that change.
 :::
 
 ## Inspect current extension configuration
