@@ -149,5 +149,5 @@ A: The deployment has no enabled RuntimeProfile that supports Agent conversation
 ## Next steps
 
 - [Define an Agent](authoring-agents.md) — Learn about all Agent configuration fields.
-- [RuntimeProfiles](runtime-profiles.md) — Customize your runtime RuntimeProfiles.
+- [RuntimeProfiles](runtime-profiles.md) — Customize your RuntimeProfiles.
 - [Start a Session](sessions.md) — Dive deeper into Session management.

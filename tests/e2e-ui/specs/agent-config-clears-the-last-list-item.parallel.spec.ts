@@ -48,7 +48,7 @@ test('removing the final skill and package persists empty lists after reload', a
   await page.goto(appPath(`/manage/agents/${encodeURIComponent(agentId)}`));
   await expect(page.locator('[data-slot="card"]').filter({ has: page.locator('#agent-extension-mcp') })).toBeVisible();
 
-  const environment = page.getByRole('combobox', { name: 'Runtime environment', exact: true });
+  const environment = page.getByRole('combobox', { name: 'Runtime profile', exact: true });
   const model = page.getByRole('combobox', { name: 'Model', exact: true });
   await expect(environment).toBeVisible();
   await expect(model).toBeVisible();

@@ -74,7 +74,7 @@ test('an Assistant created in the console keeps its system prompt, and its recor
   await expect(nameField, 'the create form must render').toBeVisible();
   await nameField.fill(name);
   await page
-    .getByRole('combobox', { name: 'Runtime environment', exact: true })
+    .getByRole('combobox', { name: 'Runtime profile', exact: true })
     .selectOption(runtimeProfileName);
 
   const permission = page.getByRole('combobox', { name: 'Default permission', exact: true });

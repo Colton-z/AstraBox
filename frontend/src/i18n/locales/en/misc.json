@@ -277,7 +277,7 @@
       "model": {
         "label": "Model",
         "manage_gateway": "Manage models in {{name}}",
-        "help": "Enter the model ID exposed by the model-service connection for the selected runtime runtime profile",
+        "help": "Enter the model ID exposed by the model-service connection for the selected runtime profile",
         "help_chatgpt_plan": "Using ChatGPT plan: the models the chosen ChatGPT account can use. Conversations spend that account's plan, not the model gateway.",
         "help_anthropic_api_key": "Using your Anthropic API key: the models the chosen key can use. Conversations spend that key, not the model gateway."
       },
@@ -321,7 +321,7 @@
         "label": "Packages"
       },
       "runtime_profile_name": {
-        "label": "Runtime runtime profile",
+        "label": "Runtime profile",
         "help": "Select the saved runtime setup that provides the Agent program, sandbox settings, network access, and model connection. Credential Vaults are assigned separately."
       },
       "model_account_id": {
@@ -339,7 +339,7 @@
       },
       "idle_hibernate_seconds": {
         "label": "Idle timeout (seconds)",
-        "help": "After this many idle seconds, AstraBox applies the pause or removal behavior saved in the runtime runtime profile"
+        "help": "After this many idle seconds, AstraBox applies the pause or removal behavior saved in the runtime profile"
       },
       "prepared_capacity": {
         "label": "Prepared capacity",

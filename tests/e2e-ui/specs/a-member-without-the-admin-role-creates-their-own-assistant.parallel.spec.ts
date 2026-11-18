@@ -87,7 +87,7 @@ test('a member without the admin role picks from their own RuntimeProfile choice
   await page.goto(appPath('/manage/assistants/new'));
   const nameField = page.getByRole('textbox', { name: 'Name', exact: true });
   await expect(nameField, 'the create form renders for a member').toBeVisible();
-  const runtimeProfile = page.getByRole('combobox', { name: 'Runtime environment', exact: true });
+  const runtimeProfile = page.getByRole('combobox', { name: 'Runtime profile', exact: true });
   const offered = (await runtimeProfile.locator('option').evaluateAll(
     (options) => options.map((option) => (option as HTMLOptionElement).value),
   )).filter(Boolean).sort();
