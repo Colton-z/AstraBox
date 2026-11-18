@@ -302,6 +302,13 @@ A message waiting for a runtime whose start fails is refused with that
 start's `code` and `message`, the same as the Session's `last_error_code` and
 `last_error`. A Session whose first start fails ends `TERMINATED`.
 
+A message waiting for AstraBox to reconnect to the Session's sandbox is refused
+with the reconnect's error when that error is not retryable, such as
+`PACKAGE_INVALID` for a sandbox that does not hold the Plugins its Agent
+version declares. The Session then reads `RECOVERY_REQUIRED`; recovering it
+moves the conversation to a new sandbox prepared from the Agent's current
+version.
+
 ## Read the Session Stream
 
 The stream uses the AI SDK UI Message Stream protocol and delivers each

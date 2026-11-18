@@ -7,8 +7,8 @@
  * runtime is evicted from the server while its sandbox keeps running, so its
  * next message reconnects to that sandbox. Claude's options for that
  * reconnect must come from the version that installed A: built from the edited
- * Agent, they name a Plugin the sandbox does not hold, the reconnect is refused
- * with PACKAGE_INVALID, and the message stays pending.
+ * Agent, they name a Plugin the sandbox does not hold and the reconnect is
+ * refused with PACKAGE_INVALID instead of answering the message.
  *
  * The spec reads
  *

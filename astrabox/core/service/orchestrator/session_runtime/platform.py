@@ -27,6 +27,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
 from astrabox.core.service.orchestrator.session_lifecycle.startup import runtime_initialization_metadata
 from astrabox.core.service.orchestrator.session_runtime.host import (
     ConnectedRuntime,
+    RuntimeAttachRefused,
     RuntimeEnded,
     RuntimeGone,
     RuntimeNotReady,
@@ -129,6 +130,8 @@ class PlatformRuntimeConnector:
                 raise RuntimeGone(session_id, reason="sandbox_lost")
             if result.delivery_changed:
                 raise RuntimeGone(session_id, reason="model_delivery_changed")
+            if result.refusal is not None:
+                raise RuntimeAttachRefused(session_id, failure=result.refusal)
             raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
         client = runtime.engine_client
         if not isinstance(client, RuntimeClient):

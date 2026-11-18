@@ -16,6 +16,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Fixed
 
 - **A conversation reconnects with the Agent version its sandbox was prepared from.** After an Agent's Plugins changed, reconnecting an existing Claude Code conversation failed with `PACKAGE_INVALID` and left its message waiting. A new sandbox still uses the current version. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **A message fails with the reason when its sandbox cannot be reconnected.** A reconnect refused with an error that is not retryable left the message waiting while the server retried; the message now fails with that error and the conversation reads as needing recovery. [Guide](https://www.astrabox.ai/docs/sessions#send-a-message)
 
 ### Upgrading
 
@@ -31,6 +32,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### 修复
 
 - **对话重连时沿用其沙箱准备时的 Agent 版本。** 此前 Agent 的插件改动后，已有 Claude Code 对话重连会报 `PACKAGE_INVALID`，消息一直等待。新沙箱仍使用当前版本。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **沙箱无法重连时，消息带着原因失败。** 此前重连遇到不可重试的错误时，消息一直等待，服务端反复重试；现在消息以该错误失败，对话显示为需要恢复。[指南](https://www.astrabox.ai/docs/sessions#send-a-message)
 
 ### 升级说明
 

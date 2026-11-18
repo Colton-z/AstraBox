@@ -47,7 +47,7 @@ _RUNTIME_ENSURE_ATTACH_FAILED = "ATTACH_FAILED"
 class _RuntimeEnsureResult:
     """What one ensure attempt produced: a runtime, or why there is none."""
 
-    __slots__ = ("status", "runtime", "error_text", "session", "sandbox_gone", "delivery_changed")
+    __slots__ = ("status", "runtime", "error_text", "session", "sandbox_gone", "delivery_changed", "refusal")
 
     def __init__(
         self,
@@ -58,6 +58,7 @@ class _RuntimeEnsureResult:
         session: dict[str, Any] | None = None,
         sandbox_gone: bool = False,
         delivery_changed: bool = False,
+        refusal: dict[str, Any] | None = None,
     ) -> None:
         self.status = status
         self.runtime = runtime
@@ -70,6 +71,18 @@ class _RuntimeEnsureResult:
         # delivery owner the configuration does not declare; the reader host
         # replaces it, since no reattachment can serve the declared owner.
         self.delivery_changed = delivery_changed
+        # The box is alive, but the attach failed with an APIError that is not
+        # retryable, ``{code, message}``: attaching it again fails the same
+        # way, so the reader host fails the waiting inputs with this error
+        # instead of reconnecting.
+        self.refusal = refusal
+
+
+def _attach_refusal(exc: BaseException) -> dict[str, Any] | None:
+    """The error an attach failure answers waiting inputs with, when retrying cannot clear it."""
+    if isinstance(exc, APIError) and not exc.retryable:
+        return {"code": exc.code, "message": exc.message}
+    return None
 
 
 def _is_sandbox_gone_error(exc: BaseException) -> bool:
@@ -348,6 +361,7 @@ class RuntimeEnsure:
                 session=session,
                 sandbox_gone=gone,
                 delivery_changed=delivery_changed,
+                refusal=None if gone or delivery_changed else _attach_refusal(exc),
             )
         with contextlib.suppress(Exception):
             await self._sessions_repo.update_session(session_id, write_back)
@@ -724,12 +738,14 @@ class RuntimeEnsure:
                         session_id,
                         sandbox_id,
                     )
+                delivery_changed = _is_delivery_changed_error(full_exc)
                 return _RuntimeEnsureResult(
                     status=_RUNTIME_ENSURE_ATTACH_FAILED,
                     error_text=error_text,
                     session=session,
                     sandbox_gone=gone,
-                    delivery_changed=_is_delivery_changed_error(full_exc),
+                    delivery_changed=delivery_changed,
+                    refusal=None if gone or delivery_changed else _attach_refusal(full_exc),
                 )
 
 
