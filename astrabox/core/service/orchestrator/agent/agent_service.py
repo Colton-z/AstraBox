@@ -148,6 +148,43 @@ class AgentService:
         self._schedule_runtime_reconciliation(agent_id)
         return updated
 
+    async def list_agent_versions(
+        self, user: UserContext, agent_id: str, *, before: int | None, limit: int
+    ) -> dict[str, Any]:
+        """One page of the Agent's versions, newest first."""
+
+        return await self._agent_config.list_agent_versions(
+            user, agent_id, before=before, limit=limit
+        )
+
+    async def get_agent_version(
+        self, user: UserContext, agent_id: str, version: int
+    ) -> dict[str, Any]:
+        """One version of the Agent with the definition it stored."""
+
+        return await self._agent_config.get_agent_version(user, agent_id, version)
+
+    async def get_agent_version_changes(
+        self, user: UserContext, agent_id: str, version: int, *, base: int | None
+    ) -> dict[str, Any]:
+        """What a version changed from ``base``, or from the version before it."""
+
+        return await self._agent_config.get_agent_version_changes(
+            user, agent_id, version, base=base
+        )
+
+    async def restore_agent_version(
+        self, user: UserContext, agent_id: str, version: int, *, expected_version: int
+    ) -> dict[str, Any]:
+        """Save the Agent with the editable fields one of its versions stored."""
+
+        self._raise_if_quiesced()
+        restored = await self._agent_config.restore_agent_version(
+            user, agent_id, version, expected_version=expected_version
+        )
+        self._schedule_runtime_reconciliation(agent_id)
+        return self._sanitize(restored)
+
     def schedule_runtime_reconciliation(self, agent_id: str) -> bool:
         """Reconcile current configuration after a write or capacity claim."""
 

@@ -14,6 +14,7 @@ from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.agent_repository import AgentReferenceMissing
+from astrabox.persistence.repository.agent_version_repository import AgentVersionRepository
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
 )
@@ -38,11 +39,13 @@ from astrabox.core.service.orchestrator.schema_validation import (
 )
 from astrabox.core.service.orchestrator.agent.agent_catalog import normalize_catalog_fields
 from astrabox.core.service.orchestrator.agent_schema import (
+    AGENT_EDITABLE_REQUEST_FIELDS,
     AGENT_PRIVATE_STORED_FIELDS,
     agent_artifacts_enabled,
     default_prepared_capacity,
     validate_agent_payload,
 )
+from astrabox.core.service.orchestrator.agent_version_changes import definition_changes
 from astrabox.core.service.orchestrator.author_boundary import (
     refuse_reserved_mcp_fields,
     validate_author_declarations,
@@ -134,6 +137,22 @@ def _version_conflict() -> APIError:
     )
 
 
+def _version_not_found(version: int) -> APIError:
+    return APIError(
+        code="AGENT_VERSION_NOT_FOUND",
+        message=f"the Agent's history has no version {version}",
+        status_code=404,
+    )
+
+
+def _marked_restorable(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``changes``, each saying whether restoring a version writes its field."""
+    return [
+        {**change, "restorable": change["path"][0] in AGENT_EDITABLE_REQUEST_FIELDS}
+        for change in changes
+    ]
+
+
 def _reference_missing(error: AgentReferenceMissing) -> APIError:
     """The API error for an Agent write naming a record that does not exist."""
     if error.reference == "environment":
@@ -173,6 +192,7 @@ class AgentConfigService:
         spawn_background_task: Callable[..., Any] | None = None,
     ) -> None:
         self._agent_repo = agent_repo
+        self._agent_versions = AgentVersionRepository()
         self._runtime_profile_repo = runtime_profile_repo
         self._sessions_repo = sessions_repo or SessionRepository()
         # The runtime-view resolver reads the Assistant catalog directly. An
@@ -953,11 +973,100 @@ class AgentConfigService:
             raise _version_conflict()
         return self.sanitize_agent_doc(written)
 
+    async def list_agent_versions(
+        self, user: UserContext, agent_id: str, *, before: int | None, limit: int
+    ) -> dict[str, Any]:
+        """One page of the Agent's versions, newest first, for a manager of it.
+
+        Each version names the authored fields that differ from the version
+        before it; the oldest version an Agent kept has none to compare with.
+        ``before`` continues after a page's last version.
+        """
+        agent = await self._must_manage_agent_access(user, agent_id)
+        rows = await self._agent_versions.list_for_agent(
+            str(agent["agent_id"]), before=before, limit=limit + 1, definitions=True
+        )
+        versions = []
+        for row, older in zip(rows[:limit], [*rows[1:], None]):
+            definition = row.pop("definition")
+            row["changed_fields"] = (
+                sorted({change["path"][0] for change in definition_changes(older["definition"], definition)})
+                if older is not None
+                else []
+            )
+            versions.append(row)
+        return {
+            "current_version": int(agent["version"]),
+            "versions": versions,
+            "has_more": len(rows) > limit,
+        }
+
+    async def get_agent_version(
+        self, user: UserContext, agent_id: str, version: int
+    ) -> dict[str, Any]:
+        """One version of the Agent with the definition it stored."""
+        agent = await self._must_manage_agent_access(user, agent_id)
+        stored = await self._agent_versions.get(str(agent["agent_id"]), version)
+        if stored is None:
+            raise _version_not_found(version)
+        return stored
+
+    async def get_agent_version_changes(
+        self, user: UserContext, agent_id: str, version: int, *, base: int | None
+    ) -> dict[str, Any]:
+        """What ``version`` changed from ``base``, or from the version before it.
+
+        ``base_version`` is ``None``, with no changes, for the oldest version
+        the Agent kept. Each change says whether restoring a version writes it.
+        """
+        target = await self.get_agent_version(user, agent_id, version)
+        if base is None:
+            earlier = await self._agent_versions.get_preceding(target["agent_id"], version)
+        else:
+            earlier = await self._agent_versions.get(target["agent_id"], base)
+            if earlier is None:
+                raise _version_not_found(base)
+        return {
+            "version": version,
+            "base_version": earlier["version"] if earlier is not None else None,
+            "changes": _marked_restorable(
+                definition_changes(earlier["definition"], target["definition"])
+                if earlier is not None
+                else []
+            ),
+        }
+
+    async def restore_agent_version(
+        self, user: UserContext, agent_id: str, version: int, *, expected_version: int
+    ) -> dict[str, Any]:
+        """Save the Agent with the editable fields ``version`` stored.
+
+        The write is an ordinary Agent update of every field the authoring
+        endpoint accepts, so it is validated against the existing RuntimeProfiles,
+        categories and limits, applies only while the Agent is at
+        ``expected_version``, and becomes a new version naming ``version``.
+        Access settings and the bindings made through their own endpoints
+        (vaults, catalog selections, connectors) stay as they are.
+        """
+        stored = await self.get_agent_version(user, agent_id, version)
+        definition = stored["definition"]
+        return await self.upsert_agent_config(
+            user,
+            agent_id,
+            {
+                **{field: definition.get(field) for field in AGENT_EDITABLE_REQUEST_FIELDS},
+                "version": expected_version,
+            },
+            restored_from_version=version,
+        )
+
     async def upsert_agent_config(
         self,
         user: UserContext,
         agent_id: str,
         payload: dict[str, Any],
+        *,
+        restored_from_version: int | None = None,
     ) -> dict[str, Any]:
         """Update one Agent by id with optimistic concurrency.
 
@@ -1081,6 +1190,7 @@ class AgentConfigService:
                 expected_version=stored_version,
                 changes=updates,
                 updated_by=me,
+                restored_from_version=restored_from_version,
             )
         except AgentReferenceMissing as exc:
             raise _reference_missing(exc) from None

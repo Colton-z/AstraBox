@@ -228,6 +228,53 @@ To resolve the conflict:
 2. Re-apply your desired changes to the latest object data.
 3. Use the new `version` to perform another `PUT`.
 
+### Version history {#version-history}
+
+AstraBox keeps the configuration of every version of an Agent. Each change that
+moves `version` stores the resulting configuration with who made it, when, and
+whether it was an edit or a restore, in the same database transaction as the
+change itself. A save that changes nothing adds no version.
+
+Anyone who can manage the Agent can read its history, in the console on the
+Agent's page or through the API:
+
+| Request | Answers |
+|---|---|
+| `GET /api/v1/agents/{agent_id}/versions` | The versions, newest first, each with the fields that differ from the version before it. `limit` sets the page size; pass a page's last version as `before` to read on. |
+| `GET /api/v1/agents/{agent_id}/versions/{version}` | One version with the configuration it stored. |
+| `GET /api/v1/agents/{agent_id}/versions/{version}/changes` | Each value that differs from the version before it, as `path`, `before` and `after`. `base` names another version to compare with instead. |
+| `POST /api/v1/agents/{agent_id}/versions/{version}/restore` | Saves the Agent with that version's configuration. |
+
+An Agent that existed before the server kept version history starts its history
+at the configuration it had when the server was upgraded. That version's `operation` is `baseline`;
+the versions before it were not kept.
+
+#### Restore a version
+
+Compare the version with the current one first: request its changes with `base`
+set to the Agent's current `version`. Then restore it, naming the `version` you
+compared against:
+
+```bash
+curl -X POST "$SERVICE_URL/api/v1/agents/$AGENT_ID/versions/4/restore" \
+  -H "Authorization: Bearer $ASTRABOX_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"version": 7}'
+```
+
+A restore is an ordinary update. It is validated like one, so a version that
+names a RuntimeProfile or category that no longer exists is refused. It creates a
+new version whose `restored_from_version` names the one it reapplied, and the
+history keeps every version in between. If the Agent changed after you
+compared, the request answers **409** `AGENT_VERSION_CONFLICT` and writes
+nothing; compare again.
+
+A restore writes the fields the Agent update endpoint accepts. Access settings,
+Vault bindings, catalog selections and connectors are recorded in the history
+and marked `"restorable": false` in a comparison, and a restore leaves them as
+they are. Conversations, workspaces and sandbox files are separate data and are
+not changed by a restore.
+
 ## Best practices
 
 1. **Naming conventions** — Use the `team-purpose` format, such as `backend-code-review`, `frontend-test-gen`.
@@ -266,7 +313,7 @@ A: AstraBox does not impose a fixed length limit. Use a concise name that people
 
 **Q: How do I restore an earlier Agent configuration?**
 
-A: AstraBox does not keep selectable configuration history. Save the Agent configuration before updating it. To restore it, `PUT` the saved configuration with the latest `version` number.
+A: Open the Agent's version history, compare the version with the current one, and restore it. See [Version history](#version-history).
 
 ## Next steps
 

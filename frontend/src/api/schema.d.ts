@@ -1641,6 +1641,89 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/agents/{agent_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Agent Versions
+         * @description The Agent's versions, newest first, for a manager of the Agent.
+         */
+        get: operations["list_agent_versions_api_v1_agents__agent_id__versions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/versions/{version}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Agent Version */
+        get: operations["get_agent_version_api_v1_agents__agent_id__versions__version__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/versions/{version}/changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Version Changes
+         * @description What a version changed, value by value.
+         *
+         *     Naming the Agent's current version as ``base`` shows what restoring
+         *     ``version`` would change.
+         */
+        get: operations["get_agent_version_changes_api_v1_agents__agent_id__versions__version__changes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/agents/{agent_id}/versions/{version}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Agent Version
+         * @description Save the Agent with the editable fields ``version`` stored.
+         *
+         *     The body names the Agent version the caller compared against; a change
+         *     made since answers ``AGENT_VERSION_CONFLICT`` and writes nothing.
+         */
+        post: operations["restore_agent_version_api_v1_agents__agent_id__versions__version__restore_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/agents/{agent_id}/wake": {
         parameters: {
             query?: never;
@@ -6578,6 +6661,109 @@ export interface components {
             /** Tag */
             tag: string;
         };
+        /**
+         * AgentVersionChange
+         * @description One value that differs between two versions.
+         *
+         *     ``path`` leads to the value from the authored field's name, descending into
+         *     objects. ``restorable`` says whether restoring a version writes the field.
+         */
+        AgentVersionChange: {
+            /** After */
+            after?: unknown;
+            /** Before */
+            before?: unknown;
+            /** Path */
+            path: string[];
+            /** Restorable */
+            restorable: boolean;
+        };
+        /**
+         * AgentVersionChanges
+         * @description What ``version`` holds that ``base_version`` does not.
+         *
+         *     ``base_version`` is ``null``, with no changes, when ``version`` is the
+         *     oldest the Agent kept and no base was named.
+         */
+        AgentVersionChanges: {
+            /** Base Version */
+            base_version?: number | null;
+            /** Changes */
+            changes: components["schemas"]["AgentVersionChange"][];
+            /** Version */
+            version: number;
+        };
+        /**
+         * AgentVersionDetail
+         * @description One version with every authored field it stored, by name.
+         */
+        AgentVersionDetail: {
+            /** Agent Id */
+            agent_id: string;
+            /** Author User Id */
+            author_user_id?: string | null;
+            /** Changed Fields */
+            changed_fields?: string[] | null;
+            /** Created At */
+            created_at: string;
+            /** Definition */
+            definition: {
+                [key: string]: unknown;
+            };
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "create" | "update" | "restore" | "baseline";
+            /** Restored From Version */
+            restored_from_version?: number | null;
+            /** Version */
+            version: number;
+        };
+        /**
+         * AgentVersionPage
+         * @description One page of an Agent's versions, newest first.
+         *
+         *     ``current_version`` is the Agent's version now. Pass the last version of a
+         *     page as ``before`` to read the next one while ``has_more`` is true.
+         */
+        AgentVersionPage: {
+            /** Current Version */
+            current_version: number;
+            /** Has More */
+            has_more: boolean;
+            /** Versions */
+            versions: components["schemas"]["AgentVersionRecord"][];
+        };
+        /**
+         * AgentVersionRecord
+         * @description One version of an Agent's definition, without the definition.
+         *
+         *     ``operation`` is ``create``, ``update``, ``restore`` (with the version it
+         *     reapplied in ``restored_from_version``) or ``baseline``: the definition the
+         *     Agent had when version history began, whose earlier versions were not kept.
+         *     ``changed_fields`` names the authored fields that differ from the version
+         *     before it, and is present on the version list only.
+         */
+        AgentVersionRecord: {
+            /** Agent Id */
+            agent_id: string;
+            /** Author User Id */
+            author_user_id?: string | null;
+            /** Changed Fields */
+            changed_fields?: string[] | null;
+            /** Created At */
+            created_at: string;
+            /**
+             * Operation
+             * @enum {string}
+             */
+            operation: "create" | "update" | "restore" | "baseline";
+            /** Restored From Version */
+            restored_from_version?: number | null;
+            /** Version */
+            version: number;
+        };
         /** ApiEnvelope[AdminApiWorkspaceResult] */
         ApiEnvelope_AdminApiWorkspaceResult_: {
             /** Code */
@@ -6855,6 +7041,30 @@ export interface components {
             /** Code */
             code: string;
             data: components["schemas"]["AgentRuntimeProfileModels"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AgentVersionChanges] */
+        ApiEnvelope_AgentVersionChanges_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentVersionChanges"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AgentVersionDetail] */
+        ApiEnvelope_AgentVersionDetail_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentVersionDetail"];
+            /** Message */
+            message: string;
+        };
+        /** ApiEnvelope[AgentVersionPage] */
+        ApiEnvelope_AgentVersionPage_: {
+            /** Code */
+            code: string;
+            data: components["schemas"]["AgentVersionPage"];
             /** Message */
             message: string;
         };
@@ -11729,6 +11939,14 @@ export interface components {
             started_at?: string | null;
             /** Status */
             status?: string | null;
+        };
+        /**
+         * RestoreAgentVersionRequest
+         * @description The Agent version the caller compared the restored one against.
+         */
+        RestoreAgentVersionRequest: {
+            /** Version */
+            version: number;
         };
         /** RuntimeStateLoadRequest */
         RuntimeStateLoadRequest: {
@@ -17684,6 +17902,181 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_list_SessionRecord__"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_agent_versions_api_v1_agents__agent_id__versions_get: {
+        parameters: {
+            query?: {
+                /** @description Versions per page. */
+                limit?: number;
+                /** @description Read the versions below this one. */
+                before?: number;
+            };
+            header?: never;
+            path: {
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentVersionPage_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_agent_version_api_v1_agents__agent_id__versions__version__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentVersionDetail_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_agent_version_changes_api_v1_agents__agent_id__versions__version__changes_get: {
+        parameters: {
+            query?: {
+                /** @description The version to compare against; the version before this one when omitted. */
+                base?: number;
+            };
+            header?: never;
+            path: {
+                agent_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentVersionChanges_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    restore_agent_version_api_v1_agents__agent_id__versions__version__restore_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                agent_id: string;
+                version: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreAgentVersionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_AgentRecord_"];
                 };
             };
             /** @description Request validation failed (INVALID_REQUEST). */

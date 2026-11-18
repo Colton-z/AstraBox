@@ -296,6 +296,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("ENVIRONMENT_MISSING", 500, "state", False, "platform"),
     ("ENVIRONMENT_MISMATCH", 409, "state", False, "client"),
     ("ENVIRONMENT_NOT_FOUND", 404, "request", False, "client"),
+    # The Agent's history holds no version by that number: it predates the
+    # history, or was never reached. The caller reads the version list again.
+    ("AGENT_VERSION_NOT_FOUND", 404, "request", False, "client"),
     ("ENVIRONMENT_ACCESS_DENIED", 403, "authorization", False, "client"),
     ("ENVIRONMENT_ENTRY_POLICY_UNAVAILABLE", 503, "authorization", True, "platform"),
     ("ENVIRONMENT_VERSION_CONFLICT", 409, "state", True, "client"),

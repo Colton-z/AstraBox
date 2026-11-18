@@ -7,6 +7,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Added
+
+- **Agent version history and restore.** AstraBox keeps every version of an Agent's configuration with who changed it and when; a manager can compare any two versions field by field and restore one, in the console or through the API. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
+
+### Upgrading
+
+- Schema revision `0028` adds `agent_versions` and records each existing Agent's current configuration as the start of its history.
+
+## 中文
+
+### 新增
+
+- **Agent 版本历史与恢复。** AstraBox 保存 Agent 配置的每个版本及其修改人和时间；管理者可以在控制台或通过 API 逐字段比较任意两个版本，并恢复到其中一个。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
+
+### 升级说明
+
+- Schema 修订 `0028` 新增 `agent_versions` 表，并把每个现有 Agent 的当前配置记录为其历史起点。
+
 ## [0.1.15] - 2026-11-15
 
 ## English

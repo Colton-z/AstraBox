@@ -134,6 +134,41 @@ class Agent(Base):
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
+class AgentVersion(Base):
+    """An Agent's authored definition as one version of it stored it.
+
+    Every write that moves ``Agent.version`` adds the row for the version it
+    produced, in the same transaction, so the newest row is always the current
+    definition. ``operation`` is ``create`` for the first definition, ``update``
+    for an edit, ``restore`` for an edit that reapplied ``restored_from_version``,
+    and ``baseline`` for the definition an Agent had when version history began:
+    its earlier versions were not kept.
+    """
+
+    __tablename__ = "agent_versions"
+    __table_args__ = (
+        CheckConstraint(
+            "operation IN ('create', 'update', 'restore', 'baseline')", name="operation"
+        ),
+        CheckConstraint(
+            "(operation = 'restore') = (restored_from_version IS NOT NULL)", name="restore_source"
+        ),
+        MYSQL_TABLE_OPTIONS,
+    )
+
+    agent_id: Mapped[str] = mapped_column(
+        KeyText(128), ForeignKey("agents.agent_id", ondelete="CASCADE"), primary_key=True
+    )
+    version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    #: Every authored field by name, as an Agent read returns it.
+    definition: Mapped[dict[str, Any]]
+    operation: Mapped[str] = mapped_column(payload_text())
+    restored_from_version: Mapped[int | None] = mapped_column(Integer)
+    #: Who made the change; ``NULL`` for a baseline whose Agent recorded no editor.
+    author_user_id: Mapped[str | None] = mapped_column(payload_text())
+    created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+
+
 class AgentCategory(Base):
     """A category a platform administrator defines; Agents are listed under it."""
 
