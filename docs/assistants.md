@@ -57,7 +57,11 @@ Assistant.
    [timezone](#timezone) starts as the browser's.
 4. Select **Create**.
 
-The signed-in user becomes the owner. The RuntimeProfile also determines the Agent
+The signed-in user becomes the owner; no administrator role is needed. The
+form offers every enabled RuntimeProfile whose Agent program supports
+Assistants, which an API client reads from
+`GET /api/v1/agent-configuration/runtime-profiles?session_kind=assistant_chat`.
+The RuntimeProfile also determines the Agent
 program, and the console keeps both fixed after creation. The name, description,
 icon, timezone, system prompt, and default permission mode remain editable.
 

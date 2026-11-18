@@ -468,7 +468,12 @@ function resolve(pathname: string, query: URLSearchParams): unknown {
     return { provider: { name: "litellm", display_name: "LiteLLM", management_console: true } };
   }
   if (at("agent-configuration", "schema")) return AGENT_FORM_SCHEMA;
-  if (at("agent-configuration", "runtime-profiles")) return runtime_profiles;
+  // The Assistant form asks for its own product's choices (`session_kind`);
+  // the server returns only the RuntimeProfiles whose program declares it.
+  if (at("agent-configuration", "runtime-profiles")) {
+    const kind = query.get("session_kind");
+    return kind ? runtime_profiles.filter((p) => p.supported_session_kinds.includes(kind)) : runtime_profiles;
+  }
   if (at("agent-configuration", "runtime-profiles", "*", "models")) return { models: MODELS };
   if (at("admin", "integrations")) return {
     services: [

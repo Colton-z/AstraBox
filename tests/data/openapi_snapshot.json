@@ -5306,7 +5306,7 @@
       },
       "AgentRuntimeProfileOption": {
         "additionalProperties": true,
-        "description": "One RuntimeProfile an Agent author may choose, without its secrets.",
+        "description": "One RuntimeProfile an Agent author or Assistant owner may choose, without its secrets.",
         "properties": {
           "display_name": {
             "title": "Display Name",
@@ -5349,6 +5349,22 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "permission_modes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Permission Modes",
+            "type": "array"
+          },
+          "supported_session_kinds": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Session Kinds",
+            "type": "array"
           }
         },
         "required": [
@@ -27759,8 +27775,24 @@
     },
     "/api/v1/agent-configuration/runtime-profiles": {
       "get": {
-        "description": "Secret-free RuntimeProfile choices for the Agent form.",
+        "description": "Secret-free RuntimeProfile choices for the Agent and Assistant forms.",
         "operationId": "list_agent_configuration_runtime_profiles_api_v1_agent_configuration_runtime_profiles_get",
+        "parameters": [
+          {
+            "description": "The product being configured: agent_chat for an Agent, assistant_chat for an Assistant.",
+            "in": "query",
+            "name": "session_kind",
+            "required": false,
+            "schema": {
+              "default": "agent_chat",
+              "enum": [
+                "agent_chat",
+                "assistant_chat"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {

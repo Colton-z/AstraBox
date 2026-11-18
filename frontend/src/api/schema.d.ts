@@ -1299,7 +1299,7 @@ export interface paths {
         };
         /**
          * List Agent Configuration Runtime Profiles
-         * @description Secret-free RuntimeProfile choices for the Agent form.
+         * @description Secret-free RuntimeProfile choices for the Agent and Assistant forms.
          */
         get: operations["list_agent_configuration_runtime_profiles_api_v1_agent_configuration_runtime_profiles_get"];
         put?: never;
@@ -6531,7 +6531,7 @@ export interface components {
         };
         /**
          * AgentRuntimeProfileOption
-         * @description One RuntimeProfile an Agent author may choose, without its secrets.
+         * @description One RuntimeProfile an Agent author or Assistant owner may choose, without its secrets.
          */
         AgentRuntimeProfileOption: {
             /** Display Name */
@@ -6558,6 +6558,16 @@ export interface components {
             };
             /** Name */
             name: string;
+            /**
+             * Permission Modes
+             * @default []
+             */
+            permission_modes: string[];
+            /**
+             * Supported Session Kinds
+             * @default []
+             */
+            supported_session_kinds: string[];
         } & {
             [key: string]: unknown;
         };
@@ -16400,7 +16410,10 @@ export interface operations {
     };
     list_agent_configuration_runtime_profiles_api_v1_agent_configuration_runtime_profiles_get: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description The product being configured: agent_chat for an Agent, assistant_chat for an Assistant. */
+                session_kind?: "agent_chat" | "assistant_chat";
+            };
             header?: never;
             path?: never;
             cookie?: never;

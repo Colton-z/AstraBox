@@ -43,6 +43,7 @@ from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_access import is_platform_admin
+from astrabox.core.service.orchestrator.engine.capabilities import SessionKind
 from astrabox.core.service.orchestrator.vault_service import VaultService
 from astrabox.seams.sandbox import sandbox_for_template
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
@@ -641,8 +642,10 @@ class AgentPlatformService:
     async def list_runtime_profile_configs(self, user: UserContext) -> list[dict[str, Any]]:
         return await self._agent_config.list_runtime_profile_configs(user)
 
-    async def list_agent_runtime_profile_options(self) -> list[dict[str, Any]]:
-        return await self._agent_config.list_agent_runtime_profile_options()
+    async def list_runtime_profile_options(
+        self, session_kind: SessionKind
+    ) -> list[dict[str, Any]]:
+        return await self._agent_config.list_runtime_profile_options(session_kind)
 
     async def delete_runtime_profile_config(
         self, user: UserContext, name: str,

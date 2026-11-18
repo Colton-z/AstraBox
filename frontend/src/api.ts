@@ -934,6 +934,21 @@ export async function listAgentRuntimeProfiles(): Promise<RuntimeProfileConfig[]
   );
 }
 
+/**
+ * Secret-free RuntimeProfile choices for an Assistant, available to any
+ * signed-in user: only enabled profiles whose installed program serves
+ * Assistants.
+ */
+export async function listAssistantRuntimeProfiles(): Promise<RuntimeProfileConfig[]> {
+  return expectList<RuntimeProfileConfig>(
+    await send((wire) => client.GET('/api/v1/agent-configuration/runtime-profiles', {
+      ...wire,
+      params: { query: { session_kind: 'assistant_chat' } },
+    })),
+    '/agent-configuration/runtime-profiles',
+  );
+}
+
 /** Model routing ids advertised by the selected RuntimeProfile's gateway. */
 export async function listAgentRuntimeProfileModels(runtimeProfileName: string): Promise<string[]> {
   if (!runtimeProfileName.trim()) return [];

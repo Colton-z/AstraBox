@@ -53,6 +53,7 @@ from astrabox.core.service.orchestrator.runtime_profile_schema import (
     validate_runtime_profile_payload,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
+    SessionKind,
     capabilities_for_engine_kind,
     engine_allowed_for_session_kind,
     unsupported_engine_configuration_inputs,
@@ -1283,14 +1284,17 @@ class AgentConfigService:
         rendered["extensions"] = extensions_projection(capabilities.extensions)
         return rendered
 
-    async def list_agent_runtime_profile_options(self) -> list[dict[str, Any]]:
-        """Return the small, secret-free RuntimeProfile catalog Agent forms need.
+    async def list_runtime_profile_options(
+        self, session_kind: SessionKind
+    ) -> list[dict[str, Any]]:
+        """Return the small, secret-free RuntimeProfile catalog a product form needs.
 
-        Agent authors need to choose a runnable RuntimeProfile, but they must not
-        receive the administrator's complete RuntimeProfile documents (network
-        policy, provider settings, and write-only credential metadata).  Keep
-        this projection deliberately narrow and exclude disabled runtime_profiles
-        whose installed engine does not declare the Agent product.
+        Agent authors and Assistant owners need to choose a runnable
+        RuntimeProfile, but they must not receive the administrator's complete
+        RuntimeProfile documents (network policy, provider settings, and
+        write-only credential metadata).  Keep this projection deliberately
+        narrow and exclude disabled runtime_profiles and those whose installed
+        engine does not declare ``session_kind``.
         """
         configs = await self._runtime_profile_repo.list_all()
         options: list[dict[str, Any]] = []
@@ -1298,11 +1302,12 @@ class AgentConfigService:
             if not isinstance(config, dict) or config.get("enabled") is False:
                 continue
             engine_kind = str(config.get("engine_kind") or "").strip()
-            if not engine_allowed_for_session_kind(engine_kind, "agent_chat"):
+            if not engine_allowed_for_session_kind(engine_kind, session_kind):
                 continue
             name = str(config.get("name") or "").strip()
             if not name:
                 continue
+            capabilities = capabilities_for_engine_kind(engine_kind)
             options.append(
                 {
                     "name": name,
@@ -1310,7 +1315,10 @@ class AgentConfigService:
                     "engine_kind": engine_kind,
                     "enabled": True,
                     "engine_available": True,
-                    "supported_session_kinds": ["agent_chat"],
+                    "supported_session_kinds": sorted(capabilities.supported_session_kinds),
+                    # The modes the form may offer, in the program's own
+                    # vocabulary; empty means the program has none to choose.
+                    "permission_modes": list(capabilities.permission_modes),
                     # The model endpoint provider, so the form asks for what
                     # it needs: a ChatGPT plan one spends a linked account.
                     # None when the deployment's default serves the profile.
@@ -1321,16 +1329,11 @@ class AgentConfigService:
                     # chosen environment. Empty means the engine takes no bag
                     # and the form shows no group.
                     "engine_options_schema": [
-                        dict(field)
-                        for field in capabilities_for_engine_kind(
-                            engine_kind
-                        ).extensions.native_config
+                        dict(field) for field in capabilities.extensions.native_config
                     ],
                     # What else the engine accepts, so the form shows only
                     # the extension fields this RuntimeProfile's engine reads.
-                    "extensions": extensions_projection(
-                        capabilities_for_engine_kind(engine_kind).extensions
-                    ),
+                    "extensions": extensions_projection(capabilities.extensions),
                 }
             )
         return sorted(options, key=lambda item: (str(item["display_name"]).lower(), item["name"]))

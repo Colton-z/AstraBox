@@ -16,8 +16,13 @@ from astrabox.api.routes.conversation_models import (
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.api.routes.sessions import SessionRecord
 from astrabox.common.utils.api_response import success_response
+from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.agent_schema import AGENT_FIELD_SCHEMA, get_agent_schema
+from astrabox.core.service.orchestrator.engine.capabilities import (
+    SESSION_KINDS,
+    require_session_kind,
+)
 from astrabox.core.service.orchestrator.service_registry import (
     get_agent_service,
     get_platform_service,
@@ -179,7 +184,7 @@ class AgentFormSchema(BaseModel):
 
 
 class AgentRuntimeProfileOption(BaseModel):
-    """One RuntimeProfile an Agent author may choose, without its secrets."""
+    """One RuntimeProfile an Agent author or Assistant owner may choose, without its secrets."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -187,6 +192,10 @@ class AgentRuntimeProfileOption(BaseModel):
     display_name: str
     engine_kind: str
     enabled: bool
+    #: The products the installed engine serves.
+    supported_session_kinds: list[str] = []
+    #: The permission modes the engine declares; empty when it has none.
+    permission_modes: list[str] = []
     #: The RuntimeProfile's model endpoint provider; null when the
     #: deployment's default serves it.
     endpoint_provider: str | None = None
@@ -322,11 +331,29 @@ def register_agent_routes(app: Any) -> None:
         "/api/v1/agent-configuration/runtime-profiles",
         response_model=ApiEnvelope[list[AgentRuntimeProfileOption]],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "session_kind",
+                    "string",
+                    "The product being configured: agent_chat for an Agent, "
+                    "assistant_chat for an Assistant.",
+                    default="agent_chat",
+                    enum=sorted(SESSION_KINDS),
+                ),
+            ]
+        },
     )
     async def list_agent_configuration_runtime_profiles(request: Request):
-        """Secret-free RuntimeProfile choices for the Agent form."""
+        """Secret-free RuntimeProfile choices for the Agent and Assistant forms."""
         await _resolve_user(request)
-        result = await get_platform_service().list_agent_runtime_profile_options()
+        try:
+            session_kind = require_session_kind(
+                request.query_params.get("session_kind", "agent_chat")
+            )
+        except ValueError as exc:
+            raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
+        result = await get_platform_service().list_runtime_profile_options(session_kind)
         return success_response(result)
 
     @app.get(
