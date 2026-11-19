@@ -1026,6 +1026,34 @@ class AssistantService:
             "expires_at": endpoint.expires_at.isoformat() if endpoint.expires_at else None,
         }
 
+    async def user_action(
+        self, user: UserContext, assistant_id: str, *, action_id: str | None = None
+    ) -> dict[str, Any]:
+        """What the owner must do before the Assistant can run, read without starting it.
+
+        The deployment's runtime preparation provider answers for the
+        Assistant and its owner, with no conversation (``session_id`` None),
+        as it does for an Agent before its first conversation. ``action_id``
+        performs an operation the current answer offers, such as issuing a
+        new consent link after the last one expired.
+        """
+
+        from astrabox.core.service.orchestrator.user_actions import user_action_state
+        from astrabox.seams.runtime_preparation import (
+            PreparationSubject,
+            SessionUserActionContext,
+        )
+
+        await self._must_use_assistant(user, assistant_id)
+        return await user_action_state(
+            SessionUserActionContext(
+                session_id=None,
+                principal_id=user.user_id,
+                subject=PreparationSubject(kind="assistant", id=assistant_id),
+            ),
+            action_id=action_id,
+        )
+
     async def set_owner_secret(
         self, user: UserContext, assistant_id: str, key: str, value: Any
     ) -> dict[str, Any]:

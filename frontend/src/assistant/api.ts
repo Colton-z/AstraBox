@@ -1,7 +1,7 @@
 import i18n from '@/i18n';
 import type { paths } from '../api/schema';
 
-import type { ListPageQuery } from '@/types';
+import type { ListPageQuery, SessionUserActionState } from '@/types';
 
 import type {
   AssistantConversationResult,
@@ -96,6 +96,23 @@ export function deleteAssistant(assistantId: string): Promise<{ assistant_id: st
     ...wire,
     params: { path: { assistant_id: assistantId } },
   })) as Promise<{ assistant_id: string; deleted: boolean }>;
+}
+
+/**
+ * What the owner must do before the Assistant can run, read without starting
+ * its workspace. The same answer, and the same operations, as a conversation's
+ * `/user-action`.
+ */
+export async function getAssistantUserAction(assistantId: string): Promise<SessionUserActionState> {
+  return sendApi((wire) => apiClient.GET('/api/v1/assistants/{assistant_id}/user-action', {
+    ...wire, params: { path: { assistant_id: assistantId } },
+  })) as Promise<SessionUserActionState>;
+}
+
+export async function performAssistantUserAction(assistantId: string, actionId: string): Promise<SessionUserActionState> {
+  return sendApi((wire) => apiClient.POST('/api/v1/assistants/{assistant_id}/user-action', {
+    ...wire, params: { path: { assistant_id: assistantId } }, body: { action_id: actionId },
+  })) as Promise<SessionUserActionState>;
 }
 
 export function wakeAssistantWorkspace(assistantId: string): Promise<AssistantWorkspaceResult> {
