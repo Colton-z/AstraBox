@@ -3549,7 +3549,7 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
     from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, HookMatcher
 
     class NativeClient(ClaudeSDKClient):
-        """Bridge the pinned CLI controls absent from Python SDK0.2.163."""
+        """Bridge the pinned CLI controls absent from Python SDK 0.2.187."""
 
         async def receive_messages(self) -> AsyncIterator[Any]:
             from claude_agent_sdk._internal.message_parser import parse_message
@@ -3561,8 +3561,8 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
                 if message is None:
                     yield NativeSDKMessage(dict(data))
                 else:
-                    # Preserve additive native fields such as command/result
-                    # attribution; the Python dataclass parser drops them.
+                    # Preserve the additive native fields that the Python
+                    # dataclass parser drops.
                     setattr(message, "_astrabox_native_message", dict(data))
                     yield message
 
