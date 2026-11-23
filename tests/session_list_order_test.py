@@ -126,8 +126,7 @@ async def _send(session_id: str, client_message_id: str) -> None:
     assert accepted is not None
 
 
-async def test_the_list_follows_the_owners_last_action(database: str, environment_member_accounts: set[str]) -> None:
-    environment_member_accounts.add("u1")
+async def test_the_list_follows_the_owners_last_action(database: str) -> None:
     await create_agent("a1")
     now = datetime.now(timezone.utc)
 
