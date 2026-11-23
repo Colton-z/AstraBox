@@ -5,9 +5,9 @@ AstraBox supplies the Assistant owner's accessible Agents as peers, with
 credentials scoped to its workspace and each target. The target executes in a
 normal AstraBox Session, owned by the caller, through its configured engine.
 
-Hermes is pinned to 0.22.4, commit
-`4d04303818b61bf3aa09278af48356315515965b`. Its
-[A2A plugin](https://github.com/NousResearch/hermes-agent/blob/4d04303818b61bf3aa09278af48356315515965b/website/docs/user-guide/messaging/a2a.md)
+Hermes is pinned to 0.23.3, commit
+`caafe5389ae585ef77387a962aee05b1bcf17029`. Its
+[A2A plugin](https://github.com/NousResearch/hermes-agent/blob/caafe5389ae585ef77387a962aee05b1bcf17029/website/docs/user-guide/messaging/a2a.md)
 provides `a2a_discover`, `a2a_call`, `a2a_list`, `a2a_history` and
 `a2a_orchestrate`. The Assistant's Hermes gateway serves only the Assistant's own
 conversations: it is kept off every one of its messaging platforms, including

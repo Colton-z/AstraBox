@@ -1523,10 +1523,11 @@ def _build_hermes_config_defaults() -> dict[str, Any]:
         "terminal": {"backend": "local"},
         "approvals": {"mode": "off", "cron_mode": "approve"},
         "security": {"tirith_enabled": False},
-        # Hermes tells the agent a job created from this kind of session is
-        # "local-only" and never reported back (tools/cronjob_job_args.py),
-        # which is untrue here: AstraBox reports each run into the
-        # conversation that created the job (engine/hermes_cron.py).
+        # Hermes tells the agent a job created from a local chat reports to
+        # that chat only as a history note, "not as a live message"
+        # (tools/cronjob_tools.py), or that it is "local-only"
+        # (cron/job_args.py). Neither holds here: AstraBox reports each run
+        # into the conversation that created the job (engine/hermes_cron.py).
         "agent": {"system_prompt": _HERMES_CRON_DELIVERY_NOTE},
     }
 

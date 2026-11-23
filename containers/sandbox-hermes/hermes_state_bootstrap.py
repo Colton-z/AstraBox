@@ -18,8 +18,8 @@ from typing import Any
 
 import astrabox_state_gate as gate
 
-#: The gateway's private creation receipts in ``state_meta``
-#: (``POLICY_PREFIX`` in ``hermes_state_local.py`` at the pinned commit).
+#: The gateway's private creation receipts in ``state_meta`` (``POLICY_PREFIX``
+#: in ``persistence/sqlite/conversation/_store/local.py`` at the pinned commit).
 LOCAL_RECEIPT_KEYS = "gateway.local_policy.v1:*"
 
 
@@ -29,8 +29,8 @@ def verify_native_identity(home: Path) -> None:
     Hermes' gateway derives a conversation's id from the owning profile's
     absolute HERMES_HOME, the principal that created it and the creation
     request, and it keys each admission by that principal; a client of the
-    gateway's own account is ``uid:<uid>`` (``local_identity`` in
-    ``gateway/session_local_recovery.py``, the control socket's peer subject in
+    gateway's own account is ``uid:<uid>`` (``local_session_id`` in
+    ``persistence/authority/bindings.py``, the control socket's peer subject in
     ``gateway/control_socket.py``). Each creation receipt records both. Under
     another home or uid no recorded conversation would resume, and an input
     sent again would be admitted as a new one, so the restore stops here.
