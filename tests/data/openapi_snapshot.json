@@ -3626,6 +3626,17 @@
               }
             ]
           },
+          "last_user_activity_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last User Activity At"
+          },
           "mcp_connections": {
             "items": {},
             "title": "Mcp Connections",
@@ -19725,6 +19736,17 @@
                 "type": "null"
               }
             ]
+          },
+          "last_user_activity_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last User Activity At"
           },
           "model_account_id": {
             "anyOf": [

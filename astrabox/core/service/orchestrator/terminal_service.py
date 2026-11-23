@@ -189,6 +189,7 @@ class TerminalService:
         if "\x00" in command or "\x00" in (requested_cwd or ""):
             raise APIError(code="INVALID_REQUEST", message="command and directory must not contain NUL", status_code=400)
         session = await self._owned(user, session_id)
+        await self._sessions.record_user_activity(session_id)
         _require_ready(session)
         target = await self._box.prepare(session)
         subscription = self._feed.subscribe(session_id)
@@ -263,6 +264,7 @@ class TerminalService:
         :data:`INTERRUPT_SETTLE_S`.
         """
         await self._owned(user, session_id)
+        await self._sessions.record_user_activity(session_id)
         with self._feed.subscribe(session_id) as subscription:
             requested = await self._repo.request_interrupt(session_id)
             if requested is None:
