@@ -1,55 +1,58 @@
 ---
 slug: sub-second-conversation-start
-title: Starting an agent conversation in under half a second
+title: Starting an agent conversation in under a second
 authors: [colton]
 tags: [engineering, sandboxes, prewarming]
-draft: true
-description: How AstraBox splits an agent's startup into work that can happen before anyone asks and work that has to wait for the conversation, and what is left on the path that a user waits for.
+description: A cold start of a sandboxed coding agent takes 8 to 15 seconds. AstraBox does most of that work before the conversation exists, and a new conversation is ready in under a second.
 ---
 
 AstraBox runs the agent programs people already use (Claude Code, Codex, Pi,
-DeepSeek Harness) as cloud Agents. Every conversation gets its own sandbox, and
-the vendor's own program runs inside it. Starting all of that from nothing
-takes 8 to 15 seconds: create a container, wait for its command daemon, mount a
-workspace, install Skills and Plugins, clone a repository, start the agent
-program and let it initialize.
+DeepSeek Harness) as cloud Agents. A conversation runs in a sandbox, and the
+vendor's own program runs inside it. Starting that from nothing takes 8 to 15
+seconds: create a container, wait for its command daemon, mount a workspace,
+install Skills and Plugins, clone a repository, start the agent program and let
+it initialize.
 
-With prewarming on, a new conversation on the same deployment is ready in
-**0.40–0.50 seconds**, measured on the server from the create request to the
-conversation's READY event. This post describes how that time is spent and
-how the rest moved out of the user's way.
+With prewarming on, a new conversation is ready in under a second: 0.40 to
+0.50 seconds on an idle 8-vCPU cloud instance, measured from the create request
+to the conversation's READY event. We got there by doing most of a start
+before anyone asks for it.
 
 <!-- truncate -->
 
-| Engine | Create request → READY (server) |
+| Engine | Create request to READY |
 | --- | --- |
 | Claude Code | 0.41–0.46 s |
 | Pi | 0.41 s |
 | Codex | 0.45–0.46 s |
 | DeepSeek Harness | 0.49–0.50 s |
 
-*Four runs per engine on 2026-10-06, one c6a.2xlarge (8 vCPU, 16 GiB) running
-the Docker Compose deployment: Docker 29.1.3 with its default containerd image
-store, OpenSandbox server 0.2.3, execd v1.1.0. Codex's first claim after a
-server restart took 0.92 s. The cold-start range is from a separate
-measurement on 2026-09-23 (8.2–14.6 s across the four engines). These are
-measurements, not a service level.*
+*Four runs per engine on 2026-10-06, timed inside the server, on one idle
+c6a.2xlarge (8 vCPU, 16 GiB) running the Docker Compose deployment: Docker
+29.1.3 with its default containerd image store, OpenSandbox server 0.2.3,
+execd v1.1.0. The changes described here shipped in AstraBox 0.1.4. Codex's
+first claim after a server restart took 0.92 s. The cold-start range is from a
+separate measurement on 2026-09-23 (8.2 to 14.6 s across the four engines).
+Sandboxes ran on Docker; Kubernetes was not measured.*
 
-[TODO before publishing: replace the build description with the release
-version that ships these numbers, and add Kubernetes numbers or say they are
-Docker-only.]
+Older, busier hardware is slower. On a 2016-era VM (12 vCPU Xeon E5-2680 v4)
+that was running other workloads, the published 0.1.14 release, installed with
+the quickstart command, stayed under a second for Claude Code (0.64 to 0.82 s)
+and Pi (0.68 to 0.95 s). Codex took 1.03 to 2.26 s and DeepSeek Harness 1.00
+to 3.05 s there. That was five runs each on 2026-11-10, timed from sending the
+create request to the Session being recorded READY.
 
 ## Split startup by what it depends on
 
 Almost nothing in a cold start depends on the conversation. The container
 image, the model and gateway, the system prompt, the MCP servers, the Skills
 and Plugins, the default repository and the agent program's own launch are all
-properties of the **Agent**. Only a handful of things belong to the
+properties of the Agent. Only a handful of things belong to the
 conversation: who it is for, which credentials it may use, where its files and
 transcript go.
 
-So AstraBox keeps one prepared sandbox per Agent and builds it from the full
-Agent recipe before anyone asks:
+So we build prepared sandboxes from the full Agent recipe before anyone asks,
+one per Agent by default:
 
 | Prepared ahead, per Agent | Bound at claim, per conversation |
 | --- | --- |
@@ -59,13 +62,17 @@ Agent recipe before anyone asks:
 | The agent program, started up to the point where it waits for a conversation | The platform MCP route for this user |
 | Engine-specific work: Codex's app server, Pi's parked child process, DeepSeek Harness's native conversation and its model route | Activation over the program's own channel |
 
-The right-hand column is what a user waits for. Everything on the left happens
-while nobody is waiting.
+A user waits only for the right-hand column.
 
-The prepared sandboxes come from OpenSandbox's client-side sandbox pool, with
-its state in Redis. Acquiring from it is a single atomic operation that either
+The prepared sandboxes come from OpenSandbox's client-side sandbox pool, which
+keeps its state in Redis. Acquiring from it is one atomic operation that either
 returns a sandbox or reports an empty pool immediately. An empty pool sends the
 conversation down the cold path, and the miss is logged with its reason.
+
+Preparing ahead raises three problems. A conversation's files have to appear
+in a sandbox that was created before the conversation existed. A prepared
+sandbox must never serve an Agent that has changed since. And a sandbox nobody
+owns yet must not hold anybody's keys.
 
 ## Routing a persistent workspace into a sandbox that already exists
 
@@ -75,50 +82,51 @@ one. When a deployment configures a workspace volume, a conversation's files
 live on that volume under a platform-minted workspace id, and every sandbox
 that serves the conversation has to show those same files at `/workspace`.
 
-That collides with prewarming. A prepared sandbox exists before any
-conversation does, so when it is created nobody knows whose workspace it will
-serve. A container's mounts are fixed when it is created: neither Docker nor
-Kubernetes adds a volume to a running container. Creating the sandbox after the
-claim gives back the seconds prewarming saved. Copying the files in turns every
-start into a transfer and leaves two copies to reconcile.
+That collides with prewarming. When a prepared sandbox is created, nobody knows
+whose workspace it will serve, and a container's mounts are fixed at creation:
+neither Docker nor Kubernetes adds a volume to a running container. Creating
+the sandbox after the claim gives back the seconds prewarming saved. Copying
+the files in turns every start into a transfer and leaves two copies to
+reconcile.
 
-AstraBox gives every prepared sandbox a **workspace view** instead of a
+AstraBox gives every prepared sandbox a workspace view instead of a
 workspace. A view is a single-branch [mergerfs](https://github.com/trapexit/mergerfs)
 FUSE mount, run by a small privileged helper outside the sandbox: a container
-on Docker, a Pod on Kubernetes. mergerfs is not there to merge anything. It is
-there because its branch can be changed at runtime, by writing the
-`user.mergerfs.branches` extended attribute on the mount's control entry,
-without unmounting.
+on Docker, a Pod on Kubernetes. We use mergerfs for one property, and it has
+nothing to do with merging: its branch can be changed at runtime, without
+unmounting, by writing the `user.mergerfs.branches` extended attribute on the
+mount's control entry.
 
 The sandbox mounts a child directory of the view, never the view's root. When
-the pool creates a sandbox, the view points at a fresh, empty workspace. A new
-conversation simply adopts that workspace at claim. A conversation that already
-has one (its previous sandbox was recycled or lost) gets the view switched:
-AstraBox asks the helper to point the view at the conversation's workspace,
-the helper writes the new branch and reads it back, and the sandbox's next
-`open()` under `/workspace` lands in the conversation's files. The sandbox, its
-mount and the prepared agent program are untouched.
+the pool creates a sandbox, the view points at a fresh, empty workspace, and a
+new conversation adopts that workspace at claim. A conversation that
+already has one, because its previous sandbox was recycled or lost, gets the
+view switched: AstraBox asks the helper to point the view at the
+conversation's workspace, the helper writes the new branch and reads it back,
+and the sandbox's next `open()` under `/workspace` lands in the conversation's
+files. The sandbox, its mount and the prepared agent program are untouched.
 
-The details are where the guarantees come from:
+The view runs with its entry, attribute and negative-lookup caches at zero,
+directory caching and write-back caching off, and passthrough I/O for file
+contents, so the next lookup after a switch sees the new files.
 
-- **No stale metadata.** The view runs with its entry, attribute and
-  negative-lookup caches at zero, directory caching and write-back caching
-  off, and passthrough I/O for file contents, so the switch is visible to the
-  next lookup.
-- **One switch per view.** A file descriptor opened before a switch keeps the
-  file it opened, so a view never switches while a conversation uses it. A view
-  binds to exactly one conversation, at claim, and refuses a second binding.
-- **The sandbox cannot repoint itself.** The control entry lives at the root of
-  the FUSE mount, and the sandbox only ever sees a child directory. Root inside
-  the sandbox has no path to the entry that chooses its files.
-- **A crash halfway through a bind is safe.** The helper records the binding,
-  with the mapping it is replacing, before it touches the mount. It accepts
-  only the old or the new mapping when it resumes, and repeating the bind
-  completes it.
-- **A missing mount stops the start.** Before the agent program runs, AstraBox
-  checks that `/workspace` is a mount and that it is the mergerfs view. A
-  sandbox whose workspace mount did not arrive would otherwise write to a disk
-  that disappears with it; such a candidate is destroyed instead.
+A file descriptor opened before a switch keeps the file it opened, so a view
+never switches while a conversation uses it. A view binds to exactly one
+conversation, at claim, and refuses a second binding.
+
+The sandbox cannot repoint itself. The control entry lives at the root of the
+FUSE mount and the sandbox only ever sees a child directory, so even root
+inside the sandbox has no path to the entry that chooses its files.
+
+A crash halfway through a bind is recoverable. The helper records the binding,
+with the mapping it is replacing, before it touches the mount. When it resumes
+it accepts only the old or the new mapping, and repeating the bind completes
+it.
+
+Before the agent program runs, AstraBox checks that `/workspace` is a mount
+and that it is the mergerfs view. A sandbox whose workspace mount did not
+arrive would write to a disk that disappears with it, so such a candidate is
+destroyed.
 
 The backing volume can be a local directory or a shared filesystem such as
 Amazon EFS or NFS. With shared storage, a conversation can continue in a
@@ -131,16 +139,16 @@ different node.
 
 Workspace volumes are optional. Without one, none of this runs: each agent
 program's native session is kept in the platform database and restored into
-the next sandbox, so a conversation still survives the loss of its sandbox;
-the files in its workspace do not.
+the next sandbox, so a conversation still survives the loss of its sandbox,
+though the files in its workspace are lost with it.
 
 ## A prepared sandbox is only valid for the Agent it was built from
 
-A sandbox prepared for yesterday's system prompt is worse than no sandbox. It
-starts fast and then answers as the wrong agent.
+A sandbox prepared for yesterday's system prompt starts fast and then answers
+as the wrong agent, which is worse than a slow start.
 
-Every prepared unit carries a **runtime generation**: a hash over everything
-that went into building it. That includes the image, the engine, the sandbox
+Every prepared unit carries a runtime generation: a hash over everything
+that went into building it. That covers the image, the engine, the sandbox
 tenancy and permission level, the network policy, the model with its gateway
 and credential shape, the system prompt, MCP servers, Skills, Plugins, engine
 options and Vault bindings. A claim compares the Agent's current generation
@@ -152,55 +160,53 @@ activate.
 ## Keys stay out of the prepared sandbox
 
 A prepared sandbox exists before any conversation does, so it cannot hold a
-conversation's credentials. It does not need to. The agent program only ever
-sees placeholder values. The real credentials live in an egress vault in front
-of the sandbox, which replaces placeholders in outbound requests to allowed
-hosts.
+conversation's credentials. The agent program only ever sees placeholder
+values. The real credentials live in an egress vault in front of the sandbox,
+which replaces the placeholders in outbound requests to allowed hosts.
 
 At claim, when the model endpoint issues per-conversation credentials (the
 bundled LiteLLM gateway does), AstraBox mints one for the conversation and
-points the sandbox's placeholder at it. The prepared process keeps running;
+points the sandbox's placeholder at it. The prepared process keeps running and
 nothing inside the sandbox restarts. Model usage is then attributed to the
-conversation rather than to the Agent's shared preparation key.
+conversation, not to the Agent's shared preparation key.
 
 ## A claim either activates the prepared unit or fails
 
 A prepared unit that fails to activate is discarded, and the conversation's
-start fails with the reason. It does not quietly fall back to a cold start in
-the same request. A silent fallback turns a broken prepared sandbox into a
+start fails with the reason. It does not fall back to a cold start in the
+same request. A silent fallback turns a broken prepared sandbox into a
 start that is mysteriously ten seconds slow, every time, with nothing in the
 logs pointing at it. Replenishing the pool is a separate job that runs after
 the failure.
 
 ## Keep the critical path to what the conversation needs
 
-The remaining work is mostly bookkeeping. Each step is small; together they
-are the difference between half a second and a second and a half. Three rules
-cover most of it.
+What remains is mostly bookkeeping. No single step is large, but before this
+work they added up to about 1.2 seconds for Claude Code and 1.65 for DeepSeek
+Harness. Most of the saving came from three changes.
 
-**Recovery work runs only when there is something to recover.** A startup
+Recovery work now runs only when there is something to recover. A startup
 command can die after creating or claiming a sandbox and before recording it.
 The next execution of the same command has to find that sandbox, and finding it
-means listing every sandbox on the backend. Only a re-execution can find
-anything, because every startup command has a fresh id. So the first
-execution records itself on the Session with one compare-and-set before it
-touches the sandbox provider, and skips the listing. A re-execution sees the
-record and runs the lookup.
+means listing every sandbox on the backend. But only a re-execution can find
+anything, because every startup command has a fresh id. So the first execution
+records itself on the Session with one compare-and-set before it touches the
+sandbox provider, and skips the listing. A re-execution sees the record and
+runs the lookup.
 
-**Housekeeping runs after the user is served.** Claiming a sandbox appends the
+Housekeeping runs after the user is served. Claiming a sandbox appends the
 conversation to the Agent's gateway-key ledger. Pruning that ledger (reading
 every ended conversation and deleting its gateway key) runs as a background
 task after the claim instead of in front of it.
 
-**No commands inside the sandbox on the claim path.** Each command executed in
+The claim path runs no commands inside the sandbox. Each command executed in
 a sandbox costs about 235 ms here, because the command daemon holds the
 output stream open for a short drain after the command ends. A private file
 written through the sandbox's file API takes about 5 ms. DeepSeek Harness
-needed a per-conversation state file at claim; writing it with four
-commands cost 941 ms, and writing it with one file call costs a few
-milliseconds. The prepared sandbox has never held that file, and the program
-reads it only on request, so the atomic-replace dance is unnecessary on this
-path.
+needed a per-conversation state file at claim; writing it with four commands
+cost 941 ms, and writing it with one file call costs a few milliseconds. The
+prepared sandbox has never held that file, and the program reads it only on
+request, so the atomic-replace dance is unnecessary on this path.
 
 Measuring every round trip also turned up one surprise worth knowing if you
 run Docker yourself. Under Docker 29's default containerd image store, an
@@ -210,9 +216,9 @@ every sandbox description to report its first tag. AstraBox's embedded
 OpenSandbox server reports the reference the container was created from
 instead, which is the image the create request named.
 
-## Where the remaining half second goes
+## Where the remaining time goes
 
-For a Claude Code claim at about 0.42 s:
+For a Claude Code claim at about 0.42 s, in the 2026-10-06 measurement:
 
 | Step | Time |
 | --- | --- |
@@ -230,19 +236,22 @@ for DeepSeek Harness, which rejoins its prepared native conversation and
 selects the Agent's model on it.
 
 Two directions remain. The claim can become a single step: everything left in
-the table above that does not depend on the conversation moves into
-preparation, and the independent steps run concurrently. And the first message
-does not have to wait at all: the platform already keeps a durable input queue
-per conversation, and accepting input while the conversation starts would
-hide the remaining startup behind the time a user spends typing.
+the table that does not depend on the conversation moves into preparation, and
+the independent steps run concurrently. And the first message does not have to
+wait at all: the platform already keeps a durable input queue per
+conversation, and accepting input while the conversation starts would hide the
+remaining startup behind the time a user spends typing.
 
 ## What prewarming costs
 
-Each Agent with prewarming on keeps one idle sandbox. On Kubernetes that is a
-request of 200m CPU and 768 MiB per Agent; on Docker it is one container. The
-pool replaces a sandbox after it is claimed, and an idle one lives as long as
-the sandbox lease (four hours by default) before it is recycled. Prewarming is
-a per-Agent setting; see [capacity planning](/docs/deploy#plan-capacity-for-prepared-sandboxes).
+Each Agent keeps as many idle prepared sandboxes as its prepared capacity,
+which is 1 by default and 0 to turn prewarming off. On a Docker host an idle
+prepared sandbox uses about 0.5 GiB for Claude Code and 0.45 GiB for Pi, plus
+about 60 MiB for its egress sidecar, and 2 to 5% of one CPU. On Kubernetes the scheduler reserves a
+conversation sandbox's requests, 250m CPU and 1 GiB. After a conversation
+claims a sandbox the pool prepares a replacement, and an idle one is recycled
+at the end of the sandbox lease. See
+[capacity planning](/docs/deploy#plan-capacity-for-prepared-sandboxes).
 
 ## Try it
 
