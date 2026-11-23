@@ -50,10 +50,10 @@ CODEX_SOCKET="${ASTRABOX_CODEX_SOCKET:-/run/astrabox-codex/app-server.sock}"
 export CODEX_HOME="${CODEX_HOME:-/home/${USER}/.codex}"
 mkdir -p "${CODEX_HOME}" "$(dirname "${CODEX_SOCKET}")"
 
-# The model catalog, when the platform sends one — written by the shared
-# helper so the box-level server and a conversation's own instance cannot
-# drift on what the catalog IS (see astrabox-model-catalog.py for why the
-# file is load-bearing).
+# The model catalog for the platform's model — written by the shared helper
+# so the box-level server and a conversation's own instance cannot drift on
+# what the catalog IS (see astrabox-model-catalog.py for why the file is
+# load-bearing).
 python3 /opt/codex/model-catalog.py "${CODEX_HOME}"
 
 chown -R "${USER}:${USER}" "${CODEX_HOME}" "$(dirname "${CODEX_SOCKET}")"

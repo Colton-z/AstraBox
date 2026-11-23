@@ -230,6 +230,63 @@ Changing the Agent's model or its RuntimeProfile does not reconfigure an active
 runtime in place. AstraBox resolves the current settings the next time it first
 prepares or rebuilds that Session runtime.
 
+## Describe the model to the Agent programs {#model-description}
+
+Each Agent program sizes its work from what it knows about the model: it
+compacts a conversation against the context window, caps each response, sends
+images only to a model that reads them, and offers the reasoning efforts the
+model accepts. A gateway route name tells it none of this. When AstraBox
+prepares a runtime, it asks the model connection what it states about the
+selected model and writes those facts into the program's own model
+configuration.
+
+| Fact | LiteLLM `/model_group/info` field | Agent programs |
+|---|---|---|
+| Context window | `max_input_tokens` | Claude Code, Codex, Pi, DeepSeek Harness, Hermes |
+| Output limit | `max_output_tokens` | Claude Code, Pi, DeepSeek Harness |
+| Image input | `supports_vision` | Codex, Pi, DeepSeek Harness, Hermes |
+| Reasoning efforts | `supported_reasoning_efforts` | Codex, Pi, DeepSeek Harness |
+
+A fact the connection does not state is left out, and the program applies its
+own default. AstraBox does not judge a model's capabilities itself: a request
+the model or the program refuses fails with that program's own error. A model
+that a program describes in its own catalog, such as the DeepSeek models in
+DeepSeek Harness, keeps that program's description.
+
+LiteLLM answers from its model map. For a route the map does not describe,
+declare the facts in the route's `model_info`:
+
+```yaml
+model_list:
+  - model_name: "company-code-model"
+    litellm_params:
+      model: "openai/provider-model-id"
+      api_base: "https://models.example.com/v1"
+      api_key: os.environ/COMPANY_MODEL_API_KEY
+    model_info:
+      max_input_tokens: 200000
+      max_output_tokens: 32000
+      supports_vision: true
+      supported_reasoning_efforts: ["low", "medium", "high"]
+      supports_low_reasoning_effort: true
+```
+
+LiteLLM reports `supports_vision` as false for a model it does not describe,
+so such a route is described as text-only. `supported_reasoning_efforts` lists
+the levels the route accepts, and LiteLLM rounds a requested level to the
+nearest one listed. Declare the per-level flags as well
+(`supports_none_reasoning_effort`, `supports_minimal_reasoning_effort`,
+`supports_low_reasoning_effort`, `supports_xhigh_reasoning_effort`,
+`supports_max_reasoning_effort`): LiteLLM reads them before forwarding an
+effort on the Messages protocol. The bundled configuration declares the levels
+DeepSeek accepts on its DeepSeek routes.
+
+A model connection other than LiteLLM states these facts through the
+`describe_model` method of its model endpoint provider (entry-point group
+`astrabox.providers.model`); a provider that does not implement it states
+nothing, and each program uses its defaults. AstraBox reads the description
+each time it prepares a runtime.
+
 ## Keep model credentials outside the Agent program
 
 The bundled gateway holds upstream model-service keys. With protected

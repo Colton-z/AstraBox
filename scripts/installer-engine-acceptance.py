@@ -73,13 +73,6 @@ SETTLE_TIMEOUT_SECONDS = 180.0
 #: engine's own runtime context, and the reply reads like a defect.
 MESSAGE = "What is the capital of France? Answer in one sentence."
 
-#: Codex looks its model up by slug in the vendor's models.json; an Agent on a
-#: model the catalog lacks runs Codex's unknown-model behaviour, which against
-#: a gateway answers one message twice (see the codex engine's model_catalog
-#: option). The repository keeps one reviewed entry to copy the slug onto.
-CODEX_CATALOG = Path(__file__).resolve().parent.parent / "tests/e2e-contract/codex-model-catalog.json"
-CODEX_CATALOG_TEMPLATE_SLUG = "deepseek-flash"
-
 # The Claude Code CLI reports a model or gateway HTTP error as text, not as an
 # error frame; such text is a failed turn, never a reply.
 MODEL_ERROR_MARKERS = (
@@ -217,12 +210,6 @@ class Api:
         return self.call("GET", f"/api/v1/sessions/{session_id}")
 
 
-def _codex_engine_options(model: str) -> dict[str, Any]:
-    catalog = json.loads(CODEX_CATALOG.read_text(encoding="utf-8"))
-    template = next(m for m in catalog["models"] if m["slug"] == CODEX_CATALOG_TEMPLATE_SLUG)
-    return {"model_catalog": {**catalog, "models": [{**template, "slug": model}]}}
-
-
 def _owner(api: Api, engine: str, model: str, label: str) -> tuple[str, str]:
     """Create what a user creates for ``engine``; return ``(kind, id)``."""
 
@@ -261,8 +248,6 @@ def _owner(api: Api, engine: str, model: str, label: str) -> tuple[str, str]:
         "model": model,
         "prepared_capacity": 0,
     }
-    if engine == "codex":
-        body["engine_options"] = _codex_engine_options(model)
     return "agent", str(api.call("POST", "/api/v1/agents", body)["agent_id"])
 
 

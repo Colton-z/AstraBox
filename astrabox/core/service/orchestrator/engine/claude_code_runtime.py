@@ -242,7 +242,7 @@ def sandbox_request(
     )
 
 
-def _model_runtime_creds(model_config: Any, *, vault: bool = False) -> dict[str, str]:
+def _model_runtime_creds(model_config: Any, *, vault: bool = False) -> dict[str, Any]:
     """Per-conversation model identity injected via options.env.
 
     Delivers the model name and auth token onto the per-session `claude` launch
@@ -282,6 +282,10 @@ def _model_runtime_creds(model_config: Any, *, vault: bool = False) -> dict[str,
         # Forwarded host-side so build_claude_options can ask the selected
         # provider for endpoint-specific request headers.
         "endpoint_provider": str(getattr(model_config, "endpoint_provider", "") or "").strip(),
+        # What the model connection states about the model, for Claude Code's
+        # window and output cap; ``None`` leaves Claude Code's default.
+        "context_window": getattr(model_config, "context_window", None),
+        "max_output_tokens": getattr(model_config, "max_output_tokens", None),
     }
 
 

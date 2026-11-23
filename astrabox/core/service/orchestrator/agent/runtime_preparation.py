@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from astrabox.seams.model import describe_model_access
 from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
 import json
@@ -50,7 +51,7 @@ async def prepare_pool_runtime(sandbox: Any, *, template: Any, manager: Any) -> 
         raise APIError(code="AGENT_PREWARM_CONFIG_INVALID", message="pool box has no workload identity", status_code=500)
     slot_id, workspace_id = placement
     adapter = get_engine_adapter(template.engine_kind)
-    model_access = manager.resolve_model_access(template.model_config or {})
+    model_access = await describe_model_access(manager.resolve_model_access(template.model_config or {}))
     request = adapter.sandbox_request(template=template, model_access=model_access)
     settings = load_astrabox_settings()
     vault_enabled = bool(settings.sandbox_credential_vault_enabled)

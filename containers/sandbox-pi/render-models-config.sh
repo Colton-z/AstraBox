@@ -27,8 +27,9 @@ fail() {
 
 [ -n "${ASTRABOX_PI_BASE_URL:-}" ] || fail "ASTRABOX_PI_BASE_URL is unset; pi has no model gateway to reach"
 [ -n "${ASTRABOX_PI_MODEL:-}" ] || fail "ASTRABOX_PI_MODEL is unset; pi has no model to publish"
-# The Agent's own fields for its model's entry, such as reasoning and
-# thinkingLevelMap; the platform always sets it, to {} when there are none.
+# The model's entry fields the platform renders from what the model
+# connection states (context window, output limit, input types, reasoning
+# levels); always set, to {} when nothing is known.
 model_entry="${ASTRABOX_PI_MODEL_ENTRY:-}"
 [ -n "$model_entry" ] || fail "ASTRABOX_PI_MODEL_ENTRY is unset; the platform names the model entry fields, {} for none"
 printf '%s' "$model_entry" | jq -e 'type == "object"' >/dev/null 2>&1 \

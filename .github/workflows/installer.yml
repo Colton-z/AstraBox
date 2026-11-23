@@ -58,7 +58,6 @@ on:
       - containers/sandbox-deepseek-harness/**
       - containers/sandbox-hermes/**
       - scripts/installer-engine-acceptance.py
-      - tests/e2e-contract/codex-model-catalog.json
       - astrabox/core/service/orchestrator/engine/**
       - astrabox/providers/open_sandbox/**
       - astrabox/config/release_images.py
@@ -74,7 +73,6 @@ on:
       - scripts/installer-acceptance.sh
       - scripts/embedded-gateway-acceptance.py
       - scripts/installer-engine-acceptance.py
-      - tests/e2e-contract/codex-model-catalog.json
       - containers/**
       - astrabox/**
       - frontend/**

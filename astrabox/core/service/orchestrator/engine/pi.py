@@ -79,6 +79,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_script_writer import (
     install_verified_text_script,
 )
 from astrabox.providers.execd import EXECD_PORT
+from astrabox.seams.model import ModelProfile, described_profile
 
 logger = get_logger(__name__)
 
@@ -102,8 +103,8 @@ PI_CREDENTIAL_ENV_VAR = "ASTRABOX_PI_API_KEY"
 #: any session claims the box, which is what keeps a prewarmed box valid.
 PI_BASE_URL_ENV_VAR = "ASTRABOX_PI_BASE_URL"
 PI_MODEL_ENV_VAR = "ASTRABOX_PI_MODEL"
-#: The Agent's ``model_entry`` option as a JSON object, merged under the
-#: model's ``id`` in the same rendering.
+#: The model's entry fields rendered from the model connection's profile, as
+#: a JSON object merged under the model's ``id`` in the same rendering.
 PI_MODEL_ENTRY_ENV_VAR = "ASTRABOX_PI_MODEL_ENTRY"
 PI_WORKSPACE_ENV_VAR = "ASTRABOX_WORKSPACE"
 
@@ -164,23 +165,6 @@ PI_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
             "defaultThinkingLevel for thinking. Model/provider selection "
             "and sessionDir are platform-owned CLI arguments. "
             "https://github.com/earendil-works/pi/blob/v1.0.0/packages/coding-agent/docs/settings.md"
-        ),
-    },
-    {
-        "key": "model_entry",
-        "label": "Pi models.json model entry",
-        "type": "object",
-        "protected_keys": ["id"],
-        "help": (
-            "Fields of the Agent's model entry in the provider table the image "
-            "writes to ~/.pi/agent/models.json. Pi treats a model as "
-            "non-reasoning unless its entry sets reasoning, and then turns "
-            "every thinking level off. For example, "
-            '{"reasoning": true, "thinkingLevelMap": {"xhigh": "xhigh"}} '
-            "declares a reasoning model that also offers xhigh, which Pi "
-            "leaves unsupported unless mapped. Pi validates the fields; a "
-            "change replaces prepared boxes. "
-            "https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/models-configuration.md"
         ),
     },
 )
@@ -407,11 +391,37 @@ def _settings(template: Any) -> dict[str, Any]:
     return settings
 
 
-def _model_entry(template: Any) -> dict[str, Any]:
-    """The Agent's fields for its model's entry in Pi's provider table."""
+#: Pi's thinking levels it offers up to ``high`` unless mapped to null, and the
+#: ones it offers only when mapped (``model-schema.js`` in pi-ai 1.6.0).
+PI_LADDER_THINKING_LEVELS = ("minimal", "low", "medium", "high")
+PI_OPT_IN_THINKING_LEVELS = ("xhigh", "max")
 
-    bag = getattr(template, "engine_options", None)
-    return dict(bag.get("model_entry") or {}) if isinstance(bag, dict) else {}
+
+def _model_entry(profile: ModelProfile) -> dict[str, Any]:
+    """The model's entry fields in Pi's provider table, from what is known.
+
+    An unknown fact is left out, so Pi applies its own default. A level the
+    route accepts goes on the wire under its own name, and Pi's ``off`` is the
+    wire's ``none``; LiteLLM renders the same mapping for Pi.
+    """
+
+    entry: dict[str, Any] = {}
+    if profile.context_window is not None:
+        entry["contextWindow"] = profile.context_window
+    if profile.max_output_tokens is not None:
+        entry["maxTokens"] = profile.max_output_tokens
+    if profile.input_modalities is not None:
+        entry["input"] = list(profile.input_modalities)
+    efforts = profile.reasoning_efforts
+    if efforts is not None:
+        entry["reasoning"] = bool(efforts)
+    if efforts:
+        entry["thinkingLevelMap"] = {
+            "off": "none" if "none" in efforts else None,
+            **{level: level if level in efforts else None for level in PI_LADDER_THINKING_LEVELS},
+            **{level: level for level in PI_OPT_IN_THINKING_LEVELS if level in efforts},
+        }
+    return entry
 
 
 async def _park_pi_child(
@@ -488,9 +498,7 @@ async def _install_agent_instructions(
     )
 
 
-def _engine_sandbox_request(
-    model_access: Any, *, model: str, model_entry: dict[str, Any]
-) -> EngineSandboxRequest:
+def _engine_sandbox_request(model_access: Any, *, model: str) -> EngineSandboxRequest:
     """What a box holding one pi conversation must be. One declaration.
 
     Read by both creates — the Session's own, and a prepared slot's — because
@@ -523,13 +531,14 @@ def _engine_sandbox_request(
             PI_BASE_URL_ENV_VAR: str(model_access.base_url or "").strip(),
             PI_MODEL_ENV_VAR: model,
             PI_MODEL_ENTRY_ENV_VAR: json.dumps(
-                model_entry, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                _model_entry(described_profile(model_access)),
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
             ),
         },
     )
 
 
-def _slot_spawn_fingerprint(template: Any, *, base_url: str, model: str) -> str:
+def _slot_spawn_fingerprint(template: Any, *, model_access: Any) -> str:
     """The box-frozen facts a prepared pi box answers for, as one digest.
 
     Covers exactly what the box CREATE fixes and a later spawn cannot
@@ -553,9 +562,9 @@ def _slot_spawn_fingerprint(template: Any, *, base_url: str, model: str) -> str:
         "engine_kind": ENGINE_KIND,
         "image": resolve_runtime_template_name(template),
         "entrypoint": list(PI_IMAGE_ENTRYPOINT),
-        "base_url": str(base_url or ""),
-        "model": str(model or ""),
-        "model_entry": _model_entry(template),
+        "base_url": str(getattr(model_access, "base_url", "") or ""),
+        "model": _model_reference(model_access),
+        "model_entry": _model_entry(described_profile(model_access)),
         "provider": PI_PROVIDER_NAME,
         "workload_user": SANDBOX_IMAGE_WORKLOAD_USER,
         "workload_home": SANDBOX_IMAGE_WORKLOAD_HOME,
@@ -912,7 +921,7 @@ class PiEngineAdapter(EngineAdapter):
         return {
             "engine_kind": ENGINE_KIND,
             "spawn_fingerprint": _slot_spawn_fingerprint(
-                template, base_url=base_url, model=model
+                template, model_access=context.model_access
             ),
             # Platform tools are already registered against the slot address.
             "activation_mcp_servers": [],
@@ -931,9 +940,7 @@ class PiEngineAdapter(EngineAdapter):
         """Declare pi's image and RPC process prerequisites."""
 
         model = _model_reference(model_access)
-        return _engine_sandbox_request(
-            model_access, model=model, model_entry=_model_entry(template)
-        )
+        return _engine_sandbox_request(model_access, model=model)
 
     async def activate_runtime(
         self,
@@ -963,9 +970,7 @@ class PiEngineAdapter(EngineAdapter):
         is_prepared = context.prepared_manifest is not None
         if str(prepared.get("placement") or "") == "conversation_box":
             expected_spawn = _slot_spawn_fingerprint(
-                template,
-                base_url=str(getattr(context.model_access, "base_url", "") or ""),
-                model=model,
+                template, model_access=context.model_access
             )
             if expected_spawn != str(prepared.get("spawn_fingerprint") or ""):
                 raise APIError(

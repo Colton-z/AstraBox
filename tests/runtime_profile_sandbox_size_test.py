@@ -28,8 +28,25 @@ from astrabox.core.service.orchestrator.engine.provisioning import sandbox_creat
 from astrabox.core.service.orchestrator.runtime import sandbox_quota
 from astrabox.core.service.orchestrator.runtime.storage.mounts import create_sandbox_with_storage
 from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
-from astrabox.seams.model import ResolvedModelAccess
+from astrabox.seams.model import (
+    ModelEndpoint,
+    ModelEndpointProvider,
+    ResolvedModelAccess,
+    register_model_endpoint,
+)
 from astrabox.seams.sandbox import SandboxCreateSpec, SandboxDescriptor, SandboxPage
+
+
+class _GatewayEndpoint(ModelEndpointProvider):
+    """A model connection that states nothing about its models."""
+
+    name = "test"
+
+    def resolve(self, *, requested: ModelEndpoint, settings: Any = None) -> ModelEndpoint:
+        return requested
+
+
+register_model_endpoint(_GatewayEndpoint())
 
 pytestmark = pytest.mark.usefixtures("database")
 

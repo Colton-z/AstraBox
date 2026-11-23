@@ -17,6 +17,7 @@ and idle expiry are the pool's for both.
 
 from __future__ import annotations
 
+from astrabox.seams.model import describe_model_access
 from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
 from astrabox.core.service.orchestrator.runtime.skill_sources import normalize_skills
@@ -264,8 +265,8 @@ async def build_agent_client_pool_plan(
             resolve_agent_mcp_credential_plan,
         )
 
-        model_access = runtime_manager.resolve_model_access(
-            dict(_value(template, "model_config", {}) or {})
+        model_access = await describe_model_access(
+            runtime_manager.resolve_model_access(dict(_value(template, "model_config", {}) or {}))
         )
         request = adapter.sandbox_request(
             template=template,

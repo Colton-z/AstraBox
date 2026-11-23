@@ -1952,10 +1952,10 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "ASTRABOX_PI_MODEL_ENTRY",
         "internal",
         "",
-        "The Agent's engine_options.model_entry as a JSON object, {} when it has "
-        "none. The image merges it into the model's entry in models.json under "
-        "the model id, which declares capabilities such as reasoning and "
-        "thinkingLevelMap that pi otherwise assumes absent.",
+        "The model's entry fields rendered from the model connection's profile "
+        "(contextWindow, maxTokens, input, reasoning, thinkingLevelMap) as a "
+        "JSON object, {} when nothing is known. The image merges it into the "
+        "model's entry in models.json under the model id.",
         "containers.pi.run",
     ),
     (

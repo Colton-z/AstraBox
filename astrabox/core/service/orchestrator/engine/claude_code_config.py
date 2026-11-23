@@ -41,6 +41,7 @@ from astrabox.seams.model import (
     ModelEndpoint,
     ModelRequestContext,
     ResolvedModelAccess,
+    described_profile,
     model_endpoint_for_name,
 )
 
@@ -48,6 +49,13 @@ logger = get_logger(__name__)
 
 CLAUDE_API_KEY_ENV = "ANTHROPIC_API_KEY"
 CLAUDE_AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
+
+#: The window Claude Code compacts against, and its output cap, for a model.
+#: Claude Code assumes a 1M window for an ID it does not recognize, such as a
+#: gateway alias (https://code.claude.com/docs/en/model-config, "Correct the
+#: window for a gateway or custom model ID").
+CLAUDE_MAX_CONTEXT_ENV = "CLAUDE_CODE_MAX_CONTEXT_TOKENS"
+CLAUDE_MAX_OUTPUT_ENV = "CLAUDE_CODE_MAX_OUTPUT_TOKENS"
 
 #: The API Claude Code talks to when ``ANTHROPIC_BASE_URL`` is unset.
 CLAUDE_CODE_DEFAULT_BASE_URL = "https://api.anthropic.com"
@@ -83,6 +91,8 @@ class ModelConfig:
     model_name: str = ""
     credential_header: str = CLAUDE_AUTH_TOKEN_ENV
     endpoint_provider: str = ""
+    context_window: int | None = None
+    max_output_tokens: int | None = None
 
 
 def build_claude_model_config_kwargs(
@@ -98,6 +108,7 @@ def build_claude_model_config_kwargs(
     base_url = normalize_claude_model_base_url(access.base_url or "")
     if base_url.rstrip("/").lower() == CLAUDE_CODE_DEFAULT_BASE_URL:
         base_url = ""
+    profile = described_profile(access)
     return {
         "api_key": str(access.credential or ""),
         "base_url": base_url,
@@ -108,6 +119,8 @@ def build_claude_model_config_kwargs(
             else CLAUDE_AUTH_TOKEN_ENV
         ),
         "endpoint_provider": access.endpoint_provider,
+        "context_window": profile.context_window,
+        "max_output_tokens": profile.max_output_tokens,
     }
 
 
@@ -546,16 +559,28 @@ def build_claude_options_kwargs(
             str(model_runtime_creds.get("credential_header") or "").strip()
             or CLAUDE_AUTH_TOKEN_ENV
         )
+        # What the model connection states about the model; an unknown fact
+        # is left to Claude Code's own default.
+        model_limits = {
+            name: str(model_runtime_creds[key])
+            for name, key in (
+                (CLAUDE_MAX_CONTEXT_ENV, "context_window"),
+                (CLAUDE_MAX_OUTPUT_ENV, "max_output_tokens"),
+            )
+            if model_runtime_creds.get(key)
+        }
         _reject_native_overrides(
             env,
             ({"ANTHROPIC_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"} if model_name else set())
             | ({"ANTHROPIC_BASE_URL"} if base_url else set())
-            | ({credential_header} if api_key else set()),
+            | ({credential_header} if api_key else set())
+            | set(model_limits),
             node="env",
         )
         if model_name:
             merged_env["ANTHROPIC_MODEL"] = model_name
             merged_env["ANTHROPIC_SMALL_FAST_MODEL"] = model_name
+        merged_env.update(model_limits)
         if base_url:
             merged_env["ANTHROPIC_BASE_URL"] = base_url
         if api_key and (base_url or credential_header == CLAUDE_API_KEY_ENV):

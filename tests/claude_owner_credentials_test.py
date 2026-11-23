@@ -48,7 +48,12 @@ from astrabox.providers.model_anthropic import (
     ClaudeLoginModelEndpointProvider,
 )
 from astrabox.seams.egress_credentials import EGRESS_HELD_PLACEHOLDER
-from astrabox.seams.model import ModelEndpoint, ResolvedModelAccess, register_model_endpoint
+from astrabox.seams.model import (
+    ModelEndpoint,
+    ModelProfile,
+    ResolvedModelAccess,
+    register_model_endpoint,
+)
 
 register_model_endpoint(AnthropicAPIKeyModelEndpointProvider())
 register_model_endpoint(ClaudeLoginModelEndpointProvider())
@@ -78,6 +83,7 @@ def _access(provider: str) -> ResolvedModelAccess:
         credential=None,
         credential_kind=endpoint.credential_kind or "bearer",
         endpoint_provider=provider,
+        profile=ModelProfile(),
     )
 
 

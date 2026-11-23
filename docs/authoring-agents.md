@@ -103,12 +103,9 @@ credential values are not runtime JSON overrides.
 | Claude Code | `sdk_options` | `ClaudeAgentOptions`; nested `settings` is serialized for CLI `--settings`. |
 | Codex | `config` | `thread/start` and `thread/resume` configuration overrides. |
 | Codex | `turn_start` | Each `turn/start` parameters object. |
-| Codex | `model_catalog` | The complete native `models.json` object. |
 | Pi | `settings` | The conversation's `~/.pi/agent/settings.json` root. |
-| Pi | `model_entry` | The Agent's model entry in `~/.pi/agent/models.json`, such as `reasoning` and `thinkingLevelMap`. |
 | DeepSeek Harness | `session_create` | Native `session/create` request parameters, including `agentPreset`. |
 | DeepSeek Harness | `select_model` | Native `session/selectModel` request parameters, such as `reasoningEffort`. |
-| DeepSeek Harness | `model_entry` | The `llm-pi-ai` model entry for a model outside the DeepSeek catalog, such as `reasoningEfforts`. |
 
 Enter `{}` to supply an empty native object, or leave an editor blank to remove
 that block. Runtime JSON and model-gateway
@@ -127,24 +124,21 @@ example while comparing models.
 | --- | --- |
 | Claude Code | `{"sdk_options": {"effort": "high"}}` |
 | Codex | `{"config": {"model_reasoning_effort": "high"}}`, or `effort` in `turn_start` for each turn |
-| Pi | `{"settings": {"defaultThinkingLevel": "xhigh"}, "model_entry": {"reasoning": true, "thinkingLevelMap": {"xhigh": "xhigh"}}}` |
-| DeepSeek Harness | `{"select_model": {"reasoningEffort": "xhigh"}, "model_entry": {"reasoningEfforts": {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh"}}}` |
+| Pi | `{"settings": {"defaultThinkingLevel": "high"}}` |
+| DeepSeek Harness | `{"select_model": {"reasoningEffort": "high"}}` |
 
-Pi and DeepSeek Harness reach a gateway model through Chat Completions and
-know nothing about it beyond what its entry declares. Both treat a model
-without a reasoning declaration as non-reasoning, so the effort takes effect
-only with `model_entry`: Pi's `reasoning` and `thinkingLevelMap`, or DeepSeek
-Harness's `reasoningEfforts`, which map each level to the `reasoning_effort`
-value the model accepts. Declare only the levels the model supports.
+The levels a program offers for a gateway model come from the model connection
+([Describe the model to the Agent programs](models.md#model-description)).
+When the connection states no levels for a model, each program applies its own
+default.
 
 - **Pi** turns a level its model does not offer down to one it does.
 - **DeepSeek Harness** refuses a `reasoningEffort` its model does not declare.
   The conversation fails with `AGENT_MODEL_SELECTION_REFUSED` and the harness's
-  reason. Models in the harness's own DeepSeek catalog declare their efforts
-  themselves; `model_entry` is refused for them.
+  reason.
 
 The effort applies to new conversations and to every reconnect of an existing
-one. Changing Pi's `model_entry` replaces the Agent's prepared sandboxes.
+one.
 
 ### MCP servers, Skills, and Plugins
 

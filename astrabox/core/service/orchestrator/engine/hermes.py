@@ -101,7 +101,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
     extract_sandbox_id,
     get_underlying_sandbox,
 )
-from astrabox.seams.model import ResolvedModelAccess
+from astrabox.seams.model import ModelProfile, ResolvedModelAccess, described_profile
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     runtime_mcp_servers_for_binding,
     binding_mcp_server_definitions,
@@ -1415,6 +1415,15 @@ def _hermes_credential_request(model_access: ResolvedModelAccess) -> ModelCreden
     )
 
 
+def _hermes_model_facts(model_name: str, profile: ModelProfile) -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    if profile.context_window is not None:
+        facts["context_length"] = profile.context_window
+    if profile.input_modalities is not None:
+        facts["supports_vision"] = "image" in profile.input_modalities
+    return {"models": {model_name: facts}} if facts else {}
+
+
 def _build_hermes_config_overwrite(
     deployment_settings: Any,
     *,
@@ -1433,6 +1442,11 @@ def _build_hermes_config_overwrite(
     switch in its configuration guide). Hermes titles a session with two model
     calls on every conversation's first turn, and nothing in the platform reads
     that title: conversation titles are the platform's own.
+
+    The custom provider describes the model with what the model connection
+    states about it, under the provider's per-model ``models.<id>`` keys
+    Hermes reads (``context_length``, ``supports_vision``); an unknown fact is
+    left to Hermes' own resolution.
 
     Hermes' model catalog fetch (``model_catalog.enabled``) stays off: its
     hosts are outside the box's egress policy, and models use the custom
@@ -1474,6 +1488,7 @@ def _build_hermes_config_overwrite(
                 "key_env": _HERMES_MODEL_API_KEY_ENV,
                 "model": model_name,
                 "api_mode": _HERMES_DEFAULT_API_MODE,
+                **_hermes_model_facts(model_name, described_profile(model_access)),
             }
         ],
         "auxiliary": {"title_generation": {"enabled": False}},

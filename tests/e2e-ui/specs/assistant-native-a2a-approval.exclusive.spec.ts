@@ -111,7 +111,7 @@ test('Hermes answers one Codex authorization through the signed A2A interaction 
   const options = object(base.engine_options || {});
   agentId = (await api.createAgent({
     name: `__e2e_approval_codex_${marker}`, runtime_profile_name: profile.runtime_profile_name,
-    model: profile.model, model_catalog: base.model_catalog, prepared_capacity: 0,
+    model: profile.model, prepared_capacity: 0,
     engine_options: { ...options, config: { ...object(options.config || {}), approval_policy: 'on-request' } },
   })).agent_id;
   assistantId = (await api.createAssistant({

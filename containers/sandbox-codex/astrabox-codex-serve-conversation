@@ -21,10 +21,11 @@ OUTWARD_PORT="${1:?usage: astrabox-codex-serve-conversation <outward-port>}"
 LOG_DIR="${HOME}/.astrabox-logs"
 mkdir -p "${LOG_DIR}"
 
-# The engine's process environment (model catalog, diagnostics), written into
-# this home by the platform's placement — box-create env cannot carry it
-# because the box may predate this Session. Required: a Codex without its
-# model catalog answers one message twice against this gateway.
+# The engine's process environment (the gateway model's catalog facts,
+# diagnostics), written into this home by the platform's placement —
+# box-create env cannot carry it because the box may predate this Session.
+# Required: a Codex without its model's catalog entry answers one message
+# twice against this gateway.
 ENGINE_ENV_FILE="${HOME}/.astrabox-engine-env"
 if [ ! -f "${ENGINE_ENV_FILE}" ]; then
   echo "astrabox-codex-conversation: ${ENGINE_ENV_FILE} is missing;" \

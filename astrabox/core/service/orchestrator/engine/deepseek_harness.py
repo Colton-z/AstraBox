@@ -65,6 +65,7 @@ from astrabox.core.service.orchestrator.engine.deepseek_harness_runtime_client i
     DeepSeekHarnessLink,
     DeepSeekHarnessRuntimeClient,
     create_harness_session,
+    gateway_model_entry,
     resolve_model_route,
 )
 from astrabox.core.service.orchestrator.engine.provisioning import (
@@ -90,7 +91,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
 from astrabox.core.service.orchestrator.runtime.sandbox_script_writer import (
     install_verified_text_script,
 )
-from astrabox.seams.model import model_endpoint_for_name
+from astrabox.seams.model import ModelProfile, described_profile, model_endpoint_for_name
 
 logger = get_logger(__name__)
 
@@ -152,21 +153,6 @@ DSH_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
             'conversation starts or reconnects. For example, {"reasoningEffort": '
             '"xhigh"}. The harness accepts only an effort the model declares, '
             "and the conversation fails with its reason otherwise."
-        ),
-    },
-    {
-        "key": "model_entry",
-        "label": "DSH gateway model entry",
-        "type": "object",
-        "protected_keys": ["id", "input"],
-        "help": (
-            "Fields of the llm-pi-ai model entry AstraBox declares for a model "
-            "outside the harness's DeepSeek catalog. The harness treats such a "
-            "model as non-reasoning unless reasoningEfforts maps its levels to "
-            'the values the model accepts, for example {"reasoningEfforts": '
-            '{"low": "low", "medium": "medium", "high": "high", "xhigh": '
-            '"xhigh"}}. Refused for a model in the DeepSeek catalog, which '
-            "declares its own."
         ),
     },
 )
@@ -530,11 +516,10 @@ async def _publish_runtime(
     permission_mode: str | None = None,
     model: str | None = None,
     gateway_base_url: str = "",
-    model_endpoint_provider: str = "",
+    profile: ModelProfile | None = None,
     prepared_model_route: dict[str, Any] | None = None,
     session_create: dict[str, Any] | None = None,
     model_selection: dict[str, Any] | None = None,
-    model_entry: dict[str, Any] | None = None,
     prepare_engine_input: Any = None,
 ) -> SessionRuntime:
     """One live link → one conversation-bound, published SessionRuntime.
@@ -551,7 +536,6 @@ async def _publish_runtime(
     engine_client = DeepSeekHarnessRuntimeClient(
         link=link,
         native_session_id=native,
-        model_endpoint_provider=model_endpoint_for_name(model_endpoint_provider),
     )
     engine_manifest = await initialize_runtime_client(
         engine_client, engine_kind=ENGINE_KIND, resume_session_key=resume_session_key,
@@ -563,13 +547,16 @@ async def _publish_runtime(
         # what makes the claim below true rather than assumed.
         await engine_client.set_permission_mode(permission_mode)
     if model:
+        if profile is None:
+            raise RuntimeError("deepseek_harness selects a model only with its described profile")
         # The engine session carries no model of its own — `session/create`
         # has no such field — so this is the only place the RuntimeProfile's
         # choice reaches the harness. Asserted on every publish for the same
         # reason the preset is: a model changed on the Agent has to reach the
         # conversations that already exist.
-        # A prepared box declared the gateway entry it was prepared with; a
-        # changed entry is declared again rather than served stale.
+        # A prepared box declared the gateway entry it was prepared with; an
+        # entry the model connection now describes differently is declared
+        # again rather than served stale.
         await engine_client.select_model(
             model,
             gateway_base_url=gateway_base_url,
@@ -578,11 +565,11 @@ async def _publish_runtime(
                 str(prepared_model_route.get("route") or "") or None
                 if prepared_model_route
                 and prepared_model_route.get("model") == model
-                and (prepared_model_route.get("model_entry") or {}) == (model_entry or {})
+                and prepared_model_route.get("entry") == gateway_model_entry(model, profile)
                 else None
             ),
             selection=model_selection,
-            model_entry=model_entry,
+            profile=profile,
         )
     runtime = SessionRuntime(
         session_id=session_id,
@@ -744,7 +731,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             launch_url_path=f"{(identity or {}).get('home_dir') or SANDBOX_IMAGE_WORKLOAD_HOME}/.deepseek-harness/web-url",
         )
         model = str(getattr(context.model_access, "model_name", "") or "").strip()
-        model_entry = _native_option(template, "model_entry")
+        profile = described_profile(context.model_access)
         try:
             prepared_native_session = await create_harness_session(
                 link,
@@ -757,16 +744,13 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             prepared_model_route = (
                 {
                     "model": model,
-                    "model_entry": model_entry,
+                    "entry": gateway_model_entry(model, profile),
                     "route": await resolve_model_route(
                         link,
                         model,
                         gateway_base_url=base_url,
                         gateway_key_env=DSH_CREDENTIAL_ENV_VAR,
-                        model_endpoint_provider=model_endpoint_for_name(
-                            str(getattr(context.model_access, "endpoint_provider", "") or "")
-                        ),
-                        model_entry=model_entry,
+                        profile=profile,
                     ),
                 }
                 if model
@@ -932,11 +916,10 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 permission_mode=context.permission_mode,
                 model=str(getattr(context.model_access, "model_name", "") or "").strip() or None,
                 gateway_base_url=base_url,
-                model_endpoint_provider=str(context.model_access.endpoint_provider),
+                profile=described_profile(context.model_access),
                 prepared_model_route=prepared.get("prepared_model_route"),
                 session_create=_session_create_options(template),
                 model_selection=_native_option(template, "select_model"),
-                model_entry=_native_option(template, "model_entry"),
                 prepare_engine_input=context.prepare_engine_input,
             )
         except BaseException:

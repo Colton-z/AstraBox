@@ -156,6 +156,54 @@ RuntimeProfile 决定运行哪个 Agent 程序，以及使用哪些沙箱设置�
 修改 Agent 的模型或 RuntimeProfile 不会直接重新配置正在运行的实例。AstraBox 会在首次
 准备或重建该 Session 运行实例时读取当前设置。
 
+## 向 Agent 程序描述模型 {#model-description}
+
+Agent 程序依据它对模型的了解安排工作：按上下文窗口压缩对话、限制每次回复的长度、
+只给能读图的模型发送图片、只提供模型接受的推理档位。网关路由名本身不包含这些信息。
+AstraBox 准备运行环境时，会向模型连接查询所选模型的信息，并写入 Agent 程序自己的
+模型配置。
+
+| 信息 | LiteLLM `/model_group/info` 字段 | 使用它的 Agent 程序 |
+|---|---|---|
+| 上下文窗口 | `max_input_tokens` | Claude Code、Codex、Pi、DeepSeek Harness、Hermes |
+| 输出上限 | `max_output_tokens` | Claude Code、Pi、DeepSeek Harness |
+| 图片输入 | `supports_vision` | Codex、Pi、DeepSeek Harness、Hermes |
+| 推理档位 | `supported_reasoning_efforts` | Codex、Pi、DeepSeek Harness |
+
+模型连接没有说明的信息不会写入，由程序使用自己的默认值。AstraBox 不自行判断模型
+能力：模型或程序拒绝的请求，以该程序自己的错误失败。程序自带目录中已描述的模型
+（例如 DeepSeek Harness 中的 DeepSeek 模型）沿用程序自己的描述。
+
+LiteLLM 依据自带的模型表回答。模型表未描述的路由，在路由的 `model_info` 中声明：
+
+```yaml
+model_list:
+  - model_name: "company-code-model"
+    litellm_params:
+      model: "openai/provider-model-id"
+      api_base: "https://models.example.com/v1"
+      api_key: os.environ/COMPANY_MODEL_API_KEY
+    model_info:
+      max_input_tokens: 200000
+      max_output_tokens: 32000
+      supports_vision: true
+      supported_reasoning_efforts: ["low", "medium", "high"]
+      supports_low_reasoning_effort: true
+```
+
+对未描述的模型，LiteLLM 报告 `supports_vision` 为 false，因此这类路由会被描述为
+仅支持文本。`supported_reasoning_efforts` 列出路由接受的档位，LiteLLM 会把请求的
+档位取整到列表中最接近的一档。同时声明逐档标志（`supports_none_reasoning_effort`、
+`supports_minimal_reasoning_effort`、`supports_low_reasoning_effort`、
+`supports_xhigh_reasoning_effort`、`supports_max_reasoning_effort`）：LiteLLM 在
+Messages 协议上转发档位前会读取它们。内置配置在 DeepSeek 路由上声明了 DeepSeek
+接受的档位。
+
+LiteLLM 以外的模型连接，通过其模型端点 Provider（entry-point 组
+`astrabox.providers.model`）的 `describe_model` 方法说明这些信息；未实现该方法的
+Provider 不说明任何信息，各程序使用自己的默认值。AstraBox 每次准备运行环境时都会
+重新读取这些信息。
+
 ## 让模型凭证留在 Agent 程序之外
 
 内置网关保存上游模型服务密钥。启用凭证保护后，Agent 程序拿到的是网关凭证占位符；只有

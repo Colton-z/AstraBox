@@ -635,9 +635,11 @@ async def session_model_access(
     keeps the model account the Session spends now (a box being attached to
     may be in the middle of a response).
     """
-    from astrabox.seams.model import model_endpoint_for_name
+    from astrabox.seams.model import describe_model_access, model_endpoint_for_name
 
-    access: ResolvedModelAccess = platform.resolve_model_access(template.model_config or {})
+    access: ResolvedModelAccess = await describe_model_access(
+        platform.resolve_model_access(template.model_config or {})
+    )
     provider = model_endpoint_for_name(access.endpoint_provider)
     if provider.credential_owner != "session_owner":
         from astrabox.core.service.model_accounts.service import get_model_account_service

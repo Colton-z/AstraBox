@@ -21,6 +21,7 @@ the vendor process; this module composes them and owns the seat ledger.
 
 from __future__ import annotations
 
+from astrabox.seams.model import describe_model_access
 from astrabox.seams.runtime_preparation import runtime_preparation_plan
 
 from astrabox.seams.skills import SkillDescriptor
@@ -508,8 +509,8 @@ async def _prepare_seat(
         }
         adapter = get_engine_adapter(engine_kind)
         underlying = get_underlying_sandbox(handle)
-        model_access = runtime_manager.resolve_model_access(
-            getattr(template, "model_config", None) or {}
+        model_access = await describe_model_access(
+            runtime_manager.resolve_model_access(getattr(template, "model_config", None) or {})
         )
         request = adapter.sandbox_request(
             template=template,
