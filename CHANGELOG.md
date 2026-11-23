@@ -18,6 +18,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **A conversation reconnects with the Agent version its sandbox was prepared from.** After an Agent's Plugins changed, reconnecting an existing Claude Code conversation failed with `PACKAGE_INVALID` and left its message waiting. A new sandbox still uses the current version. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
 - **A message fails with the reason when its sandbox cannot be reconnected.** A reconnect refused with an error that is not retryable left the message waiting while the server retried; the message now fails with that error and the conversation reads as needing recovery. [Guide](https://www.astrabox.ai/docs/sessions#send-a-message)
 
+- A console page whose scripts or stylesheet fail to load reloads itself until they arrive, at most five times in a row, and waits while the server is unreachable; a missing `/assets/` file is a 404 instead of the console page. [Upgrading replicas](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+
 ### Upgrading
 
 - Schema revision `0028` adds `agent_versions` and records each existing Agent's current configuration as the start of its history.
@@ -33,6 +35,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 - **对话重连时沿用其沙箱准备时的 Agent 版本。** 此前 Agent 的插件改动后，已有 Claude Code 对话重连会报 `PACKAGE_INVALID`，消息一直等待。新沙箱仍使用当前版本。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
 - **沙箱无法重连时，消息带着原因失败。** 此前重连遇到不可重试的错误时，消息一直等待，服务端反复重试；现在消息以该错误失败，对话显示为需要恢复。[指南](https://www.astrabox.ai/docs/sessions#send-a-message)
+
+- 控制台页面的脚本或样式加载失败时会自动重新加载，直到加载成功，最多连续五次；服务端不可达时页面会等待。缺失的 `/assets/` 文件返回 404，不再返回控制台页面。[升级副本](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
 
 ### 升级说明
 
