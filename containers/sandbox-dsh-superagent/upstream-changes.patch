@@ -1542,8 +1542,79 @@ index 0000000..971c3e2
 +  const path = task.metadata?.session_url_path
 +  return typeof path === 'string' && path ? path : undefined
 +}
+diff --git a/src/executor/background.ts b/src/executor/background.ts
+index 792bd69..b073dfe 100644
+--- a/src/executor/background.ts
++++ b/src/executor/background.ts
+@@ -13,11 +13,14 @@ interface Jobs {
+   kill(id: string, caller: string, reason?: string): unknown
+   readonly events: { subscribe(filter: { owner: string }, listener: (event: { type: string }) => void): () => void }
+ }
+-/** What the Executor uses of DSH's subagents: joining a worker's subagents that work, its subagents, and releasing them. */
++/**
++ * What the Executor uses of DSH's subagents: joining the work of the subagent tree a worker is the root of, the subagents
++ * in that tree, and interrupting one of them under the worker's authority.
++ */
+ interface Subagents {
+-  waitForChildren(parent: Agent): Promise<boolean>
+-  listChildren(parentSessionId: string): Promise<readonly { id: string }[]>
+-  drainChildren(parent: Agent, childIds: readonly string[]): Promise<void>
++  waitForTreeWork(root: Agent): Promise<boolean>
++  listDescendants(rootSessionId: string): Promise<readonly ({ kind: 'child'; id: string } | { kind: 'diagnostic' })[]>
++  interrupt(targetSessionId: string, authority: { kind: 'ancestor'; agent: Agent }): void
+ }
+ /** How long a stop waits for a killed job to end, collecting its end so the worker is not woken to hear of it. */
+ const KILL_WAIT_MS = 10_000
+@@ -49,7 +52,7 @@ const joins = new WeakMap<Agent, Promise<boolean>>()
+ function childrenEnd(subagents: Subagents, agent: Agent): Promise<boolean> {
+   let join = joins.get(agent)
+   if (!join) {
+-    join = subagents.waitForChildren(agent).finally(() => { joins.delete(agent) })
++    join = subagents.waitForTreeWork(agent).finally(() => { joins.delete(agent) })
+     joins.set(agent, join)
+   }
+   return join
+@@ -134,18 +137,22 @@ export async function collectJob(ctx: Context, sessionId: string, job: { id: str
+ }
+ 
+ /**
+- * Release the worker's live subagents, for a bounded time. DSH delivers each one's end to the worker before the release
+- * returns, which wakes it, so the worker's turn is cancelled after, keeping its inbox when `keepInbox`, and the stop ends
+- * with that turn. Its Session still admits subagents.
++ * Stop the worker's loaded subagents, for a bounded time. Each is interrupted under the worker's authority, keeping its
++ * inbox; one left with nothing to do then ends, and DSH delivers its end to the worker, which wakes it, so once the tree's
++ * work is joined the worker's turn is cancelled, keeping its inbox when `keepInbox`, and the stop ends with that turn. An
++ * interrupt, unlike a drain of the whole tree, leaves the Session admitting subagents.
+  */
+ export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = false): Promise<void> {
+   const subagents = subagentsOf(ctx)
+   if (!subagents) return
+-  // The catalog lists every subagent the Session had; one that ended has no agent.
+-  const live = (await subagents.listChildren(agent.id)).map(child => child.id).filter(id => ctx.agents.get(id as SessionId))
++  // The listing names every subagent the tree had; one that ended has no agent.
++  const live = (await subagents.listDescendants(agent.id))
++    .flatMap(entry => entry.kind === 'child' && ctx.agents.get(entry.id as SessionId) ? [entry.id] : [])
+   if (!live.length) return
+-  try { await until(subagents.drainChildren(agent, live), undefined, DRAIN_LIMIT_MS) }
+-  finally {
++  try {
++    for (const id of live) subagents.interrupt(id, { kind: 'ancestor', agent })
++    await until(childrenEnd(subagents, agent), undefined, DRAIN_LIMIT_MS)
++  } finally {
+     if (agent.status !== 'idle') cancelled.add(agent)
+     agent.cancel({ kind: 'user' }, { keepInbox })
+     await until(agent.whenIdle(), undefined, DRAIN_LIMIT_MS)
+@@ -153,7 +160,7 @@ export async function stopSubagents(ctx: Context, agent: Agent, keepInbox = fals
+ }
+ 
+ /**
+- * Stop what a worker runs in the background once its Assignment ends: kill its shell jobs and release its subagents (see
++ * Stop what a worker runs in the background once its Assignment ends: kill its shell jobs and stop its subagents (see
+  * `stopSubagents`). A Session not loaded has no subagent at work. One failure stops nothing else.
+  */
+ export async function stopBackground(ctx: Context, sessionId: string, reason: string, keepInbox = false): Promise<void> {
 diff --git a/src/executor/dsh.ts b/src/executor/dsh.ts
-index 26234f3..3f58527 100644
+index 26234f3..f15130a 100644
 --- a/src/executor/dsh.ts
 +++ b/src/executor/dsh.ts
 @@ -5,7 +5,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -1582,7 +1653,7 @@ index 26234f3..3f58527 100644
    private readonly disposers: (() => void)[] = []
    private readonly slots: WorkerSlots
    /** Transient failure counts tried so far: keyed by `assignment.id` for worker turns and `launch:<assignment.id>` for launches. */
-@@ -402,6 +406,15 @@ export class DshExecutor implements Executor {
+@@ -402,6 +406,17 @@ export class DshExecutor implements Executor {
    }
    /** Number of open tickets whose worker holds a worker slot: its turn runs, or its shell jobs or subagents still run after its turn ended. */
    activeCount(): number { return this.host.store.tickets.open().filter(ticket => this.running(ticket)).length }
@@ -1592,8 +1663,10 @@ index 26234f3..3f58527 100644
 +  }
 +  /** The worker Session's messages, oldest first. */
 +  async transcript(ticketId: string): Promise<TranscriptEntry[]> {
-+    return (await this.host.context.sessionController.inspect(workerSessionId(ticketId) as SessionId)).events
-+      .flatMap(event => transcriptEntry(event) ?? [])
++    // One exact cut of the log, read without loading the worker; the lease ends with the read.
++    using observation = await this.host.context.sessionQuery.observeSession(workerSessionId(ticketId) as SessionId,
++      { projectionMode: 'none' })
++    return observation.events.flatMap(event => transcriptEntry(event) ?? [])
 +  }
    /** Whether a ticket's worker holds a worker slot: its turn runs, or its shell jobs or subagents do after its turn ended. */
    private running(ticket: Ticket): boolean {

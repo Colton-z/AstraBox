@@ -5,7 +5,7 @@ profile's Remote API (:mod:`.deepseek_harness_link`). This client reads three
 of the harness's own channels and reports them as runtime events:
 
 * the conversation's durable Session log (``session/follow`` and
-  ``session/page``), whose events carry contiguous ``seq`` numbers in a log
+  ``session/events``), whose events carry contiguous ``seq`` numbers in a log
   that only appends;
 * the process-local assistant-stream frames of a model attempt, whose durable
   ``assistant/message`` or ``assistant/attempt`` settlement repeats the same
@@ -151,9 +151,9 @@ DSH_MODEL_PROVIDER = "deepseek-official"
 #: gateways at ``@deepseek-ai/dsh-llm-pi-ai``: its web profile mounts it with
 #: no routes, and a ``llm-pi-ai`` user-settings section declares them live
 #: (what the harness's own Models page writes). The declared route sends
-#: standard Chat Completions to the platform gateway with the adapter's
-#: defaults for a model it does not describe: a 262,144-token context window
-#: and a 32,768-token output cap.
+#: standard Chat Completions to the platform gateway. A model the entry does
+#: not describe takes the vendor's provider defaults: a 1,000,000-token
+#: context window and a 128,000-token output cap.
 DSH_GATEWAY_PROVIDER = "astrabox-gateway"
 DSH_GATEWAY_SETTINGS_NS = "llm-pi-ai"
 DSH_GATEWAY_API = "openai-completions"
