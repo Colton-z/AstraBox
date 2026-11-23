@@ -22,6 +22,7 @@ from astrabox.api.routes.conversation_models import (
 )
 from astrabox.api.routes.request_schemas import ASSISTANT_CREATE, ASSISTANT_UPDATE
 from astrabox.api.routes.response_envelope import ApiEnvelope
+from astrabox.api.routes.session_user_actions import PerformUserAction, SessionUserActionView
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.user_context import get_current_user_context
@@ -461,6 +462,26 @@ def register_assistant_routes(app: Any) -> None:
         user = await get_current_user_context(request)
         result = await _service.set_owner_secret(user, assistant_id, key, payload.value)
         return success_response(result)
+
+    @app.get(
+        "/api/v1/assistants/{assistant_id}/user-action",
+        response_model=ApiEnvelope[SessionUserActionView],
+    )
+    async def read_assistant_user_action(assistant_id: str, request: Request):
+        user = await get_current_user_context(request)
+        return success_response(await _service.user_action(user, assistant_id))
+
+    @app.post(
+        "/api/v1/assistants/{assistant_id}/user-action",
+        response_model=ApiEnvelope[SessionUserActionView],
+    )
+    async def perform_assistant_user_action(
+        assistant_id: str, request: Request, body: PerformUserAction
+    ):
+        user = await get_current_user_context(request)
+        return success_response(
+            await _service.user_action(user, assistant_id, action_id=body.action_id)
+        )
 
     @app.post(
         "/api/v1/assistants/{assistant_id}/workspace/wake",

@@ -59,6 +59,8 @@
     "secret_required_one": "{{name}} needs {{count}} credential from you",
     "secret_required_other": "{{name}} needs {{count}} credentials from you",
     "secret_required_hint": "Set {{labels}} in its settings, then open it again.",
-    "open_settings": "Open settings"
+    "open_settings": "Open settings",
+    "action_required": "{{name}} needs you to complete a step first",
+    "check_failed": "Could not check what {{name}} needs before it starts"
   }
 }

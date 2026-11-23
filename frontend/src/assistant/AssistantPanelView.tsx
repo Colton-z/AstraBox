@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { KeyRound, Settings } from 'lucide-react';
+import { KeyRound, Settings, ShieldCheck } from 'lucide-react';
 
 import { AppTopbar, EmptyState, ErrorNote, PageShell } from '@/components/shell';
 import { StatusPill } from '@/components/AstraConsole';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { keepsLastRead, useKeepCurrent, type ReloadContext } from '@/hooks/useKeepCurrent';
+import { useUserActionGate } from '@/hooks/useUserActionGate';
 import { resolveLanguage } from '@/i18n';
 import {
   assistantDisplayName,
@@ -16,8 +17,15 @@ import {
   assistantStateTone,
 } from '@/manage/assistantConfig';
 import { ApiError, MODULE_BASE } from '../api';
+import { readUserAction } from '../session/userAction';
 
-import { getAssistant, getAssistantPanel, wakeAssistantWorkspace } from './api';
+import {
+  getAssistant,
+  getAssistantPanel,
+  getAssistantUserAction,
+  performAssistantUserAction,
+  wakeAssistantWorkspace,
+} from './api';
 import type { AssistantPanel, AssistantRecord } from './types';
 
 /** How long before `expires_at` the page asks for the next address. */
@@ -185,15 +193,21 @@ type Attempt =
  * An Assistant whose runtime hosts no conversations, opened on the runtime's
  * own page.
  *
- * Opening it wakes its workspace — the server answers at once and builds in the
- * background — then follows the Assistant's read while the workspace is
+ * Opening it first asks the deployment whether the owner must do something
+ * before the Assistant can run (consent to a delegation, say). While the answer
+ * is yes the page shows what to do, the link to do it and the operations the
+ * deployment offers, and starts nothing: a box built now would stop on the same
+ * requirement. Coming back to the tab, or Refresh, asks again.
+ *
+ * Then it wakes the workspace — the server answers at once and builds in the
+ * background — and follows the Assistant's read while the workspace is
  * MATERIALIZING, showing the state as the server names it. On READY it asks for
  * the panel's signed address and shows it full height. A start that cannot
  * succeed is not offered: while a credential the runtime declares is missing
  * the page sends the owner to the Assistant's settings, where it is set. A
  * workspace that leaves MATERIALIZING for anything but READY did not start;
- * the read does not say why, so the page says that much and offers the start
- * again rather than retrying on its own.
+ * the page shows the action or the error the read gives for it and offers the
+ * start again, which asks the deployment first, rather than retrying on its own.
  */
 export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
   const { t, i18n } = useTranslation();
@@ -243,8 +257,20 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
 
   const missing = assistantMissingSecrets(record);
   const canStart = missing.length === 0;
+  // Whether the deployment said the owner has nothing left to do, for this
+  // attempt. Latched: the gate's later reads must not start the workspace again.
+  const [cleared, setCleared] = useState(false);
+  const readAction = useCallback(() => getAssistantUserAction(assistantId), [assistantId]);
+  const performAction = useCallback(
+    (actionId: string) => performAssistantUserAction(assistantId, actionId),
+    [assistantId],
+  );
+  const gate = useUserActionGate(assistantId, String(attemptKey), canStart && !cleared, readAction, performAction);
   useEffect(() => {
-    if (!canStart) return undefined;
+    if (gate.ready) setCleared(true);
+  }, [gate.ready]);
+  useEffect(() => {
+    if (!canStart || !cleared) return undefined;
     let cancelled = false;
     setAttempt({ status: 'starting' });
     void (async () => {
@@ -260,7 +286,7 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
       if (!cancelled) setAttempt({ status: 'woken' });
     })();
     return () => { cancelled = true; };
-  }, [assistantId, attemptKey, canStart, read]);
+  }, [assistantId, attemptKey, canStart, cleared, read]);
 
   const state = String(record.workspace_state || 'NOT_MATERIALIZED');
   const woken = attempt.status === 'woken';
@@ -280,7 +306,10 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
 
   const name = assistantDisplayName(record);
   const settingsPath = `/manage/assistants/${encodeURIComponent(assistantId)}`;
-  const startAgain = () => setAttemptKey((key) => key + 1);
+  const startAgain = () => {
+    setCleared(false);
+    setAttemptKey((key) => key + 1);
+  };
   // Not ready even after a fresh read: start it again rather than only asking
   // for another address for the same sandbox.
   const retryPanel = panelNotReady ? startAgain : () => setPanelKey((key) => key + 1);
@@ -327,17 +356,59 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
     </div>
   );
 
+  const actionLink = (url: string) => (
+    <a href={url} target="_blank" rel="noopener noreferrer" className={buttonVariants({ size: 'sm' })}>
+      {t('chat:user_action.open')}
+    </a>
+  );
+  const refreshButton = (onClick: () => void, busy = false) => (
+    <Button variant="outline" size="sm" disabled={busy} onClick={onClick}>{t('chat:user_action.refresh')}</Button>
+  );
+
+  const userActionNotice = () => {
+    if (gate.error) {
+      return (
+        <ErrorNote title={t('shell:assistant_panel.check_failed', { name })}>
+          <p>{gate.error}</p>
+          {refreshButton(gate.refresh)}
+        </ErrorNote>
+      );
+    }
+    const action = gate.state?.user_action;
+    if (!action) return waiting;
+    return (
+      <EmptyState
+        icon={<ShieldCheck className="size-5" />}
+        title={t('shell:assistant_panel.action_required', { name })}
+        hint={action.message}
+        action={
+          <div className="flex flex-wrap justify-center gap-2" aria-busy={gate.busy}>
+            {action.url && actionLink(action.url)}
+            {gate.state?.actions.map((command) => (
+              <Button key={command.id} variant="outline" size="sm" disabled={gate.busy}
+                onClick={() => gate.perform(command.id)}>{command.label}</Button>
+            ))}
+            {refreshButton(gate.refresh, gate.busy)}
+          </div>
+        }
+      />
+    );
+  };
+
   let notice: React.ReactNode = null;
   if (!canStart) {
     notice = secretNotice();
+  } else if (!cleared) {
+    notice = userActionNotice();
   } else if (attempt.status === 'refused') {
     notice = refusal(t('shell:assistant_panel.start_failed', { name }), attempt.error, startAgain);
   } else if (!woken || state === 'MATERIALIZING') {
     notice = waiting;
   } else if (state !== 'READY') {
     // The server says why the last start failed: an action only the owner can
-    // take (a credential to set or replace), or the error it ended with.
-    const action = record.workspace_action;
+    // take (a credential to set or replace, or a link to follow), or the error
+    // it ended with. Starting again asks the deployment before it builds.
+    const action = readUserAction(record.workspace_action);
     const ownerSecret = action?.status === 'owner_secret_required' || action?.status === 'owner_secret_invalid';
     notice = (
       <ErrorNote title={t('shell:assistant_panel.stopped', { name })}>
@@ -346,6 +417,11 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
           <Link to={settingsPath} className={buttonVariants({ size: 'sm' })}>
             {t('shell:assistant_panel.open_settings')}
           </Link>
+        ) : action ? (
+          <div className="flex flex-wrap gap-2">
+            {action.url && actionLink(action.url)}
+            {refreshButton(startAgain)}
+          </div>
         ) : (
           retryButton(startAgain)
         )}

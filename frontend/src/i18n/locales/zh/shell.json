@@ -59,6 +59,8 @@
     "secret_required_one": "{{name}} 还需要你提供 {{count}} 项凭据",
     "secret_required_other": "{{name}} 还需要你提供 {{count}} 项凭据",
     "secret_required_hint": "请在它的设置中填写{{labels}}，然后重新打开它。",
-    "open_settings": "打开设置"
+    "open_settings": "打开设置",
+    "action_required": "{{name}} 需要你先完成一项操作",
+    "check_failed": "无法确认 {{name}} 启动前需要什么"
   }
 }

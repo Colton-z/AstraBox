@@ -412,6 +412,17 @@ sending while a prerequisite is unknown or pending. A status read is advisory:
 `prepare_turn` remains the authority for every caller, including those that do
 not use the console.
 
+An Assistant's owner reads the same state without a conversation through
+`GET /api/v1/assistants/{assistant_id}/user-action`, and runs an offered
+operation through `POST` at the same path. The context's `session_id` is
+`None`, its principal is the owner and its `subject` is the Assistant; only the
+owner may call either. The console uses it for an Assistant that works from a
+panel: it reads the state before it wakes the workspace, and while the state
+reports a pending requirement it shows the action's message, its link and the
+offered operations, and wakes nothing. A workspace start that ended on a user
+action shows that action's message and link; starting again reads the state
+first.
+
 The HTTP view also carries platform-owned `applicable`. For an ended Session,
 or one whose Agent is `DELETING` or `DELETED`, GET returns
 `{"applicable": false, "ready": false, "user_action": null, "actions": []}`
