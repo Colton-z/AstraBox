@@ -835,6 +835,10 @@ for _code, _status, _category, _retryable, _owner in (
     # past both reaches this. Resolving it anyway would run the deployment's
     # default model in its place; whoever manages the Agent sets its model.
     ("AGENT_MODEL_REQUIRED", 409, "configuration.agent", False, "template"),
+    # The engine refused the model an Agent's options describe, such as a
+    # reasoning effort the model does not declare. Whoever manages the Agent
+    # changes its model or engine options; the same start fails the same way.
+    ("AGENT_MODEL_SELECTION_REFUSED", 409, "configuration.agent", False, "template"),
     # A deployment configured a storage medium that cannot hold an exclusive
     # write claim for a workspace that needs one. Nobody's request is wrong, so
     # no 4xx: an operator changes the provider or the medium. Raised where the

@@ -27,6 +27,12 @@ fail() {
 
 [ -n "${ASTRABOX_PI_BASE_URL:-}" ] || fail "ASTRABOX_PI_BASE_URL is unset; pi has no model gateway to reach"
 [ -n "${ASTRABOX_PI_MODEL:-}" ] || fail "ASTRABOX_PI_MODEL is unset; pi has no model to publish"
+# The Agent's own fields for its model's entry, such as reasoning and
+# thinkingLevelMap; the platform always sets it, to {} when there are none.
+model_entry="${ASTRABOX_PI_MODEL_ENTRY:-}"
+[ -n "$model_entry" ] || fail "ASTRABOX_PI_MODEL_ENTRY is unset; the platform names the model entry fields, {} for none"
+printf '%s' "$model_entry" | jq -e 'type == "object"' >/dev/null 2>&1 \
+    || fail "ASTRABOX_PI_MODEL_ENTRY is not a JSON object: $model_entry"
 
 # The base image creates its workload account during boot. Wait for that fixed
 # image capability; never create or alter an account here — the entrypoint owns
@@ -48,20 +54,22 @@ install -d -o "$ASTRABOX_WORKLOAD_USER" -g "$ASTRABOX_WORKLOAD_USER" -m 0755 \
     "$agent_dir" "${workload_home}/.pi/sessions"
 
 # jq renders the JSON so a base URL or model id containing a quote cannot break
-# the file. The apiKey is the literal string "$ASTRABOX_PI_API_KEY": pi
-# resolves it, this script does not.
+# the file. The model's id is the platform's and wins over the entry's fields.
+# The apiKey is the literal string "$ASTRABOX_PI_API_KEY": pi resolves it,
+# this script does not.
 tmp="${agent_dir}/.models.json.tmp"
 jq -n \
     --arg provider "$PI_PROVIDER_NAME" \
     --arg base_url "$ASTRABOX_PI_BASE_URL" \
     --arg model "$ASTRABOX_PI_MODEL" \
+    --argjson entry "$model_entry" \
     '{
         providers: {
             ($provider): {
                 baseUrl: $base_url,
                 api: "openai-completions",
                 apiKey: "$ASTRABOX_PI_API_KEY",
-                models: [ { id: $model } ]
+                models: [ ($entry + { id: $model }) ]
             }
         }
     }' > "$tmp"

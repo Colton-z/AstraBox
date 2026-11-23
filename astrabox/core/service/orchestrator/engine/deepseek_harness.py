@@ -141,6 +141,34 @@ DSH_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
         ),
     },
     DSH_PROFILE_PACKAGE_OPTION,
+    {
+        "key": "select_model",
+        "label": "DSH model selection",
+        "type": "object",
+        "protected_keys": ["sessionId", "provider", "model"],
+        "help": (
+            "Native fields added to args.request of the session/selectModel "
+            "Remote call, which selects the Agent's model each time a "
+            'conversation starts or reconnects. For example, {"reasoningEffort": '
+            '"xhigh"}. The harness accepts only an effort the model declares, '
+            "and the conversation fails with its reason otherwise."
+        ),
+    },
+    {
+        "key": "model_entry",
+        "label": "DSH gateway model entry",
+        "type": "object",
+        "protected_keys": ["id", "input"],
+        "help": (
+            "Fields of the llm-pi-ai model entry AstraBox declares for a model "
+            "outside the harness's DeepSeek catalog. The harness treats such a "
+            "model as non-reasoning unless reasoningEfforts maps its levels to "
+            'the values the model accepts, for example {"reasoningEfforts": '
+            '{"low": "low", "medium": "medium", "high": "high", "xhigh": '
+            '"xhigh"}}. Refused for a model in the DeepSeek catalog, which '
+            "declares its own."
+        ),
+    },
 )
 
 #: Installs an Agent's plugin Bundles with the harness's own plugin command,
@@ -471,8 +499,8 @@ async def _install_agent_instructions(
     )
 
 
-def _session_create_options(template: Any) -> dict[str, Any]:
-    """Read one native creation payload without a supplier-field whitelist."""
+def _native_option(template: Any, key: str) -> dict[str, Any]:
+    """Read one native option block without a supplier-field whitelist."""
     from astrabox.core.service.orchestrator.schema_validation import validate_declared_config_bag
 
     bag = getattr(template, "engine_options", None)
@@ -482,7 +510,12 @@ def _session_create_options(template: Any) -> dict[str, Any]:
         bag, DSH_ENGINE_OPTIONS_SCHEMA,
         bag_label="engine_options", owner_label="engine 'deepseek_harness'",
     )
-    return dict(bag.get("session_create", {}))
+    return dict(bag.get(key, {}))
+
+
+def _session_create_options(template: Any) -> dict[str, Any]:
+    """Read one native creation payload without a supplier-field whitelist."""
+    return _native_option(template, "session_create")
 
 
 async def _publish_runtime(
@@ -500,6 +533,8 @@ async def _publish_runtime(
     model_endpoint_provider: str = "",
     prepared_model_route: dict[str, Any] | None = None,
     session_create: dict[str, Any] | None = None,
+    model_selection: dict[str, Any] | None = None,
+    model_entry: dict[str, Any] | None = None,
     prepare_engine_input: Any = None,
 ) -> SessionRuntime:
     """One live link → one conversation-bound, published SessionRuntime.
@@ -533,15 +568,21 @@ async def _publish_runtime(
         # choice reaches the harness. Asserted on every publish for the same
         # reason the preset is: a model changed on the Agent has to reach the
         # conversations that already exist.
+        # A prepared box declared the gateway entry it was prepared with; a
+        # changed entry is declared again rather than served stale.
         await engine_client.select_model(
             model,
             gateway_base_url=gateway_base_url,
             gateway_key_env=DSH_CREDENTIAL_ENV_VAR,
             prepared_route=(
                 str(prepared_model_route.get("route") or "") or None
-                if prepared_model_route and prepared_model_route.get("model") == model
+                if prepared_model_route
+                and prepared_model_route.get("model") == model
+                and (prepared_model_route.get("model_entry") or {}) == (model_entry or {})
                 else None
             ),
+            selection=model_selection,
+            model_entry=model_entry,
         )
     runtime = SessionRuntime(
         session_id=session_id,
@@ -703,6 +744,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             launch_url_path=f"{(identity or {}).get('home_dir') or SANDBOX_IMAGE_WORKLOAD_HOME}/.deepseek-harness/web-url",
         )
         model = str(getattr(context.model_access, "model_name", "") or "").strip()
+        model_entry = _native_option(template, "model_entry")
         try:
             prepared_native_session = await create_harness_session(
                 link,
@@ -715,6 +757,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
             prepared_model_route = (
                 {
                     "model": model,
+                    "model_entry": model_entry,
                     "route": await resolve_model_route(
                         link,
                         model,
@@ -723,6 +766,7 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                         model_endpoint_provider=model_endpoint_for_name(
                             str(getattr(context.model_access, "endpoint_provider", "") or "")
                         ),
+                        model_entry=model_entry,
                     ),
                 }
                 if model
@@ -891,6 +935,8 @@ class DeepSeekHarnessEngineAdapter(EngineAdapter):
                 model_endpoint_provider=str(context.model_access.endpoint_provider),
                 prepared_model_route=prepared.get("prepared_model_route"),
                 session_create=_session_create_options(template),
+                model_selection=_native_option(template, "select_model"),
+                model_entry=_native_option(template, "model_entry"),
                 prepare_engine_input=context.prepare_engine_input,
             )
         except BaseException:

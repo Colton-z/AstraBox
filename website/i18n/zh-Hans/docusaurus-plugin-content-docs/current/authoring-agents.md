@@ -72,11 +72,39 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | Codex | `turn_start` | 每次 `turn/start` 的参数对象。 |
 | Codex | `model_catalog` | 完整的原生 `models.json` 对象。 |
 | Pi | `settings` | 当前对话的 `~/.pi/agent/settings.json` 根对象。 |
+| Pi | `model_entry` | Agent 模型在 `~/.pi/agent/models.json` 中的条目字段，例如 `reasoning` 和 `thinkingLevelMap`。 |
 | DeepSeek Harness | `session_create` | 原生 `session/create` 请求参数，包括 `agentPreset`。 |
+| DeepSeek Harness | `select_model` | 原生 `session/selectModel` 请求参数，例如 `reasoningEffort`。 |
+| DeepSeek Harness | `model_entry` | DeepSeek 目录之外模型的 `llm-pi-ai` 模型条目，例如 `reasoningEfforts`。 |
 
 输入 `{}` 表示传入空对象，清空编辑器则移除对应配置块。运行配置 JSON 与模型网关配置
 各有用途，可以同时使用。部署配置了 LiteLLM 管理地址时，模型字段会提供相应入口。
 Session 身份、通信设置和已分配的模型凭证由平台管理。
+
+### 推理档位 {#reasoning-effort}
+
+各 Agent 程序在自己的配置里选择推理档位。在 Agent 的原生运行配置 JSON 中设置后，
+所有对话都使用同一档位，适合对比模型效果。
+
+| 引擎 | 原生运行配置 JSON |
+| --- | --- |
+| Claude Code | `{"sdk_options": {"effort": "high"}}` |
+| Codex | `{"config": {"model_reasoning_effort": "high"}}`，或在 `turn_start` 中按轮设置 `effort` |
+| Pi | `{"settings": {"defaultThinkingLevel": "xhigh"}, "model_entry": {"reasoning": true, "thinkingLevelMap": {"xhigh": "xhigh"}}}` |
+| DeepSeek Harness | `{"select_model": {"reasoningEffort": "xhigh"}, "model_entry": {"reasoningEfforts": {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh"}}}` |
+
+Pi 和 DeepSeek Harness 通过 Chat Completions 使用网关模型，对模型的了解只来自它的条目声明。
+两者都把没有推理声明的模型当作不支持推理，所以档位只有配合 `model_entry` 才生效：
+Pi 用 `reasoning` 和 `thinkingLevelMap`，DeepSeek Harness 用 `reasoningEfforts`，
+把每个档位映射为模型接受的 `reasoning_effort` 取值。只声明模型支持的档位。
+
+- **Pi** 会把模型未提供的档位降到它提供的档位。
+- **DeepSeek Harness** 拒绝模型未声明的 `reasoningEffort`，对话以
+  `AGENT_MODEL_SELECTION_REFUSED` 失败，并带上 Harness 给出的原因。Harness 自带
+  DeepSeek 目录中的模型自行声明档位，对它们设置 `model_entry` 会被拒绝。
+
+档位对新对话生效，也在已有对话每次重连时生效。修改 Pi 的 `model_entry` 会替换该 Agent
+已预热的沙箱。
 
 ### MCP 服务器、Skill 和 Plugin
 

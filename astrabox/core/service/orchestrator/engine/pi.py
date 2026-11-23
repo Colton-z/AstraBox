@@ -102,6 +102,9 @@ PI_CREDENTIAL_ENV_VAR = "ASTRABOX_PI_API_KEY"
 #: any session claims the box, which is what keeps a prewarmed box valid.
 PI_BASE_URL_ENV_VAR = "ASTRABOX_PI_BASE_URL"
 PI_MODEL_ENV_VAR = "ASTRABOX_PI_MODEL"
+#: The Agent's ``model_entry`` option as a JSON object, merged under the
+#: model's ``id`` in the same rendering.
+PI_MODEL_ENTRY_ENV_VAR = "ASTRABOX_PI_MODEL_ENTRY"
 PI_WORKSPACE_ENV_VAR = "ASTRABOX_WORKSPACE"
 
 #: The provider name the image writes into ``models.json``. Pi addresses a
@@ -161,6 +164,23 @@ PI_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
             "defaultThinkingLevel for thinking. Model/provider selection "
             "and sessionDir are platform-owned CLI arguments. "
             "https://github.com/earendil-works/pi/blob/v1.0.0/packages/coding-agent/docs/settings.md"
+        ),
+    },
+    {
+        "key": "model_entry",
+        "label": "Pi models.json model entry",
+        "type": "object",
+        "protected_keys": ["id"],
+        "help": (
+            "Fields of the Agent's model entry in the provider table the image "
+            "writes to ~/.pi/agent/models.json. Pi treats a model as "
+            "non-reasoning unless its entry sets reasoning, and then turns "
+            "every thinking level off. For example, "
+            '{"reasoning": true, "thinkingLevelMap": {"xhigh": "xhigh"}} '
+            "declares a reasoning model that also offers xhigh, which Pi "
+            "leaves unsupported unless mapped. Pi validates the fields; a "
+            "change replaces prepared boxes. "
+            "https://github.com/earendil-works/pi/blob/v1.4.0/packages/coding-agent/docs/models-configuration.md"
         ),
     },
 )
@@ -387,6 +407,13 @@ def _settings(template: Any) -> dict[str, Any]:
     return settings
 
 
+def _model_entry(template: Any) -> dict[str, Any]:
+    """The Agent's fields for its model's entry in Pi's provider table."""
+
+    bag = getattr(template, "engine_options", None)
+    return dict(bag.get("model_entry") or {}) if isinstance(bag, dict) else {}
+
+
 async def _park_pi_child(
     sandbox: Any,
     template: Any,
@@ -462,7 +489,7 @@ async def _install_agent_instructions(
 
 
 def _engine_sandbox_request(
-    model_access: Any, *, model: str
+    model_access: Any, *, model: str, model_entry: dict[str, Any]
 ) -> EngineSandboxRequest:
     """What a box holding one pi conversation must be. One declaration.
 
@@ -495,6 +522,9 @@ def _engine_sandbox_request(
         env={
             PI_BASE_URL_ENV_VAR: str(model_access.base_url or "").strip(),
             PI_MODEL_ENV_VAR: model,
+            PI_MODEL_ENTRY_ENV_VAR: json.dumps(
+                model_entry, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
         },
     )
 
@@ -503,10 +533,10 @@ def _slot_spawn_fingerprint(template: Any, *, base_url: str, model: str) -> str:
     """The box-frozen facts a prepared pi box answers for, as one digest.
 
     Covers exactly what the box CREATE fixes and a later spawn cannot
-    override: the image and its entrypoint, and the gateway base URL and model
-    the image renders into ``models.json`` at boot — a box carries one
-    provider table with one model in it, so both rotate the box rather than
-    the process. The workload identity contract is here too because the
+    override: the image and its entrypoint, and the gateway base URL, model
+    and model entry the image renders into ``models.json`` at boot — a box
+    carries one provider table with one model in it, so each rotates the box
+    rather than the process. The workload identity contract is here too because the
     workspace and account paths the create pre-renders come from it.
 
     Spawn-borne facts are deliberately absent. ``AGENTS.md`` (the Agent's
@@ -525,6 +555,7 @@ def _slot_spawn_fingerprint(template: Any, *, base_url: str, model: str) -> str:
         "entrypoint": list(PI_IMAGE_ENTRYPOINT),
         "base_url": str(base_url or ""),
         "model": str(model or ""),
+        "model_entry": _model_entry(template),
         "provider": PI_PROVIDER_NAME,
         "workload_user": SANDBOX_IMAGE_WORKLOAD_USER,
         "workload_home": SANDBOX_IMAGE_WORKLOAD_HOME,
@@ -900,7 +931,9 @@ class PiEngineAdapter(EngineAdapter):
         """Declare pi's image and RPC process prerequisites."""
 
         model = _model_reference(model_access)
-        return _engine_sandbox_request(model_access, model=model)
+        return _engine_sandbox_request(
+            model_access, model=model, model_entry=_model_entry(template)
+        )
 
     async def activate_runtime(
         self,
