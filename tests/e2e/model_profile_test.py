@@ -70,7 +70,9 @@ def _codex(client: httpx.Client, sid: str, model: str, facts: dict[str, Any]) ->
 
 
 def _pi(client: httpx.Client, sid: str, model: str, facts: dict[str, Any]) -> None:
-    config = json.loads(_box_text(client, sid, "cat /home/agent/.pi/agent/models.json"))
+    home = str((get_admin_session_detail(client, sid).get("runtime_identity") or {}).get("home_dir") or "")
+    assert home, "the Pi conversation has no home"
+    config = json.loads(_box_text(client, sid, "cat " + shlex.quote(f"{home}/.pi/agent/models.json")))
     entries = [entry for provider in config["providers"].values() for entry in provider["models"]]
     assert [entry["id"] for entry in entries] == [model], entries
     entry = entries[0]
