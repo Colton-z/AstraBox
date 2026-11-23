@@ -207,6 +207,7 @@ commonly used fields are:
 | `last_error_code` | string/null | The error code of `last_error`, such as `SANDBOX_EXECD_ACCESS_UNVERIFIED` or `SANDBOX_CONTAINER_ENGINE_UNAVAILABLE` for a start that failed (`RUNTIME_START_FAILED` when the cause has no code of its own); null when that error has none. |
 | `created_at` | string/null | Creation time. |
 | `updated_at` | string/null | Last update time. |
+| `last_user_activity_at` | string/null | When the Session was created or its owner last acted on it. The list is ordered by it, latest first. |
 
 Session list responses contain a summary of each Session, with its `state`
 from the last status the Agent program reported; `GET
@@ -398,7 +399,8 @@ Example paginated response:
         "runtime_status": "idle",
         "title": "code-reviewer",
         "created_at": "2026-05-18T12:00:00Z",
-        "updated_at": "2026-05-18T12:30:00Z"
+        "updated_at": "2026-05-18T12:30:00Z",
+        "last_user_activity_at": "2026-05-18T12:20:00Z"
       }
     ],
     "has_more": false,
@@ -422,7 +424,7 @@ The title and the permission mode are the Session settings this route family
 updates. Only the Session's owner can rename it. A title is one line of at
 most 200 characters: runs of whitespace, line breaks included, are stored as
 one space, and an empty title is refused with `HTTP 400 INVALID_REQUEST`.
-Renaming does not move the Session in the list. When automatic titles are
+Renaming moves the Session first in its owner's list. When automatic titles are
 enabled, AstraBox titles a Session from one of its first responses; a title
 its owner set is never replaced, including one set while that title is being
 generated. In the console, rename a conversation from **More actions** on its
@@ -489,8 +491,11 @@ console marks it read while it is open in a visible tab and shows a dot beside
 an unread conversation in the list. With notifications turned on (the bell
 beside **Sessions** in the list), it shows a browser notification for each new
 unread reply while a console tab is open, including a tab in the background.
-A response that ends, including one the Agent program started on its own,
-moves its conversation to the top of the list.
+A reply marks its conversation unread without moving it in the list. The
+list follows `last_user_activity_at`: the owner's last action on the
+conversation, such as sending a message, answering, stopping a response or a sub-agent, running or stopping a terminal command, changing its files, renaming it, changing its permission mode, sharing it, recovering it, ending it or terminating its sandbox. Reading a conversation, its files
+or its browser does not move it, and neither do generated titles or changes
+the runtime makes on its own.
 
 ## Child Runs
 

@@ -71,6 +71,7 @@ _SUMMARY_FIELDS = (
     "expires_at",
     "created_at",
     "updated_at",
+    "last_user_activity_at",
     "last_output_at",
     "read_at",
     "runtime_unavailable",

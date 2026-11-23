@@ -424,7 +424,7 @@ export default function App() {
                             className="gap-1.5"
                             trail={
                               <span className="text-10 tabular-nums text-muted-foreground in-data-active:text-astra-fg">
-                                {formatShortTime(s.updated_at || s.created_at, t)}
+                                {formatShortTime(s.last_user_activity_at || s.created_at, t)}
                               </span>
                             }
                           >

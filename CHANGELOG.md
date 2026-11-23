@@ -17,6 +17,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed
 
+- A conversation's place in the list is now its owner's last action on it, exposed as the Session's `last_user_activity_at`: sending a message, answering, stopping a response or a sub-agent, running or stopping a terminal command, changing its files, renaming it, changing its permission mode, sharing it, recovering it, ending it or terminating its sandbox. Previously the list followed the row's update time, which a reply ending and the runtime starting, recovering or failing also move, so a conversation the owner was not using could rise above the one they were working in, while renaming did not move it. Replies still mark a conversation unread, and the time beside each row is the time it is ordered by. Existing conversations take the order from the messages, answers, stops, terminal commands and share changes they recorded when the schema is upgraded.
 - **A conversation reconnects with the Agent version its sandbox was prepared from.** After an Agent's Plugins changed, reconnecting an existing Claude Code conversation failed with `PACKAGE_INVALID` and left its message waiting. A new sandbox still uses the current version. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
 - **A message fails with the reason when its sandbox cannot be reconnected.** A reconnect refused with an error that is not retryable left the message waiting while the server retried; the message now fails with that error and the conversation reads as needing recovery. [Guide](https://www.astrabox.ai/docs/sessions#send-a-message)
 
@@ -24,6 +25,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Upgrading
 
+- PostgreSQL applies the schema change on startup. External persistence providers need the Session's `last_user_activity_at`, set when a Session is created, accepts an input, receives an answer or is acted on by its owner, and the owner's session list ordered by it.
 - Schema revision `0028` adds `agent_versions` and records each existing Agent's current configuration as the start of its history.
 - Schema revision `0029` records that version on each existing Agent conversation as the one its sandbox was prepared from.
 
@@ -37,6 +39,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### 修复
 
+- 对话在列表中的位置改为所有者最后一次操作它的时间，即 Session 的 `last_user_activity_at`：发送消息、回答、停止回复或子 Agent、运行或停止终端命令、修改文件、重命名、修改权限模式、分享、恢复、结束对话或终止沙箱。此前列表按行的更新时间排序，而回复结束以及运行时的启动、恢复或失败也会更新它，所以所有者没在用的对话可能排到正在使用的对话之上，而重命名反而不移动对话。回复仍会把对话标为未读，每行旁显示的时间就是排序所用的时间。已有对话在架构升级时按已记录的消息、回答、停止、终端命令和分享变更确定顺序。
 - **对话重连时沿用其沙箱准备时的 Agent 版本。** 此前 Agent 的插件改动后，已有 Claude Code 对话重连会报 `PACKAGE_INVALID`，消息一直等待。新沙箱仍使用当前版本。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
 - **沙箱无法重连时，消息带着原因失败。** 此前重连遇到不可重试的错误时，消息一直等待，服务端反复重试；现在消息以该错误失败，对话显示为需要恢复。[指南](https://www.astrabox.ai/docs/sessions#send-a-message)
 
@@ -44,6 +47,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### 升级说明
 
+- PostgreSQL 在启动时应用架构变更。外部持久化提供方需要支持 Session 的 `last_user_activity_at`：在 Session 创建、接受输入、收到回答或被所有者操作时写入，并让所有者的会话列表按它排序。
 - Schema 修订 `0028` 新增 `agent_versions` 表，并把每个现有 Agent 的当前配置记录为其历史起点。
 - Schema 修订 `0029` 把该版本记为每个现有 Agent 对话的沙箱准备版本。
 

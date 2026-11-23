@@ -172,8 +172,8 @@ When there is no data or the end of the list has been reached:
 ## Notes
 
 1. **Cursor handling** — `cursor` is opaque and should be passed back exactly as returned.
-2. **Sort order** — Sessions are ordered by update time, newest first, with Session ID as the tie-breaker.
-3. **Changing data** — a cursor does not freeze a snapshot; a Session updated while paging may move earlier in the order.
+2. **Sort order** — Sessions are ordered by `last_user_activity_at`, latest first, with Session ID as the tie-breaker. `last_user_activity_at` is when the Session was created or its owner last acted on it; replies, generated titles, reading and the runtime's own changes do not move a Session.
+3. **Changing data** — a cursor does not freeze a snapshot; a Session its owner acts on while paging moves earlier in the order.
 4. **Concurrent paging** — each client should keep its own cursor chain.
 
 ## Next steps
