@@ -17,8 +17,18 @@
  */
 import type { Page } from '@playwright/test';
 
-/** Elements whose decoration is cut off by an ancestor, as readable lines. */
+/**
+ * Elements whose decoration is cut off by an ancestor, as readable lines.
+ *
+ * Two passes. The first reads what every element paints as the page stands.
+ * The second gives each focusable element the keyboard focus in turn and reads
+ * its focus ring, which exists only while it is focused: a row's ring cut on
+ * all four sides by an item that clips for its own animation is invisible to
+ * the first pass and is the first thing a keyboard user sees.
+ */
 export async function findClippedDecorations(page: Page): Promise<string[]> {
+  // Focus rings paint only under keyboard modality.
+  await page.keyboard.press('Tab');
   return page.evaluate(() => {
     type Side = 'left' | 'right' | 'top' | 'bottom';
 
@@ -37,11 +47,11 @@ export async function findClippedDecorations(page: Page): Promise<string[]> {
     };
 
     const found: string[] = [];
-    for (const el of document.querySelectorAll('*')) {
+    const measure = (el: Element, focused: boolean) => {
       const rect = el.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) continue;
+      if (rect.width < 1 || rect.height < 1) return;
       const cs = getComputedStyle(el);
-      if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') continue;
+      if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') return;
 
       const reach: Record<Side, number> = { left: 0, right: 0, top: 0, bottom: 0 };
       const outlineReach =
@@ -59,7 +69,7 @@ export async function findClippedDecorations(page: Page): Promise<string[]> {
           if (typeof shadow === 'string') outward(shadow, reach);
         }
       }
-      if (Math.max(reach.left, reach.right, reach.top, reach.bottom) <= 0) continue;
+      if (Math.max(reach.left, reach.right, reach.top, reach.bottom) <= 0) return;
 
       for (let node = el.parentElement; node; node = node.parentElement) {
         const ancestor = getComputedStyle(node);
@@ -106,19 +116,50 @@ export async function findClippedDecorations(page: Page): Promise<string[]> {
           top: rect.top - box.top + margin,
           bottom: box.bottom - rect.bottom + margin,
         };
+        // Along an axis the container scrolls, an element meets the edge
+        // wherever the reader has scrolled to, and the next scroll frees it.
+        // Only the ends of the content are layout: the first item at the
+        // start, the last at the end, with nowhere further to scroll.
+        const canScroll: Record<Side, boolean> = {
+          left: node.scrollLeft > 0.5,
+          right: node.scrollLeft + node.clientWidth < node.scrollWidth - 0.5,
+          top: node.scrollTop > 0.5,
+          bottom: node.scrollTop + node.clientHeight < node.scrollHeight - 0.5,
+        };
         for (const side of ['left', 'right', 'top', 'bottom'] as Side[]) {
           if (!(side === 'left' || side === 'right' ? clipsX : clipsY)) continue;
+          if (canScroll[side]) continue;
           // Half a pixel of slack: subpixel layout, not a design defect.
           if (reach[side] <= room[side] + 0.5) continue;
           found.push(
-            `${el.tagName.toLowerCase()}.${(el.className || '').toString().trim().slice(0, 40)}`
+            `${focused ? 'focus ring of ' : ''}`
+            + `${el.tagName.toLowerCase()}.${(el.className || '').toString().trim().slice(0, 40)}`
             + ` — ${side} reach ${Math.round(reach[side])}px into ${Math.round(room[side])}px`
             + ` (clipped by ${node.tagName.toLowerCase()}.${(node.className || '').toString().trim().slice(0, 40)})`,
           );
         }
         break;
       }
+    };
+
+    for (const el of document.querySelectorAll('*')) measure(el, false);
+
+    const before = document.activeElement as HTMLElement | null;
+    for (const el of document.querySelectorAll<HTMLElement>(
+      'a[href], button, input, select, textarea, summary, [tabindex]:not([tabindex="-1"])',
+    )) {
+      if (el.hasAttribute('disabled') || el.closest('[aria-hidden="true"], [inert]')) continue;
+      el.focus({ preventScroll: true });
+      if (document.activeElement !== el) continue;
+      // A ring that eases in is read where it settles: a control with
+      // `transition-all` is halfway between its unfocused outline and its
+      // ring at the instant focus lands.
+      for (const animation of el.getAnimations()) {
+        if (animation instanceof CSSTransition) animation.finish();
+      }
+      measure(el, true);
     }
+    before?.focus?.({ preventScroll: true });
     return [...new Set(found)];
   });
 }

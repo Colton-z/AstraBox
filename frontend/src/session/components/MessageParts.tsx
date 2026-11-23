@@ -4,8 +4,7 @@ import type { UIMessage as SDKUIMessage, DynamicToolUIPart } from 'ai';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
-import { ChevronDownIcon, ListTreeIcon, LoaderCircleIcon } from 'lucide-react';
-import { Shimmer } from '@/components/ai-elements/shimmer';
+import { ChevronDownIcon, ListTreeIcon } from 'lucide-react';
 /*
   Message and MessageContent only. `MessageResponse` renders Streamdown, and
   one markdown renderer per transcript is the rule `ThinkingPartCard` below
@@ -14,6 +13,7 @@ import { Shimmer } from '@/components/ai-elements/shimmer';
 */
 import { Image } from '@/components/ai-elements/image';
 import { Message, MessageContent } from '@/components/ai-elements/message';
+import { ResponsePending } from './ResponsePending';
 import { Reasoning, ReasoningTrigger } from '@/components/ai-elements/reasoning';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { cn } from '@/lib/utils';
@@ -285,6 +285,7 @@ export function MessageBubble({
   sessionId,
   includedInResponse,
   responseSegment,
+  replacesPending,
 }: {
   message: SDKUIMessage;
   pendingToolCallId?: string;
@@ -292,6 +293,8 @@ export function MessageBubble({
   sessionId?: string;
   includedInResponse?: string;
   responseSegment?: 'preceding' | 'last';
+  /** The reply took the place of the pending line, so it does not enter again. */
+  replacesPending?: boolean;
 }) {
   const { t } = useTranslation();
   // A response that has not ended is still the runtime's: running, or paused
@@ -456,7 +459,7 @@ export function MessageBubble({
       from={message.role}
       data-testid={isUser ? 'user-message' : 'assistant-message'}
       data-streaming={!isUser && isStreaming ? 'true' : undefined}
-      className="astra-enter max-w-full"
+      className={cn(!replacesPending && 'astra-enter', 'max-w-full')}
     >
       {/*
         Two kinds of box share this element, and they want opposite widths. A
@@ -511,16 +514,12 @@ export function MessageBubble({
           </div>
         )}
         {/*
-          The fallback pulse, for a surface that says nothing itself: no parts
-          yet, or a group of plain text. A process group runs its own spinner
-          and a pending tool card its own waiting state, and either beside this
-          line would give one state two names.
+          What the response is doing now, said once and in one place from its
+          first frame to its last. A response waiting on the reader says so on
+          the card that asks, not here.
         */}
-        {isStreaming && !pendingToolCallId && !groups.at(-1)?.process && (
-          <div className="flex items-center gap-2">
-            <span className="astra-dot astra-dot--live" />
-            <Shimmer duration={1.5}>{t('chat:message.generating')}</Shimmer>
-          </div>
+        {isStreaming && !pendingToolCallId && (
+          <ResponsePending testId="assistant-process-activity" label={liveActivity(visibleParts, t)} />
         )}
       </MessageContent>
       {/* A schedule delivered this input, not the person typing it. */}
@@ -593,14 +592,50 @@ function AssistantTurnProcess({
 }
 
 /**
+ * What a running response is doing now, in a few words.
+ *
+ * It names the call in flight, and between one call returning and the next
+ * part arriving it keeps naming the call that just returned: nothing new is in
+ * flight in that gap, and a line that empties and comes back reads as a
+ * flicker on every step. It follows the latest part's TYPE, never a reasoning
+ * part's done state: the translator closes each thinking fragment on its own,
+ * so a model that thinks in bursts would otherwise switch the line on and off
+ * between fragments of one continuous thought.
+ */
+function liveActivity(parts: MessagePart[], t: (key: string, options?: Record<string, unknown>) => string): string {
+  const tools = parts.filter((part) => part.type === 'dynamic-tool') as DynamicToolUIPart[];
+  const unfinished = tools.filter((part) => UNFINISHED_TOOL_STATES.has(part.state));
+  const latest = parts.findLast(
+    (part) => part.type === 'reasoning' || part.type === 'dynamic-tool' || part.type === 'text',
+  );
+  const current = unfinished[unfinished.length - 1]
+    ?? (latest?.type === 'dynamic-tool' ? latest as DynamicToolUIPart : undefined);
+  if (!current) {
+    // Before its first part a response is thinking, the same as while it
+    // reasons: one word for both, so a short thought before the answer does
+    // not read as the line changing its mind.
+    return latest?.type === 'text' ? t('chat:message.generating') : t('chat:process.thinking');
+  }
+  const input = typeof current.input === 'object' && current.input !== null
+    ? current.input as Record<string, unknown>
+    : {};
+  const preview = toolPreview(current.toolName, input);
+  const verb = current.state === 'input-streaming'
+    ? t('chat:process.preparing', { tool: current.toolName })
+    : t(PROCESS_ACTION_KEYS[current.toolName] ?? 'chat:process.running_tool', { tool: current.toolName });
+  const more = unfinished.length > 1
+    ? ` · ${t('chat:process.more_in_progress', { count: unfinished.length - 1 })}`
+    : '';
+  return `${verb}${preview ? ` · ${preview}` : ''}${more}`;
+}
+
+/**
  * One run of thinking and finished tool calls, behind one header.
  *
- * While the run is live the header is the only thing on screen saying what the
- * model is doing, so it carries a status line naming the tool in flight. That
- * line is derived from the latest part's TYPE, never from a reasoning part's
- * done state: the translator closes each thinking fragment on its own, so a
- * model that thinks in bursts would otherwise flicker the line on and off
- * between fragments of one continuous thought.
+ * The header counts the work and says whether the run is still going. What the
+ * model is doing at this moment is said once, on the response's own activity
+ * line: a header that carried it too would hand it over at every boundary
+ * between two runs, and each hand-over is a line that vanishes and reappears.
  */
 function AssistantProcess({
   parts,
@@ -618,23 +653,6 @@ function AssistantProcess({
   const { t } = useTranslation();
   const tools = parts.filter((part) => part.type === 'dynamic-tool') as DynamicToolUIPart[];
   const completed = tools.filter((part) => part.state === 'output-available').length;
-  const unfinished = tools.filter((part) => UNFINISHED_TOOL_STATES.has(part.state));
-  const current = unfinished[unfinished.length - 1];
-  const input = current && typeof current.input === 'object' && current.input !== null
-    ? current.input as Record<string, unknown>
-    : {};
-  const preview = current ? toolPreview(current.toolName, input) : '';
-  const latestActivity = parts.findLast(
-    (part) => part.type === 'reasoning' || part.type === 'dynamic-tool' || part.type === 'text',
-  );
-  const verb = current
-    ? (current.state === 'input-streaming'
-      ? t('chat:process.preparing', { tool: current.toolName })
-      : t(PROCESS_ACTION_KEYS[current.toolName] ?? 'chat:process.running_tool', { tool: current.toolName }))
-    : '';
-  const action = current
-    ? `${verb}${preview ? ` · ${preview}` : ''}`
-    : latestActivity?.type === 'reasoning' ? t('chat:process.thinking') : '';
   const count = running
     ? t('chat:process.completed_count', { count: completed })
     : tools.length
@@ -645,6 +663,7 @@ function AssistantProcess({
     <Collapsible
       className="group w-full min-w-0 overflow-hidden rounded-[var(--radius)] border border-border bg-muted/30"
       data-testid="assistant-process"
+      data-running={running ? 'true' : undefined}
       open={open}
       onOpenChange={onOpenChange}
     >
@@ -658,11 +677,7 @@ function AssistantProcess({
             running ? 'bg-teal-tint text-teal-fg' : 'bg-muted text-muted-foreground',
           )}
         >
-          {running ? (
-            <LoaderCircleIcon aria-hidden="true" className="size-4 animate-spin motion-reduce:animate-none" />
-          ) : (
-            <ListTreeIcon aria-hidden="true" className="size-4" />
-          )}
+          <ListTreeIcon aria-hidden="true" className="size-4" />
         </span>
         <span className={cn('font-medium', running ? 'text-foreground' : 'text-muted-foreground')}>
           {running
@@ -675,20 +690,6 @@ function AssistantProcess({
           className="size-4 shrink-0 text-muted-foreground transition-transform group-data-open:rotate-180"
         />
       </CollapsibleTrigger>
-      {running && (
-        <div
-          role="status"
-          data-testid="assistant-process-activity"
-          className="ml-6 min-h-8 border-l border-border pb-3 pl-6 text-sm leading-5 text-muted-foreground"
-        >
-          {action && <div className="truncate" title={action}>{action}</div>}
-          {unfinished.length > 1 && (
-            <div className="mt-0.5 text-xs">
-              {t('chat:process.more_in_progress', { count: unfinished.length - 1 })}
-            </div>
-          )}
-        </div>
-      )}
       <CollapsibleContent
         keepMounted
         data-testid="assistant-process-panel"
@@ -893,9 +894,8 @@ export function ThinkingPartCard({ text, isStreaming }: { text: string; isStream
         className="ring-inward px-3 py-2 text-13 hover:bg-accent/40"
         getThinkingMessage={() => (
           <span className="flex flex-1 items-center gap-2 text-left">
-            {isStreaming && <span className="astra-dot astra-dot--live" />}
             <span className="t-eyebrow">
-              {isStreaming ? <Shimmer duration={1}>{t('chat:message.thinking')}</Shimmer> : t('chat:message.thought_process')}
+              {t(isStreaming ? 'chat:message.thinking' : 'chat:message.thought_process')}
             </span>
           </span>
         )}

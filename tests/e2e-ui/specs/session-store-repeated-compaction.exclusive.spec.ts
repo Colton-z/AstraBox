@@ -762,11 +762,11 @@ test('two real native compactions keep the complete history, its identities and 
     };
   });
   const seen = new Map<string, Awaited<ReturnType<typeof readDomRows>>['rows'][number]>();
-  // Walk overlapping viewports: cold history starts at the bottom, and rows
-  // outside the viewport and overscan are intentionally unmounted.
+  // Walk overlapping viewports: cold history starts at the bottom, and older
+  // pages are loaded as the walk reaches the top.
   await expect.poll(async () => {
     const current = await readDomRows();
-    // Virtuoso initially hides its measured rows until the first scroll settles.
+    // Rows fade in; wait until one is actually showing its text.
     if (!current.rows.some((row) => row.visible && (row.userText || row.assistantText))) return [];
     const mountedIds = current.rows.map((row) => row.id);
     expect(new Set(mountedIds).size, 'mounted history must not duplicate a message').toBe(mountedIds.length);

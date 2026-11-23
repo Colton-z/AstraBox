@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSessionUserAction } from './hooks/useSessionUserAction';
 import { SessionUserAction } from './components/SessionUserAction';
 import { useTranslation } from 'react-i18next';
@@ -202,6 +202,24 @@ function SessionPageReady({
     isTerminated,
   });
 
+  // The receipt of a send and the session's next state arrive on different
+  // reads. For the moment between them nothing says the message is on its
+  // way, so the send is remembered until the session reports what it did.
+  const [justSent, setJustSent] = useState(false);
+  useEffect(() => {
+    if (isSending) {
+      setJustSent(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setJustSent(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [isSending]);
+  useEffect(() => {
+    if (isWorking || lifecycleState === 'creating') setJustSent(false);
+  }, [isWorking, lifecycleState]);
+
+  const onItsWay = isSending || justSent || chat.heldInputIds.size > 0;
+
   // ── Header and send capability ───────────────────────────────
   const {
     transparentlyRecoverable, canSendNow, canQueueMessage,
@@ -211,7 +229,10 @@ function SessionPageReady({
     lifecycleState,
     isTerminated,
     hasPendingInteraction,
-    isSending,
+    // A message the session has accepted and not yet handed to a runtime is
+    // still on its way; between its acceptance and the session starting, the
+    // header would otherwise fall back to Ready for a moment.
+    isSending: onItsWay && lifecycleState !== 'creating',
     isWorking,
     isStopping,
     t,
@@ -368,6 +389,7 @@ function SessionPageReady({
           sessionId={sessionId}
           messages={messages}
           isWorking={isWorking || isSending}
+          startingLabel={lifecycleState === 'creating' ? headerStatusLabel : undefined}
           pendingToolCallId={pendingToolCallId}
           writingMessageId={chat.writingMessageId}
           hasPendingInteraction={hasPendingInteraction}
@@ -439,7 +461,7 @@ function SessionPageReady({
             canSend={composerCanSend}
             isTerminated={isTerminated}
             isStreaming={isWorking}
-            isSubmitted={isSending}
+            isSubmitted={onItsWay}
             hasPendingInteraction={hasPendingInteraction}
             permissionMode={permissionMode}
             permissionModes={session.engine_capabilities?.permission_modes ?? []}

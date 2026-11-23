@@ -39,7 +39,10 @@ export function StopGenerationButton({
   return (
     <PromptInputSubmit aria-label={label} title={label} status={status} {...props}>
       {showStopping ? (
-        <Spinner className="text-muted-foreground" aria-label={t('misc:prompt_input.stopping')} />
+        // On a wrapper: the spinner's own animation is its rotation.
+        <span className="appear-late inline-flex">
+          <Spinner className="text-muted-foreground" aria-label={t('misc:prompt_input.stopping')} />
+        </span>
       ) : (
         children
       )}

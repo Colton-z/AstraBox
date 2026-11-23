@@ -1,3 +1,4 @@
+@layer ui-sdk;
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
@@ -499,6 +500,13 @@
 /* Page / block enter motion. */
 .astra-enter {
   animation: astra-enter var(--dur-3) var(--astra-ease) both;
+}
+
+/* A spinner for a wait that is usually over at once. It stays unpainted for
+   its first moments, so a wait that ends within them shows nothing rather
+   than a flash of a spinner. */
+.appear-late {
+  animation: astra-enter var(--dur-3) var(--astra-ease) 300ms both;
 }
 
 /* Star-field backdrop motif (radial dot grid). Use as a faint layer behind
@@ -1152,19 +1160,57 @@ body {
   --tw-ring-inset: inset;
 }
 
-/* The tab TRIGGER is not here: it keeps its ring deliberately outward
+/* The default tab TRIGGER is not here: it keeps its ring outward
    (`border-ring` + `ring-[3px]` + `outline-1`), and `TabsList` wraps it in
    `p-[3px]` while declaring no clipping, so there is nothing cutting it off.
 
-   The tab PANEL carries upstream `outline-none`, which beats the
+   The LINE variant's trigger is: its strip runs edge to edge and scrolls
+   sideways when the tabs outgrow it, so the first and last triggers sit on a
+   clipping edge and lose that side of an outward ring. */
+[data-slot="tabs-list"][data-variant="line"] [data-slot="tabs-trigger"]:focus-visible {
+  --tw-ring-inset: inset;
+  outline-offset: -1px;
+}
+
+/* The tab PANEL carries upstream `outline-none`, which beats the
    zero-specificity `:where(..., [tabindex], ...)` outline even though Base UI
    gives it `tabIndex=0`. This unlayered `data-slot` rule restores a visible
    focus indicator while keeping `ui/tabs.tsx` byte-identical to the registry. */
 [data-slot="tabs-content"]:focus-visible {
   outline: 2px solid var(--ring);
   /* Inward: the panel fills its column and an outward ring would be drawn over
-     whatever sits beside it, the same reason `.console-scroll` draws inward. */
+     whatever sits beside it, the same reason `.console-scroll` draws inward.
+     Upstream also gives it `ring-[3px]`, a box-shadow the offset does not
+     move, so that half goes inward through the variable its shadow reads. */
   outline-offset: -2px;
+  --tw-ring-inset: inset;
+}
+
+/* A collapsible panel opens and closes by its height. UI SDK keeps a closing
+   panel mounted until its exit has run, and with nothing to run the panel sat
+   unchanged for about 200ms after the click and then vanished: a control that
+   feels late, and a stretch in which a reply still writing changes the list's
+   height twice. The panel's own height is the exit, at the pace of a press. */
+[data-slot="collapsible-panel"] {
+  height: var(--collapsible-panel-height);
+  overflow: hidden;
+  transition: height var(--dur-1) var(--astra-ease);
+}
+[data-slot="collapsible-panel"]:is([data-starting-style], [data-ending-style]) {
+  height: 0;
+}
+
+/* A code block clips at its border, and the vendored container cannot take
+   `.clip-content`. A button laid directly in it, such as the copy control of a
+   one-line command, sits on that edge. */
+[data-language] [data-slot="button"]:focus-visible {
+  --tw-ring-inset: inset;
+}
+
+/* A sidebar row fills the rail's width, and a conversation row sits in an item
+   that clips for its archive animation, so an outward ring loses every side. */
+[data-slot="sidebar-menu-button"]:focus-visible {
+  --tw-ring-inset: inset;
 }
 
 /* The line variant's active indicator is an `::after` placed at `bottom-[-5px]`,
@@ -1221,6 +1267,7 @@ body {
      which is what carries the state to a still screenshot. */
   .astra-dot--live,
   .tone-running .astra-pill-dot { animation: none; }
+  [data-slot="collapsible-panel"] { transition: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
