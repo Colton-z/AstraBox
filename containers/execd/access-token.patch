@@ -1,6 +1,9 @@
 --- a/components/execd/pkg/web/router.go
 +++ b/components/execd/pkg/web/router.go
-@@ -199,2 +199,6 @@
+@@ -190,0 +191,2 @@
++const accessTokenAuthenticatedKey = "astrabox.execd.access_token_authenticated"
++
+@@ -199,2 +201,6 @@
 -			ctx.Next()
 -			return
 +			// AstraBox modification: /internal/init replaces the token, so once
@@ -9,7 +12,11 @@
 +				ctx.Next()
 +				return
 +			}
-@@ -235,0 +240,8 @@
+@@ -213,0 +220 @@
++			ctx.Set(accessTokenAuthenticatedKey, true)
+@@ -233,0 +241 @@
++		ctx.Set(accessTokenAuthenticatedKey, true)
+@@ -235,0 +244,8 @@
 +}
 +
 +// AstraBox modification: whether a request must present a token at all.
@@ -27,10 +34,10 @@
 @@ -27,0 +30 @@
 +	"github.com/alibaba/opensandbox/execd/pkg/web/model"
 @@ -76,0 +80,7 @@
-+			// AstraBox modification: another in-box service never receives
-+			// execd's own credential, as filesystem_identity_linux.go already
-+			// does. A request for execd's own port keeps it: OpenSandbox's
-+			// Docker endpoint for execd is this proxy route to itself.
-+			if port != strconv.Itoa(flag.ServerPort) {
++			// AstraBox modification: strip the credential if this execd used it
++			// to authenticate the request. Without outer authentication, the
++			// header belongs to the destination service. The proxy route to
++			// execd's own port still needs its credential.
++			if port != strconv.Itoa(flag.ServerPort) && c.GetBool(accessTokenAuthenticatedKey) {
 +				req.Header.Del(model.ApiAccessTokenHeader)
 +			}

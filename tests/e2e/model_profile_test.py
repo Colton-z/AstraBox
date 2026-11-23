@@ -6,6 +6,7 @@ import json
 import shlex
 import subprocess
 from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -17,6 +18,7 @@ from tests.e2e._sandbox_helpers import (
     poll_until_agent_ready,
     run_terminal,
     send_and_follow,
+    wait_until_settled,
 )
 from tests.e2e._service_containers import SERVER_CONTAINER_HANDLE, require_service_container
 
@@ -122,3 +124,24 @@ def test_the_gateway_model_facts_reach_the_engine_configuration(e2e_client: http
     sid = str(create_session(e2e_client)["session_id"])
     poll_until_agent_ready(e2e_client, sid)
     checks[profile["engine_kind"]](e2e_client, sid, profile["model"], facts)
+
+    if profile["engine_kind"] == "pi" and profile["sandbox_tenancy"] == "agent":
+        other_sid = str(create_session(e2e_client)["session_id"])
+        poll_until_agent_ready(e2e_client, other_sid)
+        first = get_admin_session_detail(e2e_client, sid)
+        other = get_admin_session_detail(e2e_client, other_sid)
+        assert first["sandbox_id"] and first["sandbox_id"] == other["sandbox_id"]
+        first_isolation = first["runtime_identity"]["isolated_session_id"]
+        other_isolation = other["runtime_identity"]["isolated_session_id"]
+        assert first_isolation and other_isolation and first_isolation != other_isolation
+        _pi(e2e_client, other_sid, profile["model"], facts)
+        for conversation in (sid, other_sid):
+            marker = f"PI_{uuid4().hex[:12]}"
+            reply = send_and_follow(
+                e2e_client, conversation, f"Reply with exactly {marker}. Do not use tools.", until="end"
+            )
+            assert reply.error is None, reply.error
+            assert reply.text.strip() == marker, reply.text
+            settled = wait_until_settled(e2e_client, conversation)
+            assert settled["last_response"]["response_id"] == reply.response_id
+            assert settled["last_response"]["outcome"] == "completed"
