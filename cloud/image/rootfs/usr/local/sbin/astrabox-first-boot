@@ -1,0 +1,401 @@
+#!/usr/bin/env bash
+# Configure AstraBox on the first boot of a machine built from the AstraBox
+# cloud image (cloud/image/build.sh).
+#
+# The image holds the release bundle, the installer and every container image a
+# fresh installation runs, but no installation: each machine generates its own
+# secrets here. This script
+#   1. reads optional settings from /etc/astrabox/cloud.env, which cloud-init
+#      user data or a marketplace template may write before it runs;
+#   2. finds the address browsers reach the machine at;
+#   3. runs the installer from the local bundle with team login on, so the
+#      console is never served without sign-in;
+#   4. starts Caddy in front of the loopback ports: the console on 443 and the
+#      sign-in pages on 8443 (or on two host names), with a Let's Encrypt
+#      certificate, falling back to a self-signed one;
+#   5. writes the sign-in details to /root/astrabox-credentials.txt.
+#
+# systemd runs it once (astrabox-first-boot.service). After a failure, correct
+# the cause and run `systemctl restart astrabox-first-boot`; the installer keeps
+# what an earlier attempt generated.
+set -euo pipefail
+
+readonly IMAGE_DIR=/opt/astrabox-image
+readonly INSTALL_DIR=/opt/astrabox
+readonly SETTINGS_FILE=/etc/astrabox/cloud.env
+readonly STATE_DIR=/var/lib/astrabox-cloud
+readonly CREDENTIALS_FILE=/root/astrabox-credentials.txt
+readonly EDGE_DIR="$INSTALL_DIR/edge"
+readonly EDGE_CONTAINER=astrabox-edge
+# The ports Casdoor's sign-in pages are published on when the machine has an
+# IP address and no host names: the same certificate, another port.
+readonly LOGIN_PORT=8443
+readonly DOCS_URL="https://www.astrabox.ai/docs/cloud-images"
+
+log() { printf '[astrabox-first-boot] %s\n' "$*"; }
+fail() {
+  log "error: $*"
+  mkdir -p "$STATE_DIR"
+  printf '%s\n' "$*" >"$STATE_DIR/first-boot.failed"
+  exit 1
+}
+
+# ── settings ────────────────────────────────────────────────────────────────
+
+# KEY=value lines; a value may be single- or double-quoted. The files are read,
+# not sourced, so a value is never run as a command. image.env is what the
+# image was built with (its registry mirror); cloud.env is this machine's.
+load_settings() {
+  local file
+  for file in "$IMAGE_DIR/image.env" "$SETTINGS_FILE"; do
+    [ -f "$file" ] && read_settings_file "$file"
+  done
+  return 0
+}
+
+read_settings_file() {
+  local file="$1" line key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '' | '#'*) continue ;; esac
+    key="${line%%=*}"
+    value="${line#*=}"
+    [[ "$key" =~ ^ASTRABOX_[A-Z0-9_]+$ ]] || fail "$file: unsupported line '$key'."
+    case "$value" in
+      \'*\') value="${value#\'}"; value="${value%\'}" ;;
+      \"*\") value="${value#\"}"; value="${value%\"}" ;;
+    esac
+    export "$key=$value"
+  done <"$file"
+}
+
+# ── address ─────────────────────────────────────────────────────────────────
+
+is_ipv4() {
+  [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})$ ]] || return 1
+  local part
+  for part in "${BASH_REMATCH[@]:1}"; do ((10#$part <= 255)) || return 1; done
+}
+
+# Private, shared, loopback and link-local ranges are not reachable from the
+# internet, and no public certificate authority signs them.
+is_public_ipv4() {
+  is_ipv4 "$1" || return 1
+  local a b
+  IFS=. read -r a b _ _ <<<"$1"
+  ((a == 10 || a == 127 || a == 0 || a >= 224)) && return 1
+  ((a == 172 && b >= 16 && b <= 31)) && return 1
+  ((a == 192 && b == 168)) && return 1
+  ((a == 169 && b == 254)) && return 1
+  ((a == 100 && b >= 64 && b <= 127)) && return 1
+  return 0
+}
+
+fetch() {
+  curl -fsS --noproxy '*' --connect-timeout 2 --max-time 4 "$@" 2>/dev/null | tr -d ' \r\n'
+}
+
+# Each cloud's metadata service, then public echo services. The first answer
+# that is a public IPv4 address wins.
+discover_public_ipv4() {
+  local candidate token
+  token="$(curl -fsS --noproxy '*' --connect-timeout 2 --max-time 4 -X PUT \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token 2>/dev/null || true)"
+  local -a attempts=(
+    # AWS (IMDSv2 token above; IMDSv1 when there is none), and the clouds that
+    # serve the EC2 layout, such as Huawei Cloud.
+    "http://169.254.169.254/latest/meta-data/public-ipv4"
+    # DigitalOcean
+    "http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address"
+    # Alibaba Cloud: an elastic IP address, then a classic public address.
+    "http://100.100.100.200/latest/meta-data/eipv4"
+    "http://100.100.100.200/latest/meta-data/public-ipv4"
+    # Tencent Cloud
+    "http://metadata.tencentyun.com/latest/meta-data/public-ipv4"
+  )
+  local url
+  for url in "${attempts[@]}"; do
+    if [ -n "$token" ]; then
+      candidate="$(fetch -H "X-aws-ec2-metadata-token: $token" "$url" || true)"
+    else
+      candidate="$(fetch "$url" || true)"
+    fi
+    is_public_ipv4 "$candidate" && { printf '%s' "$candidate"; return 0; }
+  done
+  # Google Cloud requires its header on every request.
+  candidate="$(fetch -H 'Metadata-Flavor: Google' \
+    http://169.254.169.254/computeMetadata/v1/instance/network-interfaces/0/access-configs/0/external-ip || true)"
+  is_public_ipv4 "$candidate" && { printf '%s' "$candidate"; return 0; }
+  for url in https://checkip.amazonaws.com https://api.ipify.org https://ifconfig.me/ip; do
+    candidate="$(fetch "$url" || true)"
+    is_public_ipv4 "$candidate" && { printf '%s' "$candidate"; return 0; }
+  done
+  return 1
+}
+
+primary_ipv4() {
+  local address
+  address="$(ip -4 route get 1.1.1.1 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)"
+  is_ipv4 "$address" && printf '%s' "$address"
+}
+
+valid_host_name() {
+  [[ "$1" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]
+}
+
+# Sets console_host, login_host, console_origin, login_origin and tls_mode.
+resolve_addresses() {
+  local console_domain="${ASTRABOX_CONSOLE_DOMAIN:-}" login_domain="${ASTRABOX_LOGIN_DOMAIN:-}"
+  tls_mode="${ASTRABOX_TLS:-acme}"
+  case "$tls_mode" in
+    acme | internal) ;;
+    *) fail "ASTRABOX_TLS must be acme or internal; got '$tls_mode'." ;;
+  esac
+  if [ -n "$console_domain" ] || [ -n "$login_domain" ]; then
+    [ -n "$console_domain" ] && [ -n "$login_domain" ] \
+      || fail "Set both ASTRABOX_CONSOLE_DOMAIN and ASTRABOX_LOGIN_DOMAIN, or neither."
+    valid_host_name "$console_domain" || fail "ASTRABOX_CONSOLE_DOMAIN is not a host name: '$console_domain'."
+    valid_host_name "$login_domain" || fail "ASTRABOX_LOGIN_DOMAIN is not a host name: '$login_domain'."
+    [ "$console_domain" != "$login_domain" ] || fail "The console and the sign-in pages need two different host names."
+    console_host="$console_domain"
+    login_host="$login_domain"
+    console_origin="https://$console_domain"
+    login_origin="https://$login_domain"
+    return 0
+  fi
+  local address="${ASTRABOX_PUBLIC_ADDRESS:-}"
+  if [ -n "$address" ]; then
+    is_ipv4 "$address" || fail "ASTRABOX_PUBLIC_ADDRESS must be an IPv4 address; for a host name set ASTRABOX_CONSOLE_DOMAIN and ASTRABOX_LOGIN_DOMAIN."
+  elif ! address="$(discover_public_ipv4)"; then
+    address="$(primary_ipv4)" || fail "Cannot find an address for this machine; set ASTRABOX_PUBLIC_ADDRESS in $SETTINGS_FILE."
+    log "No public IPv4 address found; serving on the private address $address with a self-signed certificate."
+    tls_mode=internal
+  fi
+  if [ "$tls_mode" = acme ] && ! is_public_ipv4 "$address"; then
+    log "$address is not a public address; using a self-signed certificate."
+    tls_mode=internal
+  fi
+  console_host="$address"
+  login_host="$address:$LOGIN_PORT"
+  console_origin="https://$address"
+  login_origin="https://$address:$LOGIN_PORT"
+}
+
+# ── installation ────────────────────────────────────────────────────────────
+
+the_bundle() {
+  local -a bundles=("$IMAGE_DIR"/astrabox-deploy-*.tar.gz)
+  [ "${#bundles[@]}" -eq 1 ] && [ -f "${bundles[0]}" ] || fail "Expected one release bundle in $IMAGE_DIR."
+  printf '%s' "${bundles[0]}"
+}
+
+run_installer() {
+  local bundle env_file="$INSTALL_DIR/containers/.env"
+  bundle="$(the_bundle)"
+  # Run again for a new address, the installer refuses the host names it wrote
+  # for the old one; without the line, it writes them for the new address.
+  if [ -f "$env_file" ] && ! grep -qxF "ASTRABOX_CONSOLE_ORIGIN='$console_origin'" "$env_file"; then
+    sed -i '/^ASTRABOX_ALLOWED_HOSTS=/d' "$env_file"
+  fi
+  log "Installing AstraBox from $bundle"
+  # No terminal: the installer takes every answer from these variables.
+  env \
+    ASTRABOX_INSTALL_BUNDLE="$bundle" \
+    ASTRABOX_INSTALL_DIR="$INSTALL_DIR" \
+    ASTRABOX_INSTALL_PULL=missing \
+    ASTRABOX_INSTALL_TEAM_LOGIN=casdoor \
+    ASTRABOX_CONSOLE_ORIGIN="$console_origin" \
+    ASTRABOX_OIDC_ISSUER="$login_origin" \
+    ASTRABOX_INSTALL_MODEL_PROVIDER="${ASTRABOX_INSTALL_MODEL_PROVIDER:-none}" \
+    bash "$IMAGE_DIR/install.sh" </dev/null \
+    || fail "The installer failed; its output is above in this log."
+}
+
+# The model service's key now lives in the installation's settings file, which
+# only root reads; it is not left in the first-boot settings.
+forget_model_key() {
+  [ -f "$SETTINGS_FILE" ] || return 0
+  grep -q '^ASTRABOX_INSTALL_MODEL_API_KEY=' "$SETTINGS_FILE" || return 0
+  local kept
+  kept="$(grep -v '^ASTRABOX_INSTALL_MODEL_API_KEY=' "$SETTINGS_FILE" || true)"
+  (umask 077 && printf '%s\n' "$kept" >"$SETTINGS_FILE.tmp")
+  mv "$SETTINGS_FILE.tmp" "$SETTINGS_FILE"
+}
+
+# ── HTTPS edge ──────────────────────────────────────────────────────────────
+
+# One certificate issuer list for both sites. Let's Encrypt signs IP addresses
+# only with its short-lived profile; Caddy renews well before the end. When the
+# public authority cannot validate the address (a closed port 80, a private
+# address), the internal issuer still serves HTTPS, with a certificate browsers
+# warn about.
+tls_block() {
+  if [ "$tls_mode" = acme ]; then
+    cat <<'EOF'
+	tls {
+		issuer acme {
+			profile shortlived
+		}
+		issuer internal
+	}
+EOF
+  else
+    printf '\ttls internal\n'
+  fi
+}
+
+write_caddyfile() {
+  local email="${ASTRABOX_ACME_EMAIL:-}" default_sni=""
+  # Clients send no server name when they open an IP address, and behind the
+  # cloud's NAT the connection's own address is the private one: name the
+  # certificate to present.
+  is_ipv4 "$console_host" && default_sni="$console_host"
+  mkdir -p "$EDGE_DIR"
+  {
+    printf '# Written by astrabox-first-boot. See %s\n{\n' "$DOCS_URL"
+    [ -n "$email" ] && printf '\temail %s\n' "$email"
+    [ -n "$default_sni" ] && printf '\tdefault_sni %s\n' "$default_sni"
+    printf '}\n\n'
+    printf 'https://%s {\n' "$console_host"
+    tls_block
+    cat <<'EOF'
+	# Files upload through the console.
+	request_body {
+		max_size 100MB
+	}
+	reverse_proxy 127.0.0.1:8088 {
+		# Session events and terminal output are long-lived streams.
+		flush_interval -1
+		transport http {
+			read_timeout 1h
+		}
+	}
+}
+
+EOF
+    printf 'https://%s {\n' "$login_host"
+    tls_block
+    cat <<'EOF'
+	# Casdoor's sign-in page and its OAuth 2.0 and OIDC endpoints only; its
+	# management console stays on the machine's loopback port 8087.
+	@signin path_regexp ^/(login/oauth/|static/|\.well-known/|api/login/oauth/|api/(login|get-app-login|get-account|userinfo|logout)$)
+	handle @signin {
+		reverse_proxy 127.0.0.1:8087
+	}
+	handle {
+		respond 404
+	}
+}
+EOF
+  } >"$EDGE_DIR/Caddyfile.new"
+  mv "$EDGE_DIR/Caddyfile.new" "$EDGE_DIR/Caddyfile"
+}
+
+start_edge() {
+  local image
+  image="$(tr -d '\r\n' <"$IMAGE_DIR/caddy-image")"
+  docker rm -f "$EDGE_CONTAINER" >/dev/null 2>&1 || true
+  log "Starting the HTTPS edge ($image)"
+  # Host networking: Caddy reaches the loopback-only ports and answers on the
+  # machine's own 80, 443 and 8443.
+  docker run -d --name "$EDGE_CONTAINER" --restart unless-stopped --network host \
+    -v "$EDGE_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" \
+    -v astrabox-edge-data:/data -v astrabox-edge-config:/config \
+    "$image" >/dev/null || fail "Cannot start the HTTPS edge container."
+}
+
+# Prints trusted, self-signed or pending: what a browser will see. A public
+# certificate can take a minute or two; the self-signed fallback is checked
+# once Caddy answers at all.
+certificate_state() {
+  local wait="${ASTRABOX_CERT_WAIT_SECONDS:-180}" deadline
+  local -a target=(--connect-to "::127.0.0.1:" "$console_origin/healthz")
+  if [ "$tls_mode" = acme ]; then
+    deadline=$((SECONDS + wait))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+      curl -fsS --noproxy '*' --max-time 5 -o /dev/null "${target[@]}" 2>/dev/null \
+        && { printf 'trusted'; return 0; }
+      sleep 5
+    done
+  fi
+  deadline=$((SECONDS + 60))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    curl -fsSk --noproxy '*' --max-time 5 -o /dev/null "${target[@]}" 2>/dev/null \
+      && { printf 'self-signed'; return 0; }
+    sleep 3
+  done
+  printf 'pending'
+}
+
+# ── report ──────────────────────────────────────────────────────────────────
+
+write_report() {
+  local certificate="$1" secret_dir version
+  secret_dir="$INSTALL_DIR/.astrabox/database-secrets"
+  version="$(tr -d '\r\n' <"$INSTALL_DIR/VERSION")"
+  mkdir -p "$STATE_DIR"
+  {
+    printf 'console=%s\n' "$console_origin"
+    printf 'login=%s\n' "$login_origin"
+    printf 'certificate=%s\n' "$certificate"
+    printf 'version=%s\n' "$version"
+  } >"$STATE_DIR/state"
+  (
+    umask 077
+    cat >"$CREDENTIALS_FILE" <<EOF
+AstraBox $version
+
+Console:   $console_origin
+User:      admin
+Password:  $(tr -d '\r\n' <"$secret_dir/casdoor_admin_password")
+
+Sign-in pages (Casdoor): $login_origin
+Certificate: $certificate
+EOF
+    case "$certificate/$tls_mode" in
+      self-signed/internal) cat >>"$CREDENTIALS_FILE" <<EOF
+  Browsers warn about this self-signed certificate (ASTRABOX_TLS=internal).
+EOF
+        ;;
+      self-signed/acme | pending/acme) cat >>"$CREDENTIALS_FILE" <<EOF
+  Browsers warn about this certificate until a public one is issued. Let's
+  Encrypt validates the address on port 80: open ports 80, 443 and $LOGIN_PORT in
+  the cloud firewall or security group, then run
+    docker restart $EDGE_CONTAINER
+EOF
+        ;;
+    esac
+    cat >>"$CREDENTIALS_FILE" <<EOF
+
+Casdoor's own administrator (manages users and sign-in providers):
+  ssh -L 8087:127.0.0.1:8087 <this machine>, then http://127.0.0.1:8087
+  User built-in/admin, password in $secret_dir/casdoor_builtin_admin_password
+
+Models: add a model service in the console under Integrated services >
+LiteLLM gateway, or see https://www.astrabox.ai/docs/models
+Settings: $INSTALL_DIR/containers/.env
+Secrets:  $secret_dir (back it up with the Docker volumes)
+Guide:    $DOCS_URL
+EOF
+  )
+  rm -f "$STATE_DIR/first-boot.failed"
+  touch "$STATE_DIR/first-boot.done"
+}
+
+main() {
+  [ "$(id -u)" = 0 ] || fail "Run as root."
+  load_settings
+  resolve_addresses
+  log "Console $console_origin, sign-in pages $login_origin, certificate issuer: $tls_mode"
+  run_installer
+  forget_model_key
+  write_caddyfile
+  start_edge
+  local certificate
+  certificate="$(certificate_state)"
+  write_report "$certificate"
+  log "Done. Console $console_origin ($certificate certificate); sign-in details in $CREDENTIALS_FILE"
+}
+
+if ! (return 0 2>/dev/null); then
+  main "$@"
+fi

@@ -240,6 +240,7 @@ Anthropic 兼容端点，优先使用它。
 | `ASTRABOX_INSTALL_DIR` | 安装目录，默认 `~/astrabox`。 |
 | `ASTRABOX_INSTALL_BUNDLE` | 已下载的 `astrabox-deploy-<version>.tar.gz` 路径，供无法访问 GitHub 的主机使用。 |
 | `ASTRABOX_IMAGE_PREFIX` | 保存同一批镜像的镜像仓库前缀，组件名会追加在其后，默认 `ghcr.io/colton-z/astrabox-`。 |
+| `ASTRABOX_INSTALL_PULL` | `always`（默认）每次运行都拉取该版本的镜像；`missing` 只拉取主机上还没有的镜像，用于已预装镜像的机器镜像，例如 [AstraBox 云镜像](cloud-images.md)。 |
 | `ASTRABOX_INSTALL_MODEL_PROVIDER` | `anthropic`、`deepseek`、`anthropic-compatible`、`openai-compatible` 或 `none`。 |
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | 模型服务的 API Key。 |
 | `ASTRABOX_INSTALL_MODEL_NAME` | 写入为 `ANTHROPIC_MODEL` 的模型 ID，全新安装用它创建内置 Agent。DeepSeek 默认为 `deepseek-flash`。 |

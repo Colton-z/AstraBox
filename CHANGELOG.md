@@ -11,6 +11,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Added
 
+- Build an AstraBox cloud image for AWS, DigitalOcean, Alibaba Cloud, Tencent Cloud, Huawei Cloud or any cloud with an Ubuntu 24.04 machine (`cloud/`). The image holds one release and every container image it runs. A machine started from it installs AstraBox on its first boot with its own secrets, with team login on and the console behind HTTPS at its public IP address, without reaching GitHub or a container registry. Optional model and domain settings come from cloud-init user data. An Alibaba Cloud Compute Nest service template deploys it with these settings as parameters. See Run AstraBox from a cloud image.
+- `ASTRABOX_INSTALL_PULL=missing` makes the installer pull only the images the host does not have yet. The default, `always`, keeps pulling every image on each run.
 - **Agent version history and restore.** AstraBox keeps every version of an Agent's configuration with who changed it and when; a manager can compare any two versions field by field and restore one, in the console or through the API. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
 
 ### Fixed
@@ -29,6 +31,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### 新增
 
+- 新增 AstraBox 云镜像构建（`cloud/`），支持 AWS、DigitalOcean、阿里云、腾讯云、华为云，以及任何能启动 Ubuntu 24.04 机器的云。镜像包含一个版本及其运行所需的全部容器镜像。由该镜像启动的机器在首次开机时用自己生成的密钥安装 AstraBox，开启团队登录，并通过公网 IP 以 HTTPS 提供控制台，全程不需要访问 GitHub 或镜像仓库。模型服务和域名可通过 cloud-init user data 预先设置。另附阿里云计算巢服务模板，部署时可直接填写这些参数。详见“从云镜像运行 AstraBox”。
+- 安装脚本新增 `ASTRABOX_INSTALL_PULL=missing`，只拉取主机上还没有的镜像；默认值 `always` 仍在每次运行时拉取全部镜像。
 - **Agent 版本历史与恢复。** AstraBox 保存 Agent 配置的每个版本及其修改人和时间；管理者可以在控制台或通过 API 逐字段比较任意两个版本，并恢复到其中一个。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
 
 ### 修复
