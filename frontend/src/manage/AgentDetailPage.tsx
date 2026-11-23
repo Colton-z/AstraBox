@@ -522,8 +522,14 @@ export default function AgentDetailPage() {
           onRemove={() => void removeCatalogSelection()}
         />
       )}
+      {/*
+        Each card keyed by the Agent starts afresh on another Agent. They are
+        siblings under one parent, so each key names its card as well: two
+        children with one key leave the earlier card's DOM behind on every
+        render of the page and mount another beside it.
+      */}
       {canManage && (
-        <AgentPrewarmStatus key={agentId} agentId={agentId}
+        <AgentPrewarmStatus key={`prewarm:${agentId}`} agentId={agentId}
           savedAt={String(record.updated_at || '')}
           enabled={Number(record.prepared_capacity ?? 0) > 0 && record.enabled !== false}
           dirty={extensionsDirty || sections.some((section) => isDirty(section.fields))} />
@@ -577,7 +583,7 @@ export default function AgentDetailPage() {
       {record?.can_manage && <ConnectorsCard kind="agent" targetId={record.agent_id} />}
       {canManage && (
         <AgentVersionHistory
-          key={agentId}
+          key={`versions:${agentId}`}
           agentId={agentId}
           currentVersion={Number(record.version ?? 0)}
           fieldLabels={fieldLabels}
