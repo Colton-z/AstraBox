@@ -131,7 +131,7 @@ async def test_the_list_follows_the_owners_last_action(database: str, environmen
     await create_agent("a1")
     now = datetime.now(timezone.utc)
 
-    await _migrate(database, "0016")
+    await _migrate(database, "0029")
     await _stored_before_the_order(now)
     await _migrate(database, "head")
     old = ["old-new", "old-stopped", "old-terminal", "old-answered", "old-imported", "old-replied"]
