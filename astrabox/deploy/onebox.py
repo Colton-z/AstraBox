@@ -994,6 +994,12 @@ def ensure_sandbox_inference_key() -> str:
 
     probe = f"/key/info?key={quote(key, safe='')}"
 
+    def _held(status: int, body: str) -> bool:
+        # /key/info also answers 200 for a deleted key, read from LiteLLM's
+        # archive of deleted keys with ``info.status`` "deleted". The proxy
+        # does not hold that key, and /key/generate creates it again.
+        return status == 200 and json.loads(body)["info"].get("status") != "deleted"
+
     def _reconcile_metadata(body: str) -> str:
         metadata = json.loads(body)["info"].get("metadata")
         desired = inference_key_metadata(metadata)
@@ -1004,7 +1010,7 @@ def ensure_sandbox_inference_key() -> str:
         return _verify_sandbox_inference_key(key, _call)
 
     status, body = _call(probe, None)
-    if status == 200:
+    if _held(status, body):
         logger.info("sandbox model key is already provisioned")
         return _reconcile_metadata(body)
 
@@ -1025,7 +1031,7 @@ def ensure_sandbox_inference_key() -> str:
     # than reading the failure text: the question is whether the key exists, and
     # /key/info answers exactly that.
     recheck, existing_body = _call(probe, None)
-    if recheck == 200:
+    if _held(recheck, existing_body):
         logger.info("sandbox model key was provisioned concurrently")
         return _reconcile_metadata(existing_body)
     raise RuntimeError(

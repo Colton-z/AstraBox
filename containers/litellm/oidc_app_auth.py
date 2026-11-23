@@ -217,7 +217,7 @@ class OidcApplicationAuth:
             raise _error("Inference policy cannot be overridden by query parameters", 403)
         if request.method != "POST":
             return
-        from litellm.proxy.common_utils.http_parsing_utils import _safe_set_request_parsed_body
+        from litellm.proxy.common_utils.http_parsing_utils import safe_set_request_parsed_body
 
         # This entry point exposes the standard inference protocols, not the
         # proxy's per-request upstream credentials, routing or mock controls.
@@ -239,7 +239,7 @@ class OidcApplicationAuth:
         if "user" in body and body["user"] != grant.end_user_id:
             raise _error("The employee identity cannot be overridden", 403)
         body["user"] = grant.end_user_id
-        _safe_set_request_parsed_body(request=request, parsed_body=body)
+        safe_set_request_parsed_body(request=request, parsed_body=body)
         request._json = body
         request._body = json.dumps(body).encode()
 
@@ -411,10 +411,10 @@ class OidcApplicationAuth:
         # Global custom-auth switches would also change AstraBox's own tokens.
         from litellm.proxy.auth.auth_checks import common_checks
         from litellm.proxy.auth.user_api_key_auth import (
-            _enforce_key_and_fallback_model_access,
             _reserve_budget_after_common_checks,
             _run_post_custom_auth_checks,
             _should_skip_budget_checks,
+            enforce_key_and_fallback_model_access,
             get_global_proxy_spend,
         )
         from litellm.proxy.proxy_server import general_settings, llm_model_list, litellm_proxy_admin_name
@@ -426,13 +426,14 @@ class OidcApplicationAuth:
             valid_token=grant, request=request, request_data=data,
             route=route, parent_otel_span=None,
         )
-        await _enforce_key_and_fallback_model_access(
+        await enforce_key_and_fallback_model_access(
             valid_token=grant, request_data=data, route=route, request=request,
             llm_model_list=llm_model_list, llm_router=llm_router,
         )
         settings = {**general_settings, "apply_user_budget_to_team_keys": True}
         skip_budget = _should_skip_budget_checks(
             request_data=data, route=route, request=request, llm_router=llm_router,
+            team_id=team_id,
         )
         global_spend = await get_global_proxy_spend(
             litellm_proxy_admin_name=litellm_proxy_admin_name,
@@ -446,12 +447,14 @@ class OidcApplicationAuth:
             proxy_logging_obj=proxy_logging_obj, valid_token=grant,
             request=request, skip_budget_checks=skip_budget,
         )
+        # The request carries the reservation to LiteLLM's release middleware,
+        # which frees it when no cost callback claims it.
         await _reserve_budget_after_common_checks(
             user_api_key_auth_obj=grant, request_data=data, route=route,
             llm_router=llm_router, team_object=team, user_object=app_user,
             prisma_client=prisma_client, user_api_key_cache=user_api_key_cache,
             proxy_logging_obj=proxy_logging_obj, skip_budget_checks=skip_budget,
             general_settings=settings, end_user_id=customer_id,
-            end_user_object=customer,
+            end_user_object=customer, request=request,
         )
         return grant

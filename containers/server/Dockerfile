@@ -168,9 +168,9 @@ RUN apt-get update \
 # OTLP/HTTP exporter, not the Langfuse SDK. Install those three at the version
 # LiteLLM's `proxy-runtime` extra declares, instead of that much larger extra,
 # which also pulls cloud SDKs AstraBox does not use. The Langfuse SDK itself is
-# not installed: only LiteLLM's other Langfuse callback, `langfuse`, imports it,
-# the bundled config does not use that callback, and it cannot be constructed
-# with the SDK versions (3 and later) whose traces Langfuse v4 accepts.
+# not installed: only LiteLLM's other Langfuse callback, `langfuse`, imports it
+# (LiteLLM requires langfuse>=4.7,<5 for that callback), and the bundled config
+# does not use that callback.
 #
 # The Python package ships its schema but not a generated Prisma client. Generate
 # that client while the image still has network access. The dummy URL is parsed
@@ -182,8 +182,8 @@ RUN apt-get update \
 # account. The CLI symlink lets LiteLLM's migration subprocess find `prisma`
 # without putting the LiteLLM venv first in the main process's PATH (which would
 # also replace AstraBox's Python interpreter).
-ARG LITELLM_VERSION=1.99.0
-ARG LITELLM_OPENTELEMETRY_VERSION=1.28.0
+ARG LITELLM_VERSION=1.110.2
+ARG LITELLM_OPENTELEMETRY_VERSION=1.45.2
 ENV PRISMA_BINARY_CACHE_DIR=/opt/litellm/prisma-binaries \
     PRISMA_NODEENV_CACHE_DIR=/opt/litellm/prisma-nodeenv
 RUN python -m venv /opt/litellm \

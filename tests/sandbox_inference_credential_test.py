@@ -144,3 +144,24 @@ def test_the_key_is_created_with_litellm_s_inference_only_type(
         "the value must be supplied, or LiteLLM returns one nothing else can name"
     )
     assert seen[1]["json"]["key_type"] == SANDBOX_INFERENCE_KEY_TYPE
+
+
+def test_a_deleted_key_is_created_again(
+    provisioning: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """LiteLLM's /key/info answers 200 for a deleted key, from its archive.
+
+    That answer carries ``info.status: "deleted"``. Taking it for a held key
+    would reconcile a key the proxy does not hold, and the deployment would
+    fail its startup check instead of creating the key again.
+    """
+
+    deleted = json.dumps(
+        {"key": provisioning, "info": {"status": "deleted", "metadata": {}}}
+    )
+    seen = _gateway(monkeypatch, [(200, deleted), (200, "{}"), (200, "{}")])
+
+    assert onebox.ensure_sandbox_inference_key() == provisioning
+
+    assert seen[1]["url"].endswith("/key/generate")
+    assert seen[2]["url"].endswith("/v1/models")

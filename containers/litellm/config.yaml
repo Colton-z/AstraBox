@@ -150,7 +150,8 @@ litellm_settings:
   # LANGFUSE_SECRET_KEY are both set in this gateway's environment
   # (LANGFUSE_HOST is optional). Without them the gateway sends nothing; a
   # partial setting stops it at startup. LiteLLM's `langfuse` callback is not
-  # used: it needs the Langfuse Python SDK v2, which Langfuse v4 rejects.
+  # used: it needs the Langfuse Python SDK, which the gateway image does not
+  # install.
   #
   # langfuse_session_hook copies a Session-scoped virtual key's AstraBox
   # identity into the request metadata the Langfuse logger reads. Prepared

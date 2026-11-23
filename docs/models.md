@@ -146,7 +146,7 @@ router_settings:
 the original name before it falls back, which adds a few seconds to that
 request.
 
-This behaviour was measured on the bundled LiteLLM (1.99.0) for the Responses
+This behaviour was measured on LiteLLM 1.99.0 for the Responses
 API (`/v1/responses`, streaming and not), which Codex uses: with one of two
 accounts answering 429, every request succeeded and the limited account
 received one request per cooldown period. Entries with an exact `model_name`

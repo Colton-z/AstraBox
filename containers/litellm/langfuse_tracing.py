@@ -4,10 +4,10 @@ LiteLLM integrates Langfuse v3 and v4 through its ``langfuse_otel`` logger,
 which exports every model call as an OpenTelemetry span to
 ``<host>/api/public/otel``
 (https://docs.litellm.ai/docs/observability/langfuse_integration,
-https://langfuse.com/integrations/gateways/litellm). LiteLLM's ``langfuse``
-callback is the integration for the Langfuse Python SDK v2 instead: LiteLLM
-declares ``langfuse<3`` for it, and Langfuse v4 rejects that SDK's batch
-ingestion (https://langfuse.com/docs/compatibility).
+https://langfuse.com/integrations/gateways/litellm). It needs only the
+OpenTelemetry SDK and its OTLP/HTTP exporter. LiteLLM's other callback,
+``langfuse``, additionally needs the Langfuse Python SDK (LiteLLM requires
+``langfuse>=4.7,<5`` for it), which the gateway image does not install.
 
 Naming ``langfuse_otel`` in the configuration would not keep the integration
 off without keys. LiteLLM then builds the logger from the generic ``OTEL_*``

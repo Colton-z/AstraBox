@@ -17,8 +17,8 @@ from pathlib import Path
 
 
 NATIVE_CONFIG_PATH = "llms/deepseek/messages/transformation.py"
-# Identical source in LiteLLM 1.99.0 (bundled) and 1.100.0 (AWS gateway).
-NATIVE_CONFIG_SHA256 = "b39a83832eaaea8469e997b2abe104cdf6dce49f6d2c40729d902988e1022d99"
+# The source of the bundled LiteLLM 1.110.2.
+NATIVE_CONFIG_SHA256 = "99d1e9e68f7d51f47ce559c2b2a23ae623ad62d064cbe4419a2157dd497d1c75"
 NATIVE_HEADER_OVERRIDE = '''    def should_filter_anthropic_beta_headers(self) -> bool:
         """Forward opt-ins to the native DeepSeek Messages endpoint."""
         return False
