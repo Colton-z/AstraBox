@@ -445,7 +445,7 @@ Operators are responsible for the terms of the ChatGPT plans their members
 share.
 
 AstraBox reads a usage limit from Codex's report of the failed turn. Codex
-0.169 does not pass on OpenAI's code `subscription_sharing_usage_limit_exceeded`:
+0.171 does not pass on OpenAI's code `subscription_sharing_usage_limit_exceeded`:
 it reports any HTTP 429 from the model API that it does not recognise as
 `codexErrorInfo` `{"responseTooManyFailedAttempts": {"httpStatusCode": 429}}`.
 AstraBox counts that report, and Codex's own `usageLimitExceeded`, as the

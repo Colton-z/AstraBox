@@ -213,13 +213,14 @@ async def test_with_the_pool_off_nothing_switches_and_nothing_can_be_shared(
 
 
 def _codex_turn_failed(error: dict[str, Any]) -> dict[str, Any]:
-    """A ``turn/completed`` for a failed turn, as Codex 0.169's app-server sends it.
+    """A ``turn/completed`` for a failed turn, as Codex 0.171's app-server sends it.
 
     The shape is ``TurnCompletedNotification`` with ``Turn`` and ``TurnError``
     (codex-rs/app-server-protocol/src/protocol/v2/turn.rs and thread_data.rs at
-    rust-v0.169.0, serialized camelCase). A failed turn's ``error`` is the
+    rust-v0.171.0, serialized camelCase). A failed turn's ``error`` is the
     ``TurnError`` of the turn's last error event, whose ``additionalDetails`` is
-    null (``EventMsg::Error`` in codex-rs/app-server/src/bespoke_event_handling.rs).
+    null (``EventMsg::Error`` in codex-rs/app-server/src/bespoke_event_handling.rs
+    converts the event with ``TurnError::from``, defined in thread_data.rs).
     """
     return {
         "method": "turn/completed",
@@ -247,7 +248,7 @@ async def test_a_codex_usage_limit_failure_fails_the_response_with_the_account_t
     """Codex's report of a 429 becomes MODEL_PLAN_USAGE_LIMIT on the account the session spends.
 
     OpenAI answers plan exhaustion with HTTP 429 and the code
-    ``subscription_sharing_usage_limit_exceeded``. Codex 0.169 does not know
+    ``subscription_sharing_usage_limit_exceeded``. Codex 0.171 does not know
     that code: its ``map_api_error_details`` (codex-rs/codex-api/src/api_bridge.rs)
     turns such a 429 into ``RetryLimit``, reported as
     ``responseTooManyFailedAttempts`` with ``httpStatusCode`` 429 and the
