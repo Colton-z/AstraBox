@@ -51,16 +51,13 @@ like every other route. execd authenticates before it validates a request, so
 an empty `POST /internal/init` without the token answers 401 from this build
 and 400 from the supplier's; with `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true`,
 AstraBox uses that answer to refuse an execd image without the patch
-(`astrabox/providers/open_sandbox/execd_access.py`). The image carries the patch
-whether or not the setting is on; without a token in force it changes nothing.
-The patch
-also removes `X-EXECD-ACCESS-TOKEN` from requests that `/proxy/<port>` passes
-to another in-box service, as the supplier's per-user filesystem proxy
-(`filesystem_identity_linux.go`) already does, so a service running as the
-workload's account never receives execd's credential. A request for execd's own
-port keeps it: on the Docker runtime the lifecycle server's endpoint for execd
-is `/proxy/44772` on execd itself, so every SDK request to execd passes through
-that route.
+(`astrabox/providers/open_sandbox/execd_access.py`). The patch also strips
+`X-EXECD-ACCESS-TOKEN` from a request to another in-box port when the outer
+execd authenticated the request with that header. With outer authentication
+disabled, the proxy preserves the destination service's credential, such as
+the credential of a Pi session's execd. A request for execd's own port retains
+its credential for the second authentication on the Docker endpoint
+`/proxy/44772`.
 
 The Claude Code, Codex, DeepSeek Harness and Pi image targets build the default
 execd image first. An explicit `EXECD_IMAGE` selects an existing image without
