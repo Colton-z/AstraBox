@@ -1,6 +1,8 @@
-Local adaptation of pi-subagents 0.74.0 (gitHead b6bda32f03b7f549623bc404c9be14dca298ddc4).
+Local adaptation of pi-subagents 0.90.0 (gitHead f8248a7d0851df3dec8313764bd0be89d261003d).
 Preserve the runner configuration's workflow parent/key in bootstrap status,
 matching subagent-runner.js before the detached runner publishes its first update.
+The package runs this launch code from two copies: the parent Pi loads the
+bundle, while child Pi processes and the detached runner load src.
 
 MIT License
 
@@ -24,14 +26,25 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+--- a/bundle/chunk-AJWRYQPH.js
++++ b/bundle/chunk-AJWRYQPH.js
+@@ -2087,6 +2087,8 @@
+     try {
+       writePrivateAtomicJson(initialStatusPath, {
+         ...initialStatus,
++        ...cfg.parentWorkflowRunId ? { parentWorkflowRunId: cfg.parentWorkflowRunId } : {},
++        ...cfg.workflowKey ? { workflowKey: cfg.workflowKey } : {},
+         ...launcher ? {} : { pid: proc.pid, pidNamespaceScope: currentPidNamespaceScope(), ...bootId ? { bootId } : {} },
+         processTerminal: { version: 1, state: "pending", runId: initialStatus.runId, runnerProcessInstanceId }
+       });
 --- a/src/runs/background/async-execution.js
 +++ b/src/runs/background/async-execution.js
-@@ -565,6 +565,8 @@
+@@ -652,6 +652,8 @@
          try {
              writePrivateAtomicJson(initialStatusPath, {
                  ...initialStatus,
 +                ...(cfg.parentWorkflowRunId ? { parentWorkflowRunId: cfg.parentWorkflowRunId } : {}),
 +                ...(cfg.workflowKey ? { workflowKey: cfg.workflowKey } : {}),
-                 pid: proc.pid,
-                 pidNamespaceScope: currentPidNamespaceScope(),
+                 ...(launcher ? {} : { pid: proc.pid, pidNamespaceScope: currentPidNamespaceScope(), ...(bootId ? { bootId } : {}) }),
                  processTerminal: { version: 1, state: "pending", runId: initialStatus.runId, runnerProcessInstanceId },
+             });

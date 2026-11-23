@@ -180,7 +180,7 @@ PI_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
             "declares a reasoning model that also offers xhigh, which Pi "
             "leaves unsupported unless mapped. Pi validates the fields; a "
             "change replaces prepared boxes. "
-            "https://github.com/earendil-works/pi/blob/v1.4.0/packages/coding-agent/docs/models-configuration.md"
+            "https://github.com/earendil-works/pi/blob/v1.6.0/packages/coding-agent/docs/models-configuration.md"
         ),
     },
 )

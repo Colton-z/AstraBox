@@ -41,7 +41,7 @@ FROM ${SANDBOX_BASE_IMAGE}
 # and its Node floor so npm cannot silently select a different release line.
 # The supported embedding surface remains the SDK and stdio RPC; the
 # experimental client/server source exports are not a replacement transport.
-ARG PI_VERSION=1.4.0
+ARG PI_VERSION=1.6.0
 ARG PI_NODE_MINIMUM=22.19.0
 # Pi delegates sub-agents to extensions. This package supplies them. It was chosen over `@everyx/pi-subagent` and
 # `@tintinweb/pi-subagents`, which give the same background children and the
@@ -51,7 +51,7 @@ ARG PI_NODE_MINIMUM=22.19.0
 # <child-id>`, and pi's RPC executes an extension command sent as a prompt even
 # mid-stream. `SingleResult.index` paired with `Details.runId` is the vendor's
 # own stable child identity, which is what the platform projects.
-ARG PI_SUBAGENTS_VERSION=0.74.0
+ARG PI_SUBAGENTS_VERSION=0.90.0
 ARG PI_PREFIX=/opt/pi
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ARG DEBIAN_FRONTEND=noninteractive
@@ -143,27 +143,23 @@ RUN set -eux; \
     test "${installed}" = "${PI_SUBAGENTS_VERSION}" \
       || { echo "requested pi-subagents ${PI_SUBAGENTS_VERSION} but ${installed} is installed" >&2; exit 1; }
 
-# Pi 1.4 does not export agent-core/node; pi-subagents 0.74.0 imports it.
-# Apply the supplier's optional-export patch with exact input/output hashes;
-# remove this backport when the pinned npm release includes that handling.
-COPY --chmod=u=rw,go=r containers/sandbox-pi/patches/pi-subagents-pi1.patch /tmp/pi-subagents-pi1.patch
-RUN set -eux; \
-    cd "${PI_PREFIX}/node_modules/pi-subagents"; \
-    echo '7d259ec64a8e8189fa54b96105c337656b42b9ed989ab6aeb09edf0835871f1c  src/runs/background/runner-aliases.js' | sha256sum -c -; \
-    git apply --check /tmp/pi-subagents-pi1.patch; \
-    git apply /tmp/pi-subagents-pi1.patch; \
-    echo '696d0d7a8b85ae3bca1563518b3b8a69a332dfffb708e7c9ebd91875f744968a  src/runs/background/runner-aliases.js' | sha256sum -c -; \
-    rm /tmp/pi-subagents-pi1.patch
-
 # Bootstrap status carries the same workflow parent/key as the runner's status,
 # so the host can identify the child before its first queued widget is emitted.
+# The launch code exists twice in the package: the bundle the parent Pi loads
+# and the src copy child Pi processes and the detached runner load.
 COPY --chmod=u=rw,go=r containers/sandbox-pi/patches/pi-subagents-startup-workflow-link.patch /tmp/pi-subagents-startup-workflow-link.patch
 RUN set -eux; \
     cd "${PI_PREFIX}/node_modules/pi-subagents"; \
-    echo '52d54705ffce04e8714c615c89409b56b913f09e3efa1a13891f33c29478cb03  src/runs/background/async-execution.js' | sha256sum -c -; \
+    printf '%s\n' \
+      '0620d7dc438edd716b24ee35adf97609fc073aea39ddb5680bb526aa9dd8c5c7  bundle/chunk-AJWRYQPH.js' \
+      '43734800b3220cf295a080136a9bdfcba6a35718eff9592de72435facfdb97bc  src/runs/background/async-execution.js' \
+      | sha256sum -c -; \
     git apply --check /tmp/pi-subagents-startup-workflow-link.patch; \
     git apply /tmp/pi-subagents-startup-workflow-link.patch; \
-    echo '9823bc89e97971c779795358a164f5e7fdf33b01b8fcb6cddccb4aecd8fa68c4  src/runs/background/async-execution.js' | sha256sum -c -; \
+    printf '%s\n' \
+      '60994f17a2a5a1dbb34742217b74ee412ff6f64a8821a86e5e8328638077d4a6  bundle/chunk-AJWRYQPH.js' \
+      'cf1283b89acd854a1bb282adb096c2dba28eb3ccb240d6b04bb094e94cbc6bac  src/runs/background/async-execution.js' \
+      | sha256sum -c -; \
     rm /tmp/pi-subagents-startup-workflow-link.patch
 
 # Registration runs during extension load, before a cold or parked session
@@ -180,7 +176,7 @@ RUN set -eux; \
 # conversation still starts and every sub-agent still runs, and only a stop
 # request finds out.
 RUN set -eux; \
-    grep -rq 'subagents-stop' "${PI_PREFIX}/node_modules/pi-subagents/src" \
+    grep -rq 'subagents-stop' "${PI_PREFIX}/node_modules/pi-subagents/bundle" \
       || { echo "pi-subagents ${PI_SUBAGENTS_VERSION} registers no subagents-stop command; the platform cannot stop a child run" >&2; exit 1; }
 
 # The one vendor event the adapter's turn terminal depends on. Asserted at
