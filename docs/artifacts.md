@@ -16,8 +16,10 @@ Ask an Agent or Assistant to publish substantial, reusable output as an artifact
 > use in the browser. Publish it with the artifacts tool.
 
 The built-in `artifacts` tools are available to Agent and Assistant conversations
-unless the Agent's **Artifacts** switch is off or the Session was started by a
-messaging channel.
+unless the Agent's **Artifacts** switch is off. A messaging-channel conversation
+uses them as the trigger's execution account (see
+[Run messages as](channels.md#run-messages-as)), so its artifacts belong to that
+account like the ones it publishes from the console.
 `create_artifact` accepts a title, kind, and either content or a workspace
 `file_path` that the platform copies. Reading a workspace file during publication
 does not make subsequent viewing depend on that file or sandbox.
@@ -79,9 +81,9 @@ Artifact data is separate from versioned content and survives content updates.
 A later conversation of the same user and the same Agent or Assistant can use
 `list_artifacts`, `get_artifact`, and `update_artifact` to find and refresh the
 same page. A scheduled Deployment of that Agent can do the same. These tools
-cannot reach artifacts from another Agent or Assistant. Schedule, webhook and
-manual runs retain the tools unless the Agent's **Artifacts** switch is off;
-messaging-channel Sessions do not.
+cannot reach artifacts from another Agent or Assistant. Schedule, webhook,
+manual and messaging-channel runs retain the tools unless the Agent's
+**Artifacts** switch is off.
 
 ## Sharing
 

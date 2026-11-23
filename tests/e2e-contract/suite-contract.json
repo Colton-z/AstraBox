@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 610,
+      "no_volume_core": 618,
       "persistent_files": 19
     }
   },
@@ -179,13 +179,15 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 248,
+      "matrix_tests": 256,
       "parallel_node_ids": [
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[prepared-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[prepared-agent]",
         "tests/e2e/artifacts_switch_test.py::test_turning_artifacts_off_takes_the_tools_from_every_conversation_of_the_agent",
+        "tests/e2e/channel_agent_capabilities_test.py::test_a_channel_conversation_uses_the_agents_tools_and_claims_its_prepared_runtime",
+        "tests/e2e/channel_archived_conversation_test.py::test_a_message_to_an_archived_channel_conversation_starts_a_new_one",
         "tests/e2e/codex_queued_schema_test.py::test_a_busy_codex_input_is_refused_instead_of_losing_its_output_schema",
         "tests/e2e/input_capability_test.py::test_a_text_only_engine_refuses_images_without_accepting_them",
         "tests/e2e/model_profile_test.py::test_the_gateway_model_facts_reach_the_engine_configuration",
@@ -255,11 +257,11 @@
         "tests/e2e/test_skill_content.py::test_an_installed_content_provider_supplies_a_skill",
         "tests/e2e/test_terminal.py::test_a_command_after_runner_loss_uses_a_fresh_shell"
       ],
-      "tests": 71,
+      "tests": 73,
       "workers": 5
     },
-    "matrix_tests": 258,
-    "tests": 82
+    "matrix_tests": 266,
+    "tests": 84
   },
   "suites": {
     "container-engine": {

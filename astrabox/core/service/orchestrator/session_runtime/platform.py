@@ -60,7 +60,12 @@ PREPARATION_TIMEOUT_S = 30.0
 FactConsumer = Callable[[str, FactBatch], Awaitable[None]]
 
 
-def _ended(session: dict[str, Any]) -> bool:
+def conversation_ended(session: dict[str, Any]) -> bool:
+    """Whether a Session takes no more input: archived, terminated or deleted.
+
+    Inputs sent to such a Session fail with ``CONVERSATION_ENDED``; a caller
+    that routes new input to a Session asks this before choosing it.
+    """
     return bool(session.get("archived_at")) or session.get("state") in (
         SessionState.TERMINATED.value, SessionState.DELETED.value,
     )
@@ -86,7 +91,7 @@ _START_FAILED = {
 def _attach_is_current(session: dict[str, Any], sandbox_id: str) -> bool:
     """Whether an attach made outside the runtime lock still describes the conversation."""
     return (
-        not _ended(session)
+        not conversation_ended(session)
         and session.get("state") == SessionState.READY.value
         and session.get("recovery_reason") != RUNTIME_PROTOCOL_INCOMPATIBLE
         and not session.get("sandbox_parked_at")
@@ -141,7 +146,7 @@ class PlatformRuntimeConnector:
             attached = str(runtime.sandbox_id or "")
             if current is None or not _attach_is_current(current, attached):
                 await self._runtime_manager.evict_runtime_if_current(session_id, runtime)
-                if current is None or _ended(current):
+                if current is None or conversation_ended(current):
                     raise RuntimeEnded(session_id, failure=recorded_failure(current))
                 raise RuntimeNotReady(session_id)
             initialization = await runtime_initialization_metadata(session_id, runtime)
@@ -162,7 +167,7 @@ class PlatformRuntimeConnector:
     async def _attachable(self, session_id: str) -> dict[str, Any]:
         """The session as its runtime may be attached now, after waking a parked box for an input."""
         session = await self._sessions.get_session(session_id)
-        if session is None or _ended(session):
+        if session is None or conversation_ended(session):
             raise RuntimeEnded(session_id, failure=recorded_failure(session))
         if session.get("state") != SessionState.READY.value:
             raise RuntimeNotReady(session_id)

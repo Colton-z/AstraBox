@@ -2102,10 +2102,12 @@ async def claim_prepared_engine_sandbox(
     from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
 
 
-    source_type = getattr(template, "session_source_type", None)
-    if not prepared_runtime_serves(source_type):
+    if not prepared_runtime_serves(template):
         # Prepared native processes froze their platform MCP servers before any Session existed.
-        logger.info("%s Session %s starts its own runtime with its own platform tools", source_type, session_id)
+        logger.info(
+            "%s Session %s is given other platform tools than a prepared runtime holds; it starts its own",
+            getattr(template, "session_source_type", None), session_id,
+        )
         return None
 
     if (
@@ -2484,7 +2486,7 @@ async def _claim_conversation_pool_box(
 ) -> _ConversationPoolClaim | None:
     """Recover or atomically acquire the Session's official-pool box."""
 
-    if recovered_assignment is None and not prepared_runtime_serves(getattr(template, "session_source_type", None)):
+    if recovered_assignment is None and not prepared_runtime_serves(template):
         return None
 
     from astrabox.core.service.orchestrator.agent.client_pool import (

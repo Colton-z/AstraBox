@@ -74,6 +74,7 @@ from astrabox.core.service.orchestrator.session_runtime.attachments import (
     FILE, IMAGE, MAX_ATTACHMENT_BYTES, MAX_ATTACHMENTS, STAGED_TTL, SentAttachment, attachment_name,
     image_media_type, require_attachment_size,
 )
+from astrabox.core.service.orchestrator.session_runtime.platform import conversation_ended
 from astrabox.core.service.orchestrator.session_runtime.service import SessionRuntimeService
 from astrabox.persistence.repository.input_attachment_repository import InputAttachmentRepository
 from astrabox.persistence.repository.channel_repository import (
@@ -1022,10 +1023,14 @@ class ChannelIngressService:
                 conversation_key=conversation_key,
                 execution_user_id=execution_user_id,
             )
-        elif referenced_session:
+        elif referenced_session and not conversation_ended(
+            await self._sessions_repo.get_session(referenced_session) or {}
+        ):
             # The referenced delivery was a one-shot session: continue it.
             session_id = referenced_session
         else:
+            # Nothing to continue, or the referenced conversation has ended
+            # and would refuse the message: the message starts a new one.
             started = await self._start_channel_conversation(
                 target, user, execution_user_id,
             )
@@ -1820,16 +1825,17 @@ class ChannelIngressService:
         mapped_session_id = str((mapping or {}).get("session_id") or "")
         if mapped_session_id:
             session = await self._sessions_repo.get_session(mapped_session_id)
-            state = str((session or {}).get("state") or "")
             if (
                 session is not None
                 and str(session.get("user_id") or "") == user.user_id
-                and state not in ("TERMINATED", "DELETED", "RECOVERY_REQUIRED")
+                and not conversation_ended(session)
+                and session.get("state") != "RECOVERY_REQUIRED"
             ):
                 return mapped_session_id
-            # Mapped session is gone: start a replacement and swap the mapping
-            # if it still names the gone session; a racing replacement's winner
-            # is read back and used.
+            # The mapped session is gone or takes no more input (an archived
+            # one is ended though its state stays READY): start a replacement
+            # and swap the mapping if it still names that session; a racing
+            # replacement's winner is read back and used.
             started = await self._start_channel_conversation(
                 target, user, execution_user_id,
             )
