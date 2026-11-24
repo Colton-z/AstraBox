@@ -346,7 +346,7 @@ services:
       ASTRABOX_TITLE_MODEL_REQUEST_TIMEOUT_SECONDS: "60"
 ```
 
-RuntimeProfile values override application YAML. Restart the application after
+Environment variables override application YAML. Restart the application after
 changing application YAML, or recreate the server container after changing
 Compose environment values. The timeout must be positive and finite; invalid
 values fail settings validation.

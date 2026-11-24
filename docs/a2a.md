@@ -172,7 +172,7 @@ admission, scheduling and response boundaries remain the target engine's;
 AstraBox does not add a messaging queue. A pending Task does not mean the target
 has already answered.
 
-## Interaction boundaries
+## Interaction boundaries {#interaction-boundaries}
 
 The pinned Hermes toolset sends text and returns text, context and state. It
 does not expose standalone task cancellation, subscription, or structured

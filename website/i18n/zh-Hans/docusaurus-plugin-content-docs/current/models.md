@@ -86,6 +86,48 @@ model_list:
 在 AstraBox 服务上设置 `COMPANY_MODEL_API_KEY`，重启部署，再在 Agent 表单中使用
 `company-code-model`。路由指向明确的上游模型版本后，模型变更由路由管理员统一控制。
 
+### 把一个模型分摊到多个服务商账号 {#several-accounts}
+
+一个服务商账号达到速率或配额上限时，使用它的所有对话都会停止。为路由配置多个账号：在同一个
+`model_name` 下，为每个账号各列一次该模型。
+
+```yaml
+model_list:
+  - model_name: "company-code-model"
+    litellm_params:
+      model: "openai/provider-model-id"
+      api_key: os.environ/OPENAI_API_KEY_TEAM_A
+  - model_name: "company-code-model"
+    litellm_params:
+      model: "openai/provider-model-id"
+      api_key: os.environ/OPENAI_API_KEY_TEAM_B
+
+router_settings:
+  cooldown_time: 600
+```
+
+LiteLLM 把对 `company-code-model` 的请求分摊到这些条目上。某个账号返回 429 时，LiteLLM 把
+这次请求发给同名的另一个条目，并在 `cooldown_time` 秒内（未设置时为 5 秒）停止使用受限的
+账号。对话看不到这个 429。请把 `cooldown_time` 设为接近服务商限制持续的时长：每次冷却结束，
+都会有一个请求先重新尝试该账号，然后再转到其他条目。
+
+同名的所有账号都受限时，请求以 429 失败，对话的回复以服务商的消息失败。如果要改用另一个
+模型继续，把它指定为回退模型：
+
+```yaml
+router_settings:
+  cooldown_time: 600
+  fallbacks: [{"company-code-model": ["backup-code-model"]}]
+```
+
+`backup-code-model` 是 `model_list` 中的另一个 `model_name`。LiteLLM 在回退之前会先重试原来
+的名称，这会让那次请求多花几秒。
+
+上述行为是在 LiteLLM 1.99.0 上针对 Codex 使用的 Responses API（`/v1/responses`，流式和
+非流式）测得的：两个账号中有一个返回 429 时，每个请求都成功，受限账号在每个冷却周期内收到
+一个请求。测量的是 `model_name` 精确匹配的条目；没有测量一个通配名称（`gpt-*`）下的多个
+条目。
+
 ## 连接已有 LiteLLM 网关
 
 设置沙箱能够访问的地址，以及权限只覆盖推理接口的密钥：
@@ -426,6 +468,76 @@ AstraBox 服务端用这个 key 读取 Anthropic 的模型列表来检查它
 - key 达到其速率或花费上限时，回复以 Anthropic 的错误失败；不会切换到其他 key 或网关。
 - 对话标题仍然通过部署的模型网关生成。
 
+## 在沙箱内登录 Claude {#claude-login}
+
+`endpoint_provider` 为 `claude_login` 的 RuntimeProfile，用用户在对话自己的沙箱内完成的登录
+运行 Claude Code，使用用户自己的 Claude 订阅。这是用户在自己的沙箱中使用自己的订阅：
+AstraBox 运行未经修改的 Claude Code，用户通过 Anthropic 自己的登录流程登录，AstraBox 从不
+读取、保存、复制或转发由此得到的凭证。Anthropic 不允许第三方收集、保存或转发 Claude.ai
+凭证（[Legal and compliance](https://code.claude.com/docs/en/legal-and-compliance)），所以这种
+连接不持有任何凭证；提供它之前，请确认你的部署的用法符合 Anthropic 的条款。
+
+RuntimeProfile 及其 Agent 需要：
+
+- `engine_kind` 为 `claude_code`，`sandbox_tenancy` 为 `conversation`。共享沙箱会把一个
+  用户的登录放在其他用户的对话可以读取的地方。
+- 能访问 Claude Code 登录所经过的主机：`claude.ai` 和 `platform.claude.com`（令牌兑换和
+  续期）。使用 `limited` 网络时，RuntimeProfile 的 `allowed_hosts` 必须列出这两个主机，否则
+  保存失败，并指出缺少哪些。`api.anthropic.com` 作为模型端点放行。登录页面本身位于
+  `claude.com`，在用户自己的浏览器中打开。
+- 每个 Agent 都开启 `terminal_panel`，因为其用户在对话的终端里登录；并且
+  `prepared_capacity` 为 0。
+
+AstraBox 启动 Claude Code 时不带任何 Anthropic 凭证，也不设置 `ANTHROPIC_BASE_URL`。Claude
+Code 会优先于登录使用的任何设置都会被拒绝：Agent 的 `sdk_options.env` 或
+`sdk_options.settings.env` 中的 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、
+`CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_BASE_URL`、`ANTHROPIC_PROFILE`、
+`ANTHROPIC_FEDERATION_RULE_ID` 和 `CLAUDE_CODE_USE_BEDROCK`/`_VERTEX`/`_FOUNDRY`
+（`CLAUDE_OPTIONS_INVALID`），以 Vault 环境变量凭证提供的这些变量
+（`VAULT_CREDENTIAL_CONFLICT`），以及 `apiKeyHelper` 设置。
+
+### 登录
+
+对话在登录之前的第一次回复以 `CLAUDE_LOGIN_REQUIRED` 失败，其消息给出下面两条命令。在
+对话的终端中运行它们：
+
+1. 开始登录。它以沙箱的工作负载账号身份、使用 Claude Code 所用的配置目录运行，在后台等待
+   授权码，并打印要打开的地址：
+
+   ```bash
+   rm -f /tmp/claude-login; mkfifo -m 600 /tmp/claude-login; (runuser -u agent -- env HOME=/home/agent CLAUDE_CONFIG_DIR=/home/agent/.claude claude auth login <>/tmp/claude-login >/tmp/claude-login.log 2>&1 &); for i in $(seq 30); do grep -q visit: /tmp/claude-login.log && break; sleep 1; done; cat /tmp/claude-login.log
+   ```
+
+2. 在浏览器中打开打印出的地址，登录你的 Claude 账号，并复制页面显示的授权码。把它交给正在
+   等待的登录：
+
+   ```bash
+   echo '<code>' >/tmp/claude-login; for i in $(seq 30); do grep -q 'Login ' /tmp/claude-login.log && break; sleep 1; done; cat /tmp/claude-login.log
+   ```
+
+3. 输出显示登录成功后，重新发送你的消息。正在运行的 Claude Code 会在下一次请求时读取新的
+   登录；不需要重启任何东西。
+
+终端一次只运行一条命令，无法回答仍在运行的命令发出的提示，所以 `claude auth login` 在命名
+管道 `/tmp/claude-login` 上等待，第二条命令把授权码写进这个管道。终端的 shell 以 root 身份
+运行；`runuser` 以 Claude Code 运行时所用的账号执行登录，让登录落在 Claude Code 读取它的
+位置。不要在终端里单独运行 `claude auth login`：它会把终端的下一行当作授权码读取。也不要在
+那里运行 `claude setup-token`：它会打印一个长期有效的令牌，而终端会把每条命令的输出保留在
+对话的终端历史中。
+
+### 登录保存在哪里
+
+Claude Code 把登录保存在对话沙箱中的 `/home/agent/.claude/.credentials.json`，只有沙箱的
+工作负载账号可以读取，并由 Claude Code 自己续期。登录授权码经过对话的终端，和每条命令一样
+留在终端历史中；它只能使用一次，并且只对正在等待的 `claude auth login` 有效，因为后者持有
+为它签发的 verifier。对话的终端只对对话所有者开放。
+
+登录的有效期与沙箱相同。暂停的沙箱保留其文件，因此登录在暂停后仍然有效。它不属于 AstraBox
+保存在数据库中的对话历史，也不在任何备份中，并且不在工作区内，所以持久化工作区卷也不会保留
+它。沙箱被替换时（例如丢失或被删除之后），登录随之消失：下一次回复以
+`CLAUDE_LOGIN_REQUIRED` 失败，用户需要重新登录。每个对话都有自己的沙箱，因此每个对话登录
+一次。过期或被撤销的登录以同样的方式失败。
+
 ## 验证连接
 
 开放 Agent 给用户使用前：
@@ -441,3 +553,8 @@ AstraBox 服务端用这个 key 读取 Anthropic 的模型列表来检查它
 - [RuntimeProfile](runtime-profiles.md)
 - [部署 AstraBox](deploy.md)
 - [保护 Agent 使用的凭证](egress-credential-injection.md)
+
+## 独立的桌面和 CLI 应用
+
+来自独立 OIDC 客户端的员工 Access Token，参见[独立 OIDC 模型应用](oidc-model-applications.md)。
+这项需主动开启的推理授权独立于管理台/API 登录，也不需要 Agent。

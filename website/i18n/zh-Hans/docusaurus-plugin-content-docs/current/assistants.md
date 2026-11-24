@@ -214,7 +214,7 @@ git clone --quiet "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "$D
   dropped 结束，并说明它已被交回，由对方重新提出请求。
 
 Agent 提出的问题或等待的审批显示在 Ticket 上，并在 Agent 的对话中回答。停止 Ticket 会取消
-其对话中的工作（[取消](a2a.md)）。Assistant 可以选择的 Agent，是其运行时启动时归属用户可以
+其对话中的工作（[取消](a2a.md#interaction-boundaries)）。Assistant 可以选择的 Agent，是其运行时启动时归属用户可以
 使用的 Agent；之后新增的 Agent 在下一次启动后才会提供。
 
 Agent 在每个有意义的步骤之后都提交并推送 Ticket 的分支，而不只是在结束时，因此它的工作在

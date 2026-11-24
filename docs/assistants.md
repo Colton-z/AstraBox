@@ -305,7 +305,7 @@ its `report_outcome` tool ([Task outcomes](a2a.md#task-outcomes)):
 
 A question the Agent asks, or an approval it waits for, shows on the Ticket and
 is answered in the Agent's conversation. Stopping a Ticket cancels its
-conversation's work ([cancellation](a2a.md)). The Agents the Assistant can
+conversation's work ([cancellation](a2a.md#interaction-boundaries)). The Agents the Assistant can
 choose are the ones its owner can use when its runtime starts; an Agent added
 later is offered after the next start.
 
