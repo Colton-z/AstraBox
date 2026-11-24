@@ -59,6 +59,12 @@ from astrabox.core.service.orchestrator.engine.deepseek_harness import (
     profile_package_hosts,
     profile_package_step,
 )
+from astrabox.core.service.orchestrator.engine.deepseek_harness_runtime_client import (
+    DSH_GATEWAY_API,
+    DSH_GATEWAY_PROVIDER,
+    DSH_GATEWAY_SETTINGS_NS,
+    gateway_model_entry,
+)
 from astrabox.core.service.orchestrator.engine.extensions import EngineExtensions
 from astrabox.core.service.orchestrator.engine.openai_wire import resolve_openai_base_url
 from astrabox.core.service.orchestrator.engine.provisioning import (
@@ -94,6 +100,7 @@ GITHUB_TOKEN = "github_token"
 GITHUB_TOKEN_DEPLOYMENT_SECRET = "astrabox-dsh-superagent-github-token"
 
 _ENV_FILENAME = "astrabox-dsh-superagent.env"
+_MODEL_PATCH_FILENAME = "astrabox-model.patch.json"
 _TARGET_FILENAME = "astrabox-runtime-state.json"
 _DIGEST_FILENAME = "astrabox-dsh-superagent-process.sha256"
 #: The Agents the owner can dispatch Tickets to, with each one's A2A ingress
@@ -126,6 +133,17 @@ printf 'DSH_SUPERAGENT_PACKAGES_READY\n'
 """
 _INSTALL_BUDGET_SECONDS = 600
 _SAVE_MARKER = re.compile(r"^DSH_SUPERAGENT_STATE_SAVE_COMPLETE snapshot_id=\S+$", re.M)
+_DEFAULT_MODEL_OPTION: dict[str, Any] = {
+    "key": "default_model",
+    "label": "DSH default model settings",
+    "type": "object",
+    "protected_keys": ["provider", "model"],
+    "help": (
+        'Set the Web profile default with {"reasoningEffort": "xhigh"}. '
+        "It applies to new browser Sessions and Superagent Sessions using the "
+        "DSH default. The selected model comes from the Assistant's model connection."
+    ),
+}
 
 
 class DshSuperagentRuntimeClient(ConversationlessRuntimeClient):
@@ -168,6 +186,46 @@ def _credential_request(model_access: ResolvedModelAccess) -> ModelCredentialReq
         missing_message="model api key not configured for the dsh-superagent Assistant",
         missing_status=500,
     )
+
+
+def _model_patch(model_access: ResolvedModelAccess, options: Any) -> str:
+    """Compose the model route before either browser or bundle creates a Session."""
+    profile = model_access.profile
+    model = model_access.model_name
+    if profile is None or not model:
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message="dsh-superagent needs a model described by the model connection",
+            status_code=500,
+        )
+    selection = options.get("default_model", {}) if isinstance(options, dict) else {}
+    if not isinstance(selection, dict) or selection.keys() - {"reasoningEffort"}:
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message="dsh-superagent default_model accepts only the native reasoningEffort field",
+            status_code=400,
+        )
+    effort = selection.get("reasoningEffort", profile.default_reasoning_effort)
+    if "reasoningEffort" in selection and (not isinstance(effort, str) or not effort.strip()):
+        raise APIError(
+            code="AGENT_RUNTIME_ERROR",
+            message="dsh-superagent default_model.reasoningEffort must be a non-empty string",
+            status_code=400,
+        )
+    default = {"provider": DSH_GATEWAY_PROVIDER, "model": model}
+    if effort is not None:
+        default["reasoningEffort"] = "off" if effort == "none" else effort
+    route = {
+        "displayName": "AstraBox model gateway",
+        "api": DSH_GATEWAY_API,
+        "baseURL": _gateway_base_url(model_access),
+        "apiKeyEnv": "DEEPSEEK_API_KEY",
+        "models": [gateway_model_entry(model, profile)],
+    }
+    return json.dumps([
+        {"id": DSH_GATEWAY_SETTINGS_NS, "config": {"providers": {DSH_GATEWAY_PROVIDER: route}}},
+        {"id": "agent-default-model", "config": default},
+    ], ensure_ascii=False, sort_keys=True)
 
 
 def _env_exports(env: dict[str, str]) -> str:
@@ -219,7 +277,7 @@ class DshSuperagentEngineAdapter(EngineAdapter):
             default_runtime_image=release_image(RUNTIME_IMAGE_COMPONENT),
             # The harness takes plugin Bundles in its web profile, as a
             # DeepSeek Harness Agent does; a Source plugin is one.
-            extensions=EngineExtensions(native_config=(DSH_PROFILE_PACKAGE_OPTION,)),
+            extensions=EngineExtensions(native_config=(DSH_PROFILE_PACKAGE_OPTION, _DEFAULT_MODEL_OPTION)),
             assistant=EngineAssistantDeclaration(
                 conversations=False,
                 panel=EnginePanelDeclaration(port=PANEL_PORT),
@@ -289,12 +347,11 @@ class DshSuperagentEngineAdapter(EngineAdapter):
         # Without a token the agent has no GitHub account: the bundle's GitHub Source
         # stays unset and its other Sources run (upstream-changes.patch).
         token = str(context.owner_secrets.get(GITHUB_TOKEN) or "").strip()
-        model_name = str(getattr(context.model_access, "model_name", "") or "").strip()
         credential = str(context.model_credential or "").strip()
-        if not model_name or not credential:
+        if not credential:
             raise APIError(
                 code="AGENT_RUNTIME_ERROR",
-                message="the dsh-superagent Assistant has no model or model credential",
+                message="the dsh-superagent Assistant has no model credential",
                 status_code=500,
             )
         commands = sandbox.commands
@@ -303,8 +360,6 @@ class DshSuperagentEngineAdapter(EngineAdapter):
         env = {
             **dict(context.runtime_env or {}),
             "DSH_HOME": config_dir,
-            "ASTRABOX_DSH_GATEWAY_BASE_URL": _gateway_base_url(context.model_access),
-            "ASTRABOX_DSH_MODEL": model_name,
             "DEEPSEEK_API_KEY": credential,
             "ASTRABOX_DSH_PROFILE_LINUX_USER": identity["linux_user"],
             "ASTRABOX_DSH_PROFILE_HOME": identity["home_dir"],
@@ -314,12 +369,13 @@ class DshSuperagentEngineAdapter(EngineAdapter):
         env_path = posixpath.join(config_dir, _ENV_FILENAME)
         env_content = _env_exports(env)
         options = getattr(context.template, "engine_options", None)
+        model_patch = _model_patch(context.model_access, options)
         packages = (options or {}).get("profile_package") if isinstance(options, dict) else None
         packages = dict(packages) if isinstance(packages, dict) else {}
         # The harness reads its environment and its Bundles when it starts, so
         # a change to either takes effect by a restart.
         digest = hashlib.sha256(
-            (env_content + json.dumps(packages, sort_keys=True)).encode("utf-8")
+            (env_content + model_patch + json.dumps(packages, sort_keys=True)).encode("utf-8")
         ).hexdigest()
         digest_path = posixpath.join(config_dir, _DIGEST_FILENAME)
         previous = await commands.run(
@@ -345,6 +401,7 @@ class DshSuperagentEngineAdapter(EngineAdapter):
             "runtime-state target",
         )
         await install(env_path, env_content, "profile environment")
+        await install(posixpath.join(config_dir, _MODEL_PATCH_FILENAME), model_patch, "model patch")
         targets = await assistant_a2a_targets(
             assistant_id=str(getattr(context.template, "assistant_id", "") or ""),
             binding_id=context.platform_mcp_deployment_id,
