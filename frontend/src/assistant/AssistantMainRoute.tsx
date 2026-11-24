@@ -7,13 +7,14 @@ import { AppTopbar, ErrorNote, PageShell } from '@/components/shell';
 import { assistantOpensPanel } from '@/manage/assistantConfig';
 
 import { getAssistant, openMainConversation } from './api';
-import { AssistantPanelView } from './AssistantPanelView';
+import { useShowAssistantPanel } from './AssistantPanelHost';
 import { usePrimaryAssistant } from './AssistantRail';
 
 /**
- * Open the Assistant's native page when its runtime declares one. A runtime
- * without a native page opens the platform main conversation, where scheduled
- * and proactive work reports. `/assistants` opens the primary Assistant.
+ * Open the Assistant's native page when its runtime declares one, shown by
+ * `AssistantPanelHost`. A runtime without a native page opens the platform main
+ * conversation, where scheduled and proactive work reports. `/assistants`
+ * opens the primary Assistant.
  */
 export function AssistantMainRoute({ onOpened }: { onOpened: () => void }) {
   const { t } = useTranslation();
@@ -30,6 +31,12 @@ export function AssistantMainRoute({ onOpened }: { onOpened: () => void }) {
   const record = held ?? read.data;
   const opensPanel = record ? assistantOpensPanel(record) : undefined;
   const [error, setError] = useState('');
+  const showPanel = useShowAssistantPanel();
+  const panelRecord = routeId && opensPanel && record ? record : null;
+
+  useEffect(() => {
+    if (panelRecord) showPanel(panelRecord);
+  }, [panelRecord, showPanel]);
 
   useEffect(() => {
     if (!routeId && primary.error) navigate('/agents', { replace: true });
@@ -58,10 +65,9 @@ export function AssistantMainRoute({ onOpened }: { onOpened: () => void }) {
     return () => { cancelled = true; };
   }, [assistantId, mutate, navigate, onOpened, opensPanel]);
 
-  if (routeId && opensPanel && record) {
-    // Keyed by the Assistant: moving from one to another through the rail
-    // keeps this route mounted, and the view holds its Assistant's state.
-    return <AssistantPanelView key={record.assistant_id} initial={record} />;
+  if (panelRecord) {
+    // The host shows the page, and keeps it loaded when the route moves on.
+    return null;
   }
 
   const failure = error || (read.error as Error | undefined)?.message || '';

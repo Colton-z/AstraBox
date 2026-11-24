@@ -208,8 +208,13 @@ type Attempt =
  * workspace that leaves MATERIALIZING for anything but READY did not start;
  * the page shows the action or the error the read gives for it and offers the
  * start again, which asks the deployment first, rather than retrying on its own.
+ *
+ * The console keeps the view mounted while another page is shown (`active`
+ * false, see `AssistantPanelHost`). Shown again after a start succeeded, it
+ * wakes the workspace and reads it once more, as opening it does; the frame
+ * stays as it was while that read names the same READY box.
  */
-export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
+export function AssistantPanelView({ initial, active = true }: { initial: AssistantRecord; active?: boolean }) {
   const { t, i18n } = useTranslation();
   const assistantId = initial.assistant_id;
   const [record, setRecord] = useState(initial);
@@ -292,6 +297,26 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
 
   const state = String(record.workspace_state || 'NOT_MATERIALIZED');
   const woken = attempt.status === 'woken';
+  // Shown again after a start succeeded: the workspace may have stopped while
+  // the page was elsewhere, so it is woken and read again. A READY read naming
+  // the same box changes nothing on screen.
+  const wasActive = useRef(active);
+  useEffect(() => {
+    const returned = active && !wasActive.current;
+    wasActive.current = active;
+    if (!returned || !woken) return undefined;
+    let cancelled = false;
+    void (async () => {
+      try {
+        await wakeAssistantWorkspace(assistantId);
+        await read();
+      } catch (error) {
+        if (!cancelled) setAttempt({ status: 'refused', error });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [active, assistantId, read, woken]);
+
   useKeepCurrent(load, { follow: woken && state === 'MATERIALIZING' });
 
   const sandboxId = woken && state === 'READY' ? String(record.current_sandbox_id || '') : '';
