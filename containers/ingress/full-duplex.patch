@@ -7,8 +7,8 @@
 +	// server's default half-duplex mode, the first response write discards and
 +	// closes r.Body, so that read fails and the Transport closes the upstream
 +	// connection mid-response: a streamed answer is cut and the sandbox sees
-+	// its client disconnect. HTTP/2 is always full duplex and reports
-+	// ErrNotSupported.
++	// its client disconnect. HTTP/2 is always full duplex; only a writer
++	// that is not the server's own reports ErrNotSupported.
 +	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 +		Logger.With(slogger.Field{Key: "error", Value: err.Error()}).Errorf("ingress: enable full duplex")
 +	}
