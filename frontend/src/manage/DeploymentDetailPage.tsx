@@ -142,6 +142,7 @@ export default function DeploymentDetailPage() {
           timezone: found.schedule?.timezone ?? '',
         });
         setChannelDraft({
+          prompt_prefix: found.prompt_prefix ?? '',
           attention_policy: found.attention_policy ?? 'all',
           response_instruction: found.response_instruction ?? '',
           execution_mode: found.execution_mode ?? 'owner',
@@ -191,6 +192,7 @@ export default function DeploymentDetailPage() {
     || scheduleDraft.cron !== (deployment?.schedule?.cron ?? '')
     || scheduleDraft.timezone !== (deployment?.schedule?.timezone ?? '')
     || JSON.stringify(channelDraft) !== JSON.stringify({
+      prompt_prefix: deployment?.prompt_prefix ?? '',
       attention_policy: deployment?.attention_policy ?? 'all',
       response_instruction: deployment?.response_instruction ?? '',
       execution_mode: deployment?.execution_mode ?? 'owner',
@@ -310,6 +312,18 @@ export default function DeploymentDetailPage() {
           }),
           fields: [
             {
+              key: 'prompt_prefix',
+              label: t('manage:deployments.field_prompt_prefix'),
+              type: 'textarea' as const,
+              rows: 3,
+              get: (value: Record<string, unknown>) => value.prompt_prefix,
+              set: (value: Record<string, unknown>, next: unknown) => ({
+                ...value,
+                prompt_prefix: next,
+              }),
+              help: t('manage:deployments.prompt_prefix_help'),
+            },
+            {
               key: 'attention_policy',
               label: t('manage:deployments.field_attention_policy'),
               type: 'select' as const,
@@ -396,6 +410,7 @@ export default function DeploymentDetailPage() {
         : undefined)
     : undefined;
   const channelBaseline = {
+    prompt_prefix: deployment.prompt_prefix ?? '',
     attention_policy: deployment.attention_policy ?? 'all',
     response_instruction: deployment.response_instruction ?? '',
     execution_mode: deployment.execution_mode ?? 'owner',
@@ -792,6 +807,11 @@ export default function DeploymentDetailPage() {
                   deployment,
                   deployment.deployment_id,
                   {
+                    // Sent only when edited, so saving other settings keeps the
+                    // stored prefix; an emptied field sends "" to remove it.
+                    ...(channelDraft.prompt_prefix !== channelBaseline.prompt_prefix
+                      ? { prompt_prefix: String(channelDraft.prompt_prefix ?? '').trim() }
+                      : {}),
                     attention_policy: attentionPolicy,
                     response_instruction: usesResponseInstruction ? responseInstruction || null : null,
                     ...(channelProvider.can_configure_execution_user && !deployment.assistant_id
