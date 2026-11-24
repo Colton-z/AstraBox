@@ -44,7 +44,7 @@ class SessionMCPFixture(RuntimePreparationProvider):
             ref for package in packages for ref in package.mcp_servers
             if ref.plugin == "fixture-identity" and ref.name == "personal"
         )
-        authored = (SessionMCPServer("personal"),) if "personal" in config.get("mcp_servers", {}) else ()
+        authored = (SessionMCPServer("personal"),) if "personal" in (config.get("mcp_servers") or {}) else ()
         return RuntimePreparationPlan(session_mcp_servers=(*authored, *personal))
 
     async def read_user_actions(self, *, context):
