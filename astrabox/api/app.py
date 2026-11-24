@@ -985,7 +985,10 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
     A single catch-all GET, registered after every API router, serves a real
     file from the dist when one matches (hashed assets get an immutable cache
     header) and otherwise falls back to ``index.html`` so the main SPA's
-    client-side routes (``/manage/*`` …) deep-link correctly. A path under
+    client-side routes (``/manage/*`` …) deep-link correctly. A file the build
+    also wrote compressed (``frontend/precompress.mjs``) is answered with the
+    copy the browser accepts, so the console arrives compressed without a
+    compressing proxy in front of the server. A path under
     ``assets/``, where ``frontend/vite.config.ts`` writes every built file,
     is never a route: one that matches no file answers an uncacheable 404, so a
     page built by another release fails to load the file instead of receiving
@@ -994,18 +997,23 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
     (:func:`~astrabox.api.frontend_cache.console_shell_response`). It never
     shadows the ``/api`` / ``/healthz`` surfaces.
     """
+    import mimetypes
+
+    from fastapi import Request
     from fastapi.responses import FileResponse, Response
 
     from astrabox.api.frontend_cache import (
         asset_cache_control_for_name,
         console_shell_response,
+        precompressed_variant,
+        precompressed_variants,
     )
     from astrabox.deploy.public_path import public_path_prefix
 
     index_html = dist / "index.html"
 
     @app.get("/{full_path:path}", include_in_schema=False)
-    async def _serve_spa(full_path: str) -> Response:
+    async def _serve_spa(full_path: str, request: Request) -> Response:
         # Guard the API/health surfaces: this only fires for
         # otherwise-unmatched GETs (already matched above).
         if full_path.startswith("api/") or full_path == "healthz":
@@ -1017,11 +1025,19 @@ def _mount_frontend(app: FastAPI, dist: Path) -> None:
                 and candidate.is_file()
                 and candidate.is_relative_to(dist)
             ):
-                response = FileResponse(candidate)
-                response.headers.setdefault(
-                    "Cache-Control", asset_cache_control_for_name(candidate.name)
+                headers = {"Cache-Control": asset_cache_control_for_name(candidate.name)}
+                if precompressed_variants(candidate):
+                    # A cache between here and the browser must key the
+                    # answer by the codings the browser offered.
+                    headers["Vary"] = "Accept-Encoding"
+                chosen = precompressed_variant(candidate, request.headers.get("accept-encoding", ""))
+                if chosen is None:
+                    return FileResponse(candidate, headers=headers)
+                coding, variant = chosen
+                media_type = mimetypes.guess_type(candidate.name)[0] or "application/octet-stream"
+                return FileResponse(
+                    variant, media_type=media_type, headers={**headers, "Content-Encoding": coding},
                 )
-                return response
             if full_path.startswith("assets/"):
                 return Response(status_code=404, headers={"Cache-Control": "no-store"})
         # SPA fallback: client-side routing resolves inside index.html.
