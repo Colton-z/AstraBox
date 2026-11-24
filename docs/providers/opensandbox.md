@@ -192,6 +192,18 @@ unclaimed pool inventory. Already claimed boxes remain with their Sessions.
 For shared tenancy, injectable configuration changes replace the waiting engine
 slot without replacing the resident box.
 
+Replacing or disabling an Agent's prepared capacity, or deleting the Agent,
+retires its pool: the SDK's pool manager fences the pool so it hands out no
+more boxes, then destroys its idle boxes. The pool manager removes each box
+from the pool's shared state before destroying it, so retiring the pool again
+does not retry a box the lifecycle server failed to destroy; the retirement log
+reports how many there were. The ownerless sweep destroys such a box, and any
+other box of a retired pool that no Session or Agent took, such as one whose
+retiring process exited between removing and destroying it. It waits until the
+box was last renewed at least the sweep's grace (ten minutes) ago, which covers
+a Session that took a box just before the retirement and is still recording
+itself as its owner.
+
 The platform chooses the Agent version, persistent workspace mount,
 credentials, and startup requirements. OpenSandbox supplies sandbox lifecycle and
 pool machinery; it does not participate in AstraBox's user/session workflow.

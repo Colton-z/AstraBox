@@ -73,7 +73,7 @@ import json as _json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from typing import TYPE_CHECKING
 from typing import Any, Literal, Mapping, Protocol, cast, runtime_checkable
 
@@ -1470,7 +1470,14 @@ class SandboxProvider(ABC):
         )
 
     async def retire_client_pool(self, pool_name: str) -> None:
-        """Fence one pool namespace and destroy its unclaimed members."""
+        """Fence one pool namespace and destroy its idle members.
+
+        Returns once the namespace hands out no member and its idle inventory
+        is drained; raises when it could not be, and the platform keeps the
+        pool recorded and retries. A member this could not destroy, or one
+        outside the inventory, is reclaimed once the platform stops recording
+        the pool (:meth:`unclaimed_sandbox_refusal`).
+        """
 
         _ = pool_name
         raise APIError(
@@ -1520,7 +1527,13 @@ class SandboxProvider(ABC):
             f"sandbox provider {self.name!r} must identify its unclaimed inventory"
         )
 
-    async def unclaimed_sandbox_refusal(self, descriptor: SandboxDescriptor) -> str | None:
+    async def unclaimed_sandbox_refusal(
+        self,
+        descriptor: SandboxDescriptor,
+        *,
+        client_pools: Collection[str],
+        grace_seconds: float,
+    ) -> str | None:
         """Why a resource :meth:`owns_unclaimed_sandbox` keeps must never be handed out, or None.
 
         A box whose create or hand-out was interrupted (the process died, or
@@ -1529,8 +1542,16 @@ class SandboxProvider(ABC):
         reclamation would ever remove it. A provider that can tell such a box
         will never be handed out says why, and reclamation destroys it. Only a
         definite verdict refuses; a box the provider cannot ask about is kept.
-        Default: none.
+
+        ``client_pools`` names every pool (:attr:`SandboxClientPoolSpec.pool_name`)
+        the platform has recorded on this backend and not finished retiring;
+        it acquires from no other. A member of any other pool is never handed
+        out again, but one handed out just before its pool was retired may
+        still be publishing its owner: ``grace_seconds`` is how long an owner
+        may take to publish itself, the window reclamation also gives a newly
+        created box. Default: none.
         """
+        _ = (descriptor, client_pools, grace_seconds)
         return None
 
     def runtime_defaults(self) -> SandboxRuntimeDefaults:

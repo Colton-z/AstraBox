@@ -31,6 +31,7 @@ import time
 import re
 import shlex
 import threading
+from collections.abc import Collection
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
@@ -56,6 +57,8 @@ from astrabox.providers.open_sandbox.execd_access import (
 )
 from astrabox.providers.open_sandbox._metadata import (
     assignment_metadata_value,
+    client_pool_tag,
+    client_pool_tag_of,
     is_client_pool_identity,
     session_metadata_value,
 )
@@ -1014,12 +1017,30 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             )
         )
 
-    async def unclaimed_sandbox_refusal(self, descriptor: SandboxDescriptor) -> str | None:
+    async def unclaimed_sandbox_refusal(
+        self,
+        descriptor: SandboxDescriptor,
+        *,
+        client_pools: Collection[str],
+        grace_seconds: float,
+    ) -> str | None:
         """Why an unclaimed client-pool box must never be handed out, or None.
 
         A box created with network wiring other than the deployment's is
         refused by every connect (:meth:`_require_current_network_wiring`), so
         it is never handed out.
+
+        A member of a pool outside ``client_pools`` is never handed out again:
+        its retirement fenced the namespace and drained its idle inventory
+        before the platform stopped recording it. Such a member is one whose
+        destruction failed during that drain, one a process took from the
+        inventory and exited before destroying, or one whose create finished
+        after the fence (:meth:`.agent_pool.OpenSandboxClientPoolRegistry.retire`).
+        The pool renews a member for the lease as it hands it out, before its
+        namespace fence and before the platform publishes the member's owner,
+        so a member renewed less than ``grace_seconds`` ago may belong to a
+        hand-out still publishing its owner and is kept, as is one whose
+        expiry the control plane does not report.
 
         With ``ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN`` on, a box whose execd does
         not hold it to its own credential is refused at create and at hand-out
@@ -1035,6 +1056,15 @@ class OpenSandboxSandboxProvider(SandboxProvider):
                 "its recorded network wiring differs from this deployment's, "
                 "so every connect refuses it"
             )
+        member_of = client_pool_tag_of(
+            str(descriptor.metadata.get(SANDBOX_SESSION_ID_METADATA_KEY) or "")
+        )
+        if member_of is not None and member_of not in {
+            client_pool_tag(name) for name in client_pools
+        }:
+            if self._handed_out_within(descriptor, grace_seconds):
+                return None
+            return "its client pool is retired, so no pool hands it out again"
         if not execd_access_required(self._settings()):
             return None
         from astrabox.providers.open_sandbox.executor import require_open_sandbox_execd_access
@@ -1053,6 +1083,26 @@ class OpenSandboxSandboxProvider(SandboxProvider):
             with contextlib.suppress(Exception):
                 await handle.close()
         return None
+
+    def _handed_out_within(self, descriptor: SandboxDescriptor, grace_seconds: float) -> bool:
+        """Whether the pool may have handed this member out less than ``grace_seconds`` ago.
+
+        A hand-out renews the member to expire one lease
+        (``ASTRABOX_SANDBOX_LEASE_SECONDS``) later
+        (:meth:`.agent_pool.OpenSandboxClientPoolRegistry.acquire`), so the
+        member was last renewed one lease before its expiry. Publishing a
+        member to the idle inventory renews it the same way, since the
+        platform sets the pool's idle timeout to that lease. A member whose
+        expiry the control plane does not report cannot be ruled out.
+        """
+        expires_at = descriptor.expires_at
+        if expires_at is None:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        lease = timedelta(seconds=int(self._settings().sandbox_lease_seconds))
+        renewed_at = expires_at - lease
+        return datetime.now(timezone.utc) - renewed_at < timedelta(seconds=grace_seconds)
 
     # --- SDK plumbing (one object per op, closed in finally) ---------------
     def _sdk_connection_config(

@@ -103,6 +103,9 @@ class _NoRows:
     async def list_agents_by_sandbox_id(self, sandbox_id: str) -> list[dict[str, Any]]:
         return []
 
+    async def list_client_pool_names(self, *, backend: str) -> frozenset[str]:
+        return frozenset()
+
 
 @pytest.mark.parametrize("honours_filter", [True, False])
 async def test_reap_gives_back_only_this_installations_ownerless_box(

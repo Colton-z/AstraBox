@@ -57,6 +57,17 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 12
+      # The client-pool retirement test runs OpenSandbox's pool against this
+      # server's shared state (tests/open_sandbox_pool_retirement_test.py).
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - uses: actions/checkout@v7
 
@@ -177,6 +188,7 @@ jobs:
         # live-turn suite (tests/e2e/) is skipped here and only runs in e2e.yml.
         env:
           ASTRABOX_TEST_POSTGRES_URL: postgresql://astrabox:astrabox@127.0.0.1:55432/astrabox
+          ASTRABOX_TEST_REDIS_URL: redis://127.0.0.1:6379/0
         run: python scripts/node-toolchain.py --no-download python -m pytest
 
   web:

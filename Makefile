@@ -4,7 +4,8 @@
 #   * `make test`             == the .github/workflows/ci.yml unit/lint/typecheck job
 #                                (ruff + mypy + non-e2e pytest, + frontend
 #                                 tsc, build & vitest) — no Docker daemon and no secret;
-#                                the pytest half needs ASTRABOX_TEST_POSTGRES_URL.
+#                                the pytest half needs ASTRABOX_TEST_POSTGRES_URL
+#                                and ASTRABOX_TEST_REDIS_URL.
 #   * `make e2e`              == the .github/workflows/e2e.yml job (build the agent
 #                                image, then the curl smoke + the Playwright happy
 #                                path) — needs Docker + the operator LLM key (.env).
@@ -103,7 +104,7 @@ dev: ## Boot the local dev stack: backend (:8000) + frontend (:5173). Ctrl-C sto
 # ── test (the CI unit/lint/typecheck job — no Docker daemon, no secret) ──────
 test: check-comments check-i18n check-errors check-env-registry check-http-surface check-background-tasks check-release check-credential-seam check-sandbox-seam check-all-in-one check-dockerfile-modes check-api-client lint typecheck test-py test-web ## Full unit gate: static checks + ruff + mypy + pytest + web build/vitest.
 
-test-py: ## Race and security unit tests (the live `e2e` mark is deselected). Needs ASTRABOX_TEST_POSTGRES_URL: a PostgreSQL role that may create databases.
+test-py: ## Race and security unit tests (the live `e2e` mark is deselected). Needs ASTRABOX_TEST_POSTGRES_URL: a PostgreSQL role that may create databases, and ASTRABOX_TEST_REDIS_URL: a Redis server.
 	$(NODE_TOOLCHAIN) $(PYTEST)
 
 lint: ## ruff check (E402/F401/F811/F821/F841 grandfathered tree-wide — see pyproject).

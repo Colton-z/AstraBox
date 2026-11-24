@@ -92,7 +92,7 @@ at what you pushed.
 
 ## Running tests
 
-### Unit gate (PostgreSQL, no secret)
+### Unit gate (PostgreSQL and Redis, no secret)
 
 Use a Git checkout at the candidate commit, including its Git metadata:
 `make check-comments` reads its file list from `git ls-files`, so an extracted
@@ -104,10 +104,12 @@ Docker or an LLM key. The unit tests are the database races and security boundar
 end-to-end run cannot show. Tests that use the store need a PostgreSQL server: set
 `ASTRABOX_TEST_POSTGRES_URL` to a `postgresql://` URL for a role that may create
 databases. Each pytest process creates its own database with every table and drops it
-at the end (`tests/_database.py`):
+at the end (`tests/_database.py`). Tests of the OpenSandbox client pool's shared state
+need a Redis server: set `ASTRABOX_TEST_REDIS_URL` to a `redis://` URL.
 
 ```bash
 ASTRABOX_TEST_POSTGRES_URL=postgresql://user:password@127.0.0.1:5432/postgres \
+ASTRABOX_TEST_REDIS_URL=redis://127.0.0.1:6379/0 \
   make test-py          # unit suite only (the `e2e` mark is deselected)
 ```
 
