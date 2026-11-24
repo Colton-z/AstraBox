@@ -10955,7 +10955,7 @@
       },
       "AssistantRuntimeSurface": {
         "additionalProperties": false,
-        "description": "How the Assistant's runtime serves its owner.\n\n``conversations``: the console hosts its conversations. ``panel``: the\nruntime serves its own page, opened through ``GET .../panel``.",
+        "description": "How the Assistant's runtime serves its owner.\n\n``conversations``: the runtime supports AstraBox conversation integrations.\n``panel``: the runtime serves its own page, opened through ``GET .../panel``.",
         "properties": {
           "conversations": {
             "title": "Conversations",
@@ -10970,6 +10970,11 @@
           },
           "panel": {
             "title": "Panel",
+            "type": "boolean"
+          },
+          "panel_opens_in_new_tab": {
+            "default": false,
+            "title": "Panel Opens In New Tab",
             "type": "boolean"
           }
         },

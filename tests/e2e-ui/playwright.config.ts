@@ -68,6 +68,8 @@ const containerEngineDeployment = process.env.ASTRABOX_E2E_CONTAINER_ENGINE === 
 // collected only when the run names that image's RuntimeProfile in
 // ASTRABOX_E2E_SUPERAGENT_SOURCE_RUNTIME_PROFILE.
 const superagentSourceDeployment = Boolean((process.env.ASTRABOX_E2E_SUPERAGENT_SOURCE_RUNTIME_PROFILE || '').trim());
+// The Hermes Webapp needs the HTTPS wildcard Secure Access deployment.
+const hermesWebappDeployment = process.env.ASTRABOX_E2E_HERMES_WEBAPP === '1';
 // Historical cursor recovery upgrades the host in place using a declared source-bind fixture.
 const claudeCursorUpgrade = Boolean((process.env.ASTRABOX_E2E_CLAUDE_CLIENT_BIND_FILE || '').trim());
 export default defineConfig({
@@ -85,6 +87,7 @@ export default defineConfig({
     ...(sandboxLeaseDeployment ? [] : ['**/*.sandbox-lease.spec.ts']),
     ...(containerEngineDeployment ? [] : ['**/*.container-engine.spec.ts']),
     ...(superagentSourceDeployment ? [] : ['**/*.superagent-source.spec.ts']),
+    ...(hermesWebappDeployment ? [] : ['**/*.hermes-webapp.spec.ts']),
     ...(claudeCursorUpgrade ? [] : ['**/claude-compacted-result-reattach.exclusive.spec.ts']),
   ],
   fullyParallel: true,

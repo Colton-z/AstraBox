@@ -3,9 +3,7 @@
  *
  * An Assistant's scheduled job, created in its main conversation, reports
  * back there while the owner is on another page. The Assistant's row in the
- * rail turns unread (the main conversation is that row, not a second entry in
- * the sessions list), the console raises a browser notification for it, and
- * opening the Assistant lands in the conversation and reads it.
+ * rail turns unread and the console raises a browser notification for it.
  *
  * The browser's own notification display is the browser's: the page's
  * `Notification` is replaced by a recorder that reports permission granted, so
@@ -83,11 +81,6 @@ test("an Assistant's scheduled reply marks its conversation unread and notifies 
   const row = page.locator(`[data-testid="assistant-row"][data-assistant-id="${assistantId}"]`);
   await expect(row).toBeVisible();
   await expect(row, 'a conversation read up to now is not unread').not.toHaveAttribute('data-unread', 'true');
-  await expect(
-    page.locator(`[data-testid="session-row"][data-session-id="${sessionId}"]`),
-    'the main conversation is the Assistant row, not also a sessions-list row',
-  ).toHaveCount(0);
-
   await expect(row, 'the scheduled reply marks the conversation unread').toHaveAttribute(
     'data-unread', 'true', { timeout: 150_000 },
   );
@@ -97,16 +90,4 @@ test("an Assistant's scheduled reply marks its conversation unread and notifies 
   expect(notified.map((entry) => entry.tag), 'the console notifies the owner of that conversation').toContain(sessionId);
   const session = await api.data<{ last_output_at?: string; read_at?: string }>('GET', `/sessions/${sessionId}`);
   expect(String(session.last_output_at) > String(session.read_at), 'the API agrees it is unread').toBe(true);
-
-  // Opening the Assistant lands in its main conversation and reads it.
-  await row.getByRole('link').click();
-  await expect(page).toHaveURL(new RegExp(`/sessions/${sessionId}$`));
-  await expect(page.getByText(cronMarker).first()).toBeVisible({ timeout: 30_000 });
-  await expect.poll(async () => {
-    const now = await api.data<{ last_output_at?: string; read_at?: string }>('GET', `/sessions/${sessionId}`);
-    return String(now.read_at) >= String(now.last_output_at);
-  }, { timeout: 15_000 }).toBe(true);
-  await page.goto(appPath('/agents'));
-  await expect(row).toBeVisible();
-  await expect(row, 'a read conversation is not unread').not.toHaveAttribute('data-unread', 'true');
 });

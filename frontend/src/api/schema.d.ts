@@ -8678,8 +8678,8 @@ export interface components {
          * AssistantRuntimeSurface
          * @description How the Assistant's runtime serves its owner.
          *
-         *     ``conversations``: the console hosts its conversations. ``panel``: the
-         *     runtime serves its own page, opened through ``GET .../panel``.
+         *     ``conversations``: the runtime supports AstraBox conversation integrations.
+         *     ``panel``: the runtime serves its own page, opened through ``GET .../panel``.
          */
         AssistantRuntimeSurface: {
             /** Conversations */
@@ -8688,6 +8688,11 @@ export interface components {
             owner_secrets: components["schemas"]["AssistantOwnerSecretStatus"][];
             /** Panel */
             panel: boolean;
+            /**
+             * Panel Opens In New Tab
+             * @default false
+             */
+            panel_opens_in_new_tab: boolean;
         };
         /**
          * AssistantWorkspace

@@ -17,11 +17,11 @@ and other systems can reach through the console, API, Deployments, or remote MCP
 | Who can use it | Accounts that pass the Agent's authorization rules | Its owner |
 | Typical work | Repeatable tasks, team use, and automation | One person's work that continues over time |
 | Workspace | Each conversation has its own workspace | The owner's conversations use the same workspace |
-| How work starts | Console, API, Deployment, or remote MCP | Console, API, or a Deployment its owner manages |
+| How work starts | AstraBox conversation page, API, Deployment, or remote MCP | The runtime's native page, or a supported API or Deployment |
 
-An Assistant does not merge its conversations. Each conversation has its own
-Session record and history, while all of those Sessions work in the Assistant's
-shared workspace.
+Native conversations have separate histories in the runtime's own store and
+share the Assistant's workspace. An API or Deployment that uses AstraBox's
+conversation service also has AstraBox Session records.
 
 ## Your Assistant
 
@@ -176,7 +176,8 @@ Assistant's own fields. For Hermes:
   which the Assistant cannot change. The keys AstraBox sets itself are refused:
   `model`, `providers`, `custom_providers`, `mcp_servers`, `terminal`,
   `timezone` (set it as the Assistant's [timezone](#timezone)),
-  `plugins.enabled` and `plugins.disabled`. `skills` is refused too, because
+  `plugins.enabled`, `plugins.disabled`, `platforms`, `gateway`, and `webapp`.
+  `skills` is refused too, because
   Hermes does not read Skills settings from the managed scope.
 
 You can ask your Assistant to create or edit its own Skills using Hermes'
@@ -187,17 +188,43 @@ files and Hermes' sync records in the database for restoration into a new box.
 Skills supplied through the Assistant's `skills` configuration remain managed
 by those sources: update the source to change what the configuration supplies.
 
-## Assistants that work from a panel: dsh-superagent {#panel-runtimes}
+## Native Assistant pages {#panel-runtimes}
+
+Select an Assistant in the console to open its runtime's page. These pages
+need HTTPS and OpenSandbox Secure Access. Set the lifecycle server's route
+mode to `wildcard` with a gateway address beginning with `*.`. The OpenSandbox
+1.2.1 ingress chart uses `gateway.gatewayRouteMode=header` to route these
+requests by their Host. The console issues a short-lived signed address for
+the owner, of the form
+`<sandbox>-<port>-<expiry>-<signature>.<gateway domain>`. Issue a wildcard
+certificate for the gateway domain with a DNS challenge.
+
+### Hermes
+
+Select **Open in a new tab** on the Assistant page to use the official Hermes
+Webapp. It uses the Assistant's resident Hermes Gateway and the same profile
+and SessionDB that AstraBox saves and restores when it replaces a box. Use
+Hermes' own controls for new conversations, history, and continuing a chat.
+AstraBox issues a fresh one-use Hermes sign-in link each time you open it.
+When the signed address expires, reopen the Webapp from the Assistant to
+get a new address and continue from history.
+
+Configure the HTTPS reverse proxy to set `X-Forwarded-Host` from the
+incoming Host and overwrite any client-supplied value. Forward this header
+with HTTP requests and WebSocket upgrades so Hermes can validate their origin.
+
+The runtime image needs the bundled Hermes Webapp. After updating a
+RuntimeProfile's image, hibernate and wake existing workspaces to use the
+new image with their saved Hermes state.
+
+### dsh-superagent
 
 [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)
-runs on DeepSeek Harness, takes requests from its Sources (a GitHub
-repository, or a ticket or to-do service your own Source plugin reads), turns
-each into a Ticket, and has one of its owner's Agents work it. An Assistant on
-a RuntimeProfile with the `dsh_superagent` engine opens the harness's Web
-profile inside the console, starting on the Superagent panel. Use the
-harness's own conversation controls to start a chat, open its history, or
-continue a saved Session. The Assistant keeps running between visits so it
-can answer its Sources.
+runs on DeepSeek Harness, takes requests from Sources, turns each into a
+Ticket, and has one of its owner's Agents work it. Its Web profile opens
+inside the console on the Superagent panel. Use the harness's conversation
+controls to start a chat, open its history, or continue a saved Session. The
+Assistant keeps running between visits so it can answer its Sources.
 
 New browser chats and Superagent Sessions configured to inherit the DSH
 default use the Assistant's model connection. In **DSH default model
@@ -209,20 +236,13 @@ Sessions or in Superagent's per-role settings.
 
 The deployment needs:
 
-- **OpenSandbox with Secure Access and wildcard routes** (`gatewayRouteMode:
-  wildcard` on the lifecycle server). The console opens the panel through a
-  short-lived signed address of the form
-  `<sandbox>-<port>-<expiry>-<signature>.<gateway domain>`; a header-routed
-  gateway cannot be opened by a browser and the Assistant shows why. The
-  address lives `ASTRABOX_SANDBOX_ENDPOINT_URL_TTL_SECONDS` (15 minutes by
-  default); the console fetches the next one before it expires, which reloads
-  the panel.
 - **The gateway domain on the console's site.** The harness keeps its login in
   a `SameSite=Strict` cookie, which a browser sends inside the console's frame
   only when both share a registrable domain and a scheme: for example a
   console at `https://astrabox.example.com` with a gateway at
-  `*.sbx.example.com`, both HTTPS. A wildcard certificate for the gateway
-  domain has to be issued with a DNS challenge.
+  `*.sbx.example.com`, both HTTPS. The console renews the signed address before
+  `ASTRABOX_SANDBOX_ENDPOINT_URL_TTL_SECONDS` (15 minutes by default), which
+  reloads the panel.
 - **A GitHub account for the agent, to work from GitHub.** Set the deployment secret
   `astrabox-dsh-superagent-github-token` (through the environment that is
   `ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN`) to a token of one bot account, and

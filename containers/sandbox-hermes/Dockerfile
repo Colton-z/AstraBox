@@ -27,7 +27,7 @@ ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 FROM scratch AS hermes-source
 ADD --checksum=sha256:3dffc702249874db2e6f60d93370a8d3c11e57e3ab5ee321447969e170a51aef https://github.com/NousResearch/hermes-agent/archive/caafe5389ae585ef77387a962aee05b1bcf17029.tar.gz /hermes-source.tar.gz
 
-FROM ${SANDBOX_BASE_IMAGE}
+FROM ${SANDBOX_BASE_IMAGE} AS hermes-runtime
 
 # The native install stamp binds the release to its checksum-pinned source.
 ARG HERMES_AGENT_VERSION=0.23.3
@@ -78,6 +78,15 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
     hermes backup --help; \
     hermes import --help; \
     "${HERMES_VENV}/bin/python" -c 'import gateway.session_controls'
+
+# The vendor's builder and its npm dependencies stay out of the final image.
+FROM hermes-runtime AS hermes-webapp
+RUN cd /opt/hermes/source && \
+    hermes webapp --build-only && \
+    test -f apps/desktop/dist-webapp/index.html
+
+FROM hermes-runtime
+COPY --from=hermes-webapp /opt/hermes/source/apps/desktop/dist-webapp /opt/hermes/source/apps/desktop/dist-webapp
 
 # Native PM metadata is non-secret and must be readable by sandbox accounts.
 RUN chmod 0644 /opt/hermes/source/tools/facts.json && \
@@ -174,3 +183,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends nginx-extras &&
     rm -rf /var/lib/apt/lists/* && \
     nginx -V 2>&1 | grep -q -- --with-http_secure_link_module && \
     python3 -c "import ast; ast.parse(open('/usr/local/bin/astrabox-workspace-viewer').read())"
+
+COPY --chmod=0444 containers/sandbox-hermes/hermes-webapp.nginx.conf /opt/astrabox/hermes/
+COPY --chmod=0444 containers/sandbox-hermes/hermes_webapp_link.py /opt/astrabox/hermes/

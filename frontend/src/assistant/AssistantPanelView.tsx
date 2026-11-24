@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { KeyRound, Settings, ShieldCheck } from 'lucide-react';
+import { ExternalLink, KeyRound, Settings, ShieldCheck } from 'lucide-react';
 
 import { AppTopbar, EmptyState, ErrorNote, PageShell } from '@/components/shell';
 import { StatusPill } from '@/components/AstraConsole';
@@ -201,8 +201,8 @@ type Attempt =
  *
  * Then it wakes the workspace — the server answers at once and builds in the
  * background — and follows the Assistant's read while the workspace is
- * MATERIALIZING, showing the state as the server names it. On READY it asks for
- * the panel's signed address and shows it full height. A start that cannot
+ * MATERIALIZING, showing the state as the server names it. On READY it embeds
+ * the panel or offers to open it in a tab, as the runtime declares. A start that cannot
  * succeed is not offered: while a credential the runtime declares is missing
  * the page sends the owner to the Assistant's settings, where it is set. A
  * workspace that leaves MATERIALIZING for anything but READY did not start;
@@ -217,6 +217,8 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
   const [attempt, setAttempt] = useState<Attempt>({ status: 'starting' });
   const [attemptKey, setAttemptKey] = useState(0);
   const [panelKey, setPanelKey] = useState(0);
+  const [tabError, setTabError] = useState('');
+  const [openingTab, setOpeningTab] = useState(false);
 
   // Reads overlap — the read after a wake, the follow cadence, a return to the
   // tab — so an answer older than one already shown is dropped: arriving last,
@@ -293,7 +295,8 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
   useKeepCurrent(load, { follow: woken && state === 'MATERIALIZING' });
 
   const sandboxId = woken && state === 'READY' ? String(record.current_sandbox_id || '') : '';
-  const { panel, error: panelError } = usePanelAddress(assistantId, sandboxId, panelKey);
+  const opensInTab = record.runtime?.panel_opens_in_new_tab === true;
+  const { panel, error: panelError } = usePanelAddress(assistantId, opensInTab ? '' : sandboxId, panelKey);
   const frame = useRef<HTMLIFrameElement>(null);
   usePanelLanguage(frame, panel?.url, resolveLanguage(i18n.resolvedLanguage));
   usePanelConversations(frame, panel?.url);
@@ -306,6 +309,27 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
 
   const name = assistantDisplayName(record);
   const settingsPath = `/manage/assistants/${encodeURIComponent(assistantId)}`;
+  const openInTab = async () => {
+    setTabError('');
+    // Open in the click handler, then request a fresh one-use login for this tab.
+    const tab = window.open('', '_blank');
+    if (!tab) {
+      setTabError(t('shell:assistant_panel.tab_blocked'));
+      return;
+    }
+    tab.opener = null;
+    setOpeningTab(true);
+    try {
+      const { url } = await getAssistantPanel(assistantId);
+      tab.location.replace(url);
+    } catch (error) {
+      tab.close();
+      setTabError((error as Error).message);
+      if (errorCode(error) === 'ASSISTANT_WORKSPACE_NOT_READY') void load();
+    } finally {
+      setOpeningTab(false);
+    }
+  };
   const startAgain = () => {
     setCleared(false);
     setAttemptKey((key) => key + 1);
@@ -426,6 +450,18 @@ export function AssistantPanelView({ initial }: { initial: AssistantRecord }) {
           retryButton(startAgain)
         )}
       </ErrorNote>
+    );
+  } else if (opensInTab) {
+    notice = (
+      <div className="flex flex-col items-start gap-4">
+        {tabError && (
+          <ErrorNote title={t('shell:assistant_panel.open_failed', { name })}>{tabError}</ErrorNote>
+        )}
+        <Button size="sm" onClick={() => void openInTab()} disabled={!sandboxId || openingTab}>
+          <ExternalLink />
+          {t('shell:assistant_panel.open_in_tab', { name })}
+        </Button>
+      </div>
     );
   } else if (!panel && panelError) {
     const code = errorCode(panelError);

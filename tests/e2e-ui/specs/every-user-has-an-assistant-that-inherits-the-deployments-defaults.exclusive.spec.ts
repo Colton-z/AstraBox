@@ -3,16 +3,10 @@
  * deployment's Assistant defaults provide reaches Assistants that already
  * exist.
  *
- * The first case is the rail: the console asks for the user's primary
- * Assistant (the same one however often it asks), lists it, and opening it
- * twice lands in the same main conversation, which is not listed again under
- * Sessions and answers a message typed into it. Ended from its header, that
- * conversation becomes the Assistant's history: opening the Assistant starts
- * a new one, and the old one opens under the Assistant's row with its answer,
- * still not under Sessions. Deleting the Assistant deletes both
- * conversations, and the next visit creates a new primary Assistant. The
- * deployment names no RuntimeProfile for Assistants and has one, so that is the
- * one used.
+ * The primary Assistant leads the rail and uses the deployment's only
+ * eligible RuntimeProfile. Its conversation uses the inherited model.
+ * Deleting the Assistant deletes its conversation, and the next visit creates
+ * a new primary Assistant.
  *
  * The other two change the defaults after an Assistant exists and read the
  * Assistant's next conversation: organization instructions, typed into the
@@ -31,7 +25,6 @@ import { expect, test } from '@playwright/test';
 import { AstraApi, messageToolCalls } from '../fixtures/astraApi';
 import { apiPath, appPath } from '../fixtures/env';
 import { onPassOnly, trackSessions } from '../fixtures/sessionCleanup';
-import { sendPrompt } from '../fixtures/sessionPage';
 
 test.use({ locale: 'en-US' });
 
@@ -88,7 +81,7 @@ async function existingAssistant(api: AstraApi, label: string): Promise<string> 
   return assistantId;
 }
 
-test("a user's Assistant opens on one conversation every time and answers in it", async ({ page, request }) => {
+test("the user's primary Assistant leads the rail and uses the deployment defaults", async ({ page, request }) => {
   const api = new AstraApi(request);
   const runtimeProfileName = await api.assistantEnvironmentName();
   const defaults = await api.data<Defaults>('GET', '/admin/assistant-defaults');
@@ -110,68 +103,16 @@ test("a user's Assistant opens on one conversation every time and answers in it"
     await page.goto(appPath('/agents'));
     const rows = page.getByTestId('assistant-row');
     await expect(rows.first(), 'the primary Assistant leads the rail').toHaveAttribute('data-assistant-id', first.assistant_id);
-    const row = page.locator(`[data-testid="assistant-row"][data-assistant-id="${first.assistant_id}"]`);
-    await row.getByRole('link').click();
-    await expect(page).toHaveURL(/\/sessions\/[^/?#]+$/);
-    const sessionId = new URL(page.url()).pathname.split('/').pop() || '';
+    const sessionId = (await api.startAssistantConversation(first.assistant_id)).session_id;
     sessions.push(sessionId);
-
-    await page.goto(appPath('/agents'));
-    await row.getByRole('link').click();
-    await expect(page).toHaveURL(new RegExp(`/sessions/${sessionId}$`));
-    expect((await api.openMainConversation(first.assistant_id)).session_id).toBe(sessionId);
-    await expect(
-      page.locator(`[data-testid="session-row"][data-session-id="${sessionId}"]`),
-      'the main conversation is the Assistant row, not also a sessions-list row',
-    ).toHaveCount(0);
-
+    await api.waitForSessionReady(sessionId);
     const marker = `answer_${randomUUID().slice(0, 6)}`;
-    await sendPrompt(page, sessionId, `Reply with exactly ${marker} in upper case and nothing else.`);
-    await expect(page.getByTestId('run-view').getByText(marker.toUpperCase()).first())
-      .toBeVisible({ timeout: 120_000 });
-
-    // READY on the detail: nothing runs, nothing waits on the owner, and no
-    // message is still held for the runtime.
-    await expect.poll(
-      async () => (await api.getSession(sessionId)).state,
-      { message: 'the answered response settles before the conversation is ended', timeout: 60_000 },
-    ).toBe('READY');
-    await page.getByRole('button', { name: 'End conversation' }).click();
-    await expect.poll(
-      async () => (await api.data<{ state: string }>('GET', `/sessions/${sessionId}`)).state,
-      { message: 'ending the conversation from its header terminates it', timeout: 60_000 },
-    ).toBe('TERMINATED');
-
-    await page.goto(appPath('/agents'));
-    await row.getByRole('link').click();
-    await expect(page).not.toHaveURL(new RegExp(`/sessions/${sessionId}$`));
-    await expect(page).toHaveURL(/\/sessions\/[^/?#]+$/);
-    const nextId = new URL(page.url()).pathname.split('/').pop() || '';
-    sessions.push(nextId);
-    expect((await api.openMainConversation(first.assistant_id)).session_id, 'the Assistant opens on a new conversation')
-      .toBe(nextId);
-
-    await expect(
-      page.locator(`[data-testid="session-row"][data-session-id="${sessionId}"]`),
-      'the ended conversation belongs to the Assistant, not to the sessions list',
-    ).toHaveCount(0);
-    const toggle = row.getByTestId('assistant-earlier-toggle');
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    await toggle.click();
-    const earlier = row.getByTestId('assistant-earlier-conversations').locator(`[data-session-id="${sessionId}"]`);
-    await expect(earlier, 'the ended conversation opens under its Assistant').toHaveCount(1);
-    await earlier.getByRole('link').click();
-    await expect(page).toHaveURL(new RegExp(`/sessions/${sessionId}$`));
-    await expect(page.getByTestId('run-view').getByText(marker.toUpperCase()).first(), 'with its answer')
-      .toBeVisible({ timeout: 30_000 });
-    await expect(toggle, 'the row stays open while one of its earlier conversations is shown')
-      .toHaveAttribute('aria-expanded', 'true');
-
+    const answer = await api.sendTurn(sessionId, `Reply with exactly ${marker} in upper case and nothing else.`);
+    expect(answer.errorText).toBeFalsy();
+    expect(answer.text).toContain(marker.toUpperCase());
     await api.deleteAssistant(first.assistant_id);
-    for (const id of [sessionId, nextId]) {
-      await expect(api.data('GET', `/sessions/${id}`), 'deleting the Assistant deletes its conversations')
-        .rejects.toThrow(/-> 404/);
-    }
+    await expect(api.data('GET', `/sessions/${sessionId}`), 'deleting the Assistant deletes its conversation')
+      .rejects.toThrow(/-> 404/);
     await page.goto(appPath('/agents'));
     await expect(rows.first(), 'the next visit creates a new primary Assistant')
       .not.toHaveAttribute('data-assistant-id', first.assistant_id);
