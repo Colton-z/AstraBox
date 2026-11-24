@@ -127,6 +127,15 @@ class SessionMCPServer:
 
 
 @dataclass(frozen=True)
+class ResolvedPackage:
+    """One inspected checkout and the native MCP names from its selected paths."""
+
+    index: int
+    commit: str
+    mcp_servers: tuple[SessionMCPServer, ...]
+
+
+@dataclass(frozen=True)
 class RuntimePreparationPlan:
     """Whether engine initialization needs a bound Session's materials.
 
@@ -359,6 +368,18 @@ class RuntimePreparationProvider(ABC):
         """Read persisted subject policy without personal identity or side effects."""
         return RuntimePreparationPlan()
 
+    async def plan_prepared_packages(
+        self, *, config: Mapping[str, Any], initial_plan: RuntimePreparationPlan,
+        packages: tuple[ResolvedPackage, ...],
+    ) -> RuntimePreparationPlan:
+        """Refine an inventory plan from verified, installed package declarations.
+
+        Runs without a Session or claimant and must be free of external writes.
+        The platform binds this result to the inspected checkout commits. An
+        engine unable to prove the inventory keeps the original plan.
+        """
+        return initial_plan
+
     async def synchronize(self, *, context: ResourcePreparationContext) -> None:
         """Return only after all external writes have conclusively completed.
 
@@ -424,7 +445,7 @@ class RuntimePreparationProvider(ABC):
 
 _PROVIDER: RuntimePreparationProvider | None = None
 _ASYNC_METHODS = (
-    "plan", "synchronize", "recover", "prepare_session", "prepare_turn",
+    "plan", "plan_prepared_packages", "synchronize", "recover", "prepare_session", "prepare_turn",
     "read_user_actions", "perform_user_action",
 )
 

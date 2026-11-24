@@ -12,6 +12,8 @@ orchestration around it and the session write-backs.
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import contextlib
 import uuid
 from collections.abc import Callable
@@ -409,10 +411,11 @@ class RuntimeEnsure:
         # missing/dead binding falls through to the same attach-or-recreate path.
         sandbox_id = str(session.get("sandbox_id") or "").strip()
 
-        runtime = self._runtime_manager.get_runtime(
-            session_id,
-            sandbox_id=sandbox_id or None,
-        )
+        with startup_stage(session_id, "reader_local_lookup"):
+            runtime = self._runtime_manager.get_runtime(
+                session_id,
+                sandbox_id=sandbox_id or None,
+            )
         if runtime is not None:
             return _RuntimeEnsureResult(
                 status=_RUNTIME_ENSURE_ATTACHED,
@@ -456,15 +459,16 @@ class RuntimeEnsure:
             sandbox_id=sandbox_id,
         )
 
-        attach_result = await self._attach_runtime_for_turn(
-            session=session,
-            sandbox_id=sandbox_id,
-            engine_session_key=engine_session_key,
-            workspace_plan=workspace_plan,
-            session_kind="agent_chat",
-            runtime_identity=runtime_identity,
-            log_context="agent_chat turn prepare",
-        )
+        with startup_stage(session_id, "reader_remote_attach"):
+            attach_result = await self._attach_runtime_for_turn(
+                session=session,
+                sandbox_id=sandbox_id,
+                engine_session_key=engine_session_key,
+                workspace_plan=workspace_plan,
+                session_kind="agent_chat",
+                runtime_identity=runtime_identity,
+                log_context="agent_chat turn prepare",
+            )
         # A gone box is reported, not replaced here: the reader host ends what
         # the box took with it and starts a replacement only for waiting inputs.
         return attach_result

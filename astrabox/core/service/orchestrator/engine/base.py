@@ -30,6 +30,7 @@ from astrabox.core.service.orchestrator.engine.emissions import (
 )
 
 if TYPE_CHECKING:
+    from astrabox.seams.runtime_preparation import ResolvedPackage
     from astrabox.core.service.orchestrator.engine.runtime import RuntimeClient
     from astrabox.core.service.orchestrator.engine.capabilities import (
         EngineRuntimeCapabilities,
@@ -410,6 +411,12 @@ class EngineAdapter(ABC):
     def supports_session_mcp_activation(self) -> bool:
         """Whether native MCP startup can wait for bound Session materials."""
         return False
+
+    async def inspect_prepared_packages(
+        self, sandbox: Any, template: Any,
+    ) -> tuple[ResolvedPackage, ...] | None:
+        """Resolve installed package MCP names, or report unprovable inventory."""
+        return None
 
     def startup_material_request(
         self,

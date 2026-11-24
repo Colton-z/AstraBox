@@ -13,6 +13,8 @@ permission-mode change sends ``permission``.
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import asyncio
 import hashlib
 import uuid
@@ -23,6 +25,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
+from astrabox.core.service.orchestrator.agent_config_service import AgentConversationAdmission
 from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE
 from astrabox.core.service.orchestrator.runtime.environment_ownership import require_environment_ownership
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
@@ -117,6 +120,7 @@ class SessionLifecycleService:
         deployment_name: str | None = None,
         title: str | None = None,
         idempotency_key: str | None = None,
+        agent_admission: AgentConversationAdmission | None = None,
     ) -> dict[str, Any]:
         """Create a conversation and start its runtime; the session as its owner sees it.
 
@@ -136,9 +140,14 @@ class SessionLifecycleService:
             or workspace_ref.get("assistant_id")
             or ""
         ).strip()
-        template = await self._agent_config.resolve_session_harness(
-            {"workspace_ref": workspace_ref, "agent_id": agent_id, "owner_id": owner_id}
-        )
+        if agent_admission is None:
+            template = await self._agent_config.resolve_session_harness(
+                {"workspace_ref": workspace_ref, "agent_id": agent_id, "owner_id": owner_id}
+            )
+        else:
+            template = agent_admission.template
+            if workspace_ref != {"kind": "agent", "agent_id": template.agent_id} or agent_id != template.agent_id:
+                raise ValueError("Agent admission must match the conversation subject")
         if template is None:
             raise APIError(
                 code="TEMPLATE_NOT_ALLOWED",
@@ -158,20 +167,26 @@ class SessionLifecycleService:
                 _require_same_create(existing, user=user, subject=subject)
                 await self._start(existing)
                 return _owner_view(existing)
-        created = await self._session_service.create_session_record(
-            user,
-            permission_mode=permission_mode,
-            session_id=resolved_session_id,
-            session_kind=session_kind,
-            workspace_ref=workspace_ref,
-            hidden=hidden,
-            owner_type=owner_type,
-            owner_id=owner_id,
-            source_type=source_type,
-            agent_id=agent_id,
-            deployment_name=deployment_name,
-            title=title,
-        )
+        with startup_stage(
+            resolved_session_id, "session_create_record" if agent_admission is None else "agent_start_to_session_insert",
+            started_at=agent_admission.started_at if agent_admission else None,
+        ):
+            created = await self._session_service.create_session_record(
+                user,
+                permission_mode=permission_mode,
+                session_id=resolved_session_id,
+                session_kind=session_kind,
+                workspace_ref=workspace_ref,
+                hidden=hidden,
+                owner_type=owner_type,
+                owner_id=owner_id,
+                source_type=source_type,
+                agent_id=agent_id,
+                deployment_name=deployment_name,
+                title=title,
+                resolved_template=template,
+                expected_agent_version=agent_admission.definition_version if agent_admission else None,
+            )
         await self._start(created)
         return _owner_view(created)
 

@@ -61,7 +61,7 @@ import shlex
 import time
 import uuid as uuid_mod
 from collections import deque
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
@@ -69,6 +69,23 @@ from types import UnionType
 from typing import Any, Protocol, Union, cast, get_args, get_origin, get_type_hints
 
 logger = logging.getLogger("astrabox.sandbox_runner")
+
+
+@contextlib.contextmanager
+def _startup_stage(session_id: str, stage: str) -> Iterator[None]:
+    """Emit the platform startup timing fields from the standalone Runner."""
+    started = time.monotonic()
+    outcome = "ok"
+    try:
+        yield
+    except BaseException:
+        outcome = "failed"
+        raise
+    finally:
+        logger.info(
+            "conversation_startup session_id=%s stage=%s outcome=%s duration_ms=%.3f at_unix_ms=%d",
+            session_id, stage, outcome, (time.monotonic() - started) * 1000, int(time.time() * 1000),
+        )
 
 #: The wire contract this runner speaks, self-declared in its hello frame.
 #: An identity for equality matching only — the digit is the next unambiguous
@@ -1693,16 +1710,20 @@ class RunnerSession:
             # Claude reads resume and SessionStore during connect, not query.
             # Only this unclaimed slot's process is replaced; its box and
             # prepared files stay in place. Bind the store above before connect.
-            await self._client.disconnect()
-            self._client = self._resume_client_factory(self.broker, resume)
-            await self._client.connect()
-        await self.bind_environment(environment if environment is not None else {})
+            with _startup_stage(target, "native_resume"):
+                await self._client.disconnect()
+                self._client = self._resume_client_factory(self.broker, resume)
+                await self._client.connect()
+        with _startup_stage(target, "native_environment"):
+            await self.bind_environment(environment if environment is not None else {})
         if requested_mode != self._permission_mode:
-            await self._client.set_permission_mode(requested_mode)
-            self.broker.set_permission_mode(requested_mode)
-            self._permission_mode = requested_mode
+            with _startup_stage(target, "native_permission"):
+                await self._client.set_permission_mode(requested_mode)
+                self.broker.set_permission_mode(requested_mode)
+                self._permission_mode = requested_mode
         required_mcp = list(dict.fromkeys([*self._session_mcp_servers, *(mcp_servers or [])]))
-        await self._activate_mcp_names(required_mcp)
+        with _startup_stage(target, "native_mcp_activate"):
+            await self._activate_mcp_names(required_mcp)
         self._active = True
         if self._store is not None and not self._store_bound:
             self._store.start_flusher()
@@ -1945,9 +1966,9 @@ class RunnerSession:
             try:
                 await self._query_delivery(queued.command)
                 logger.info(
-                    "queried the SDK: command_id=%s sequence=%d",
-                    queued.command.command_id,
-                    queued.command.sequence,
+                    "queried the SDK: session_id=%s command_id=%s sequence=%d at_unix_ms=%d",
+                    self.session_id, queued.command.command_id,
+                    queued.command.sequence, int(time.time() * 1000),
                 )
                 self._delivered_commands[queued.command.command_id] = queued.command
                 self._last_delivery_sequence = queued.command.sequence
@@ -2683,7 +2704,11 @@ class RunnerWsServer:
             if claimed_by:
                 session.bind_store(claimed_by, opening.get("store"))
             try:
-                await session.prepare()
+                if claimed_by:
+                    with _startup_stage(claimed_by, "native_prepare"):
+                        await session.prepare()
+                else:
+                    await session.prepare()
             except BaseException:
                 self.session = None
                 self._activation_token = None

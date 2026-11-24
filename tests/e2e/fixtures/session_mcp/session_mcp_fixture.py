@@ -1,4 +1,5 @@
 """Isolated identity-material provider for the Session MCP lifecycle journey."""
+import asyncio
 import json
 import secrets
 import time
@@ -22,10 +23,29 @@ class SessionMCPFixture(RuntimePreparationProvider):
     name = "session-mcp-fixture"
 
     async def plan(self, *, config):
-        return RuntimePreparationPlan(session_mcp_servers=(
-            SessionMCPServer("personal"),
-            SessionMCPServer("personal", plugin="fixture-identity"),
-        ))
+        agent_id = config.get("agent_id")
+        hold = STATE / f"admit-{agent_id}"
+        if hold.is_file():
+            reached = hold.with_suffix(".reached")
+            try:
+                reached.touch(exist_ok=False)
+            except FileExistsError:
+                pass
+            else:
+                async with asyncio.timeout(20):
+                    while hold.is_file():
+                        await asyncio.sleep(0.05)
+        if config.get("packages"):
+            return RuntimePreparationPlan(session_bound=True)
+        return RuntimePreparationPlan()
+
+    async def plan_prepared_packages(self, *, config, initial_plan, packages):
+        personal = tuple(
+            ref for package in packages for ref in package.mcp_servers
+            if ref.plugin == "fixture-identity" and ref.name == "personal"
+        )
+        authored = (SessionMCPServer("personal"),) if "personal" in (config.get("mcp_servers") or {}) else ()
+        return RuntimePreparationPlan(session_mcp_servers=(*authored, *personal))
 
     async def read_user_actions(self, *, context):
         if blocked(context.principal_id):

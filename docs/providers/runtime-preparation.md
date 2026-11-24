@@ -105,6 +105,18 @@ providers must not construct scoped aliases. This declaration is non-secret,
 participates in runtime generation, and defaults to no deferred connections.
 An engine without native Session MCP activation refuses a non-empty declaration.
 
+Implement `plan_prepared_packages(config=…, initial_plan=…, packages=…)` when
+the first plan depends on package contents. AstraBox calls it after installing
+the packages into an inventory box and before initializing the engine. Each
+`ResolvedPackage` identifies its index in the configured package list, its
+actual Git commit and the MCP server references read from its selected plugins.
+The callback can narrow whole-engine deferral to individual connections.
+It runs without a claimant and must have no external writes. The refined plan
+keeps the initial model credential delivery and any MCP deferrals already
+declared. The prepared receipt binds it to the inspected checkouts and AstraBox
+checks that evidence again on claim. A cold start or an inventory whose
+package declarations cannot be verified uses the initial plan.
+
 Claude initializes the same process with only these connections disabled in its
 private, per-project native configuration. It checks the native disabled state
 before publishing prepared inventory (`engine_initialized=true`). Ordinary MCPs

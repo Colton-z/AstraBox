@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncIterator
+from time import monotonic
 from typing import Any
 
 from astrabox.persistence.repository.agent_repository import AgentRepository
@@ -21,6 +22,7 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext, default_org_id
 from astrabox.core.service.orchestrator.agent import agent_catalog
 from astrabox.core.model import AgentState
+from astrabox.core.service.orchestrator.agent_config_service import AgentConversationAdmission
 from astrabox.core.service.orchestrator.agent_access import (
     can_manage_agent,
     can_view_agent,
@@ -826,15 +828,20 @@ class AgentService:
 
     async def require_conversation_access(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         """Check the ordinary conversation gate without allocating a Session or sandbox."""
+        agent, _ = await self._admit_conversation(user, agent_id)
+        return agent
+
+    async def _admit_conversation(
+        self, user: UserContext, agent_id: str,
+    ) -> tuple[dict[str, Any], AgentConversationAdmission]:
+        started_at = monotonic()
         agent = await self._must_access(agent_id)
-        harness = await self._agent_config.resolve_agent_harness(
-            agent_id, viewer_user_id=user.user_id, viewer_roles=user.roles,
-        )
-        if harness is None:
+        if not can_view_agent(agent, user.user_id, user.roles):
             raise APIError(code="TEMPLATE_NOT_ALLOWED", message="agent not found", status_code=403)
         if agent.get("enabled") is False:
             raise APIError(code="AGENT_DISABLED", message="agent is disabled", status_code=409)
-        return agent
+        harness = await self._agent_config.resolve_agent_definition(agent)
+        return agent, AgentConversationAdmission(harness, int(agent["version"]), started_at)
 
     async def start_conversation(
         self,
@@ -850,8 +857,11 @@ class AgentService:
         ``create_session``, whose startup plans the Agent conversation's
         runtime subject.
         """
-        agent = await self.require_conversation_access(user, agent_id)
-        return await self._create_conversation(user, agent_id, agent, idempotency_key=idempotency_key, source_type=source_type)
+        agent, admission = await self._admit_conversation(user, agent_id)
+        return await self._create_conversation(
+            user, agent_id, agent, idempotency_key=idempotency_key,
+            source_type=source_type, admission=admission,
+        )
 
     async def start_integration_conversation(
         self, user: UserContext, agent_id: str,
@@ -869,6 +879,7 @@ class AgentService:
         self, user: UserContext, agent_id: str, agent: dict[str, Any], *,
         idempotency_key: str | None = None,
         source_type: str = "agent",
+        admission: AgentConversationAdmission | None = None,
     ) -> dict[str, Any]:
         if agent.get("enabled") is False:
             raise APIError(
@@ -886,6 +897,8 @@ class AgentService:
         }
         if idempotency_key is not None:
             create_options["idempotency_key"] = idempotency_key
+        if admission is not None:
+            create_options["agent_admission"] = admission
         response = await self._platform._session_lifecycle.create_session(user, **create_options)
         session_id = str((response or {}).get("session_id") or "").strip()
         return {

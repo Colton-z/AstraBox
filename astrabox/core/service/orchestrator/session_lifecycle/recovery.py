@@ -32,7 +32,7 @@ from astrabox.core.service.orchestrator.session_lifecycle.startup import (
     runtime_initialization_metadata,
 )
 from astrabox.seams.persistence_coordination import RuntimeLockCheck
-from astrabox.seams.runtime_preparation import runtime_preparation_plan
+from astrabox.core.service.orchestrator.runtime.preparation import bound_runtime_preparation_plan
 from astrabox.seams.sandbox import SANDBOX_LIFECYCLE_PROBE_OK
 from astrabox.seams.sandbox_disposal import SandboxDestruction
 
@@ -210,7 +210,8 @@ class SessionRecovery:
         observed_runtime: Any,
     ) -> None:
         session_id = ownership.session_id
-        if runtime_preparation_plan(template).session_mcp_servers:
+        identity = session.get("runtime_identity") if isinstance(session.get("runtime_identity"), dict) else None
+        if bound_runtime_preparation_plan(template, identity).session_mcp_servers:
             if session.get("runtime_status") in ("working", "background"):
                 raise _GiveBack("session_busy", "Wait for the current response before reconnecting Session MCP servers")
             # Explicit recovery must cross the bound-material activation
@@ -221,7 +222,6 @@ class SessionRecovery:
                 await self._runtime_manager.evict_runtime_if_current(session_id, observed_runtime)
         session_kind = require_session_kind(session.get("session_kind"))
         permission_mode = str(session.get("permission_mode") or "").strip() or None
-        identity = session.get("runtime_identity") if isinstance(session.get("runtime_identity"), dict) else None
         plan = self._runtime_manager.plan_runtime_attach(
             agent_id=str(session.get("agent_id") or ""),
             session_id=session_id,

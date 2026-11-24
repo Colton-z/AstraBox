@@ -18,6 +18,8 @@ row's undestroyed ledger when its destruction is not confirmed.
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import asyncio
 import contextlib
 import uuid
@@ -209,7 +211,8 @@ class SessionStartup:
                         message="A ready runtime binding has no sandbox_id",
                         status_code=500,
                     )
-                await progress.drain()
+                with startup_stage(session_id, "startup_progress_drain"):
+                    await progress.drain()
                 ready = await self._publish_ready(
                     ownership,
                     {
@@ -359,15 +362,16 @@ class SessionStartup:
                     sandbox_id,
                 )
         try:
-            real_expires_at = await self._runtime_manager.get_sandbox_expires_at(sandbox_id)
-            expires_at = real_expires_at.isoformat() if real_expires_at is not None else None
-            await self._runtime_subjects.publish_runtime_ready(
-                session=target.session,
-                template=template,
-                sandbox_id=sandbox_id,
-                expires_at=expires_at,
-                runtime_identity=getattr(runtime, "runtime_identity", None),
-            )
+            with startup_stage(session_id, "runtime_subject_ready"):
+                real_expires_at = await self._runtime_manager.get_sandbox_expires_at(sandbox_id)
+                expires_at = real_expires_at.isoformat() if real_expires_at is not None else None
+                await self._runtime_subjects.publish_runtime_ready(
+                    session=target.session,
+                    template=template,
+                    sandbox_id=sandbox_id,
+                    expires_at=expires_at,
+                    runtime_identity=getattr(runtime, "runtime_identity", None),
+                )
         except Exception as exc:
             return await fail(
                 f"failed to publish runtime subject readiness: {exc}",
@@ -397,8 +401,10 @@ class SessionStartup:
             # session; shared subjects publish owner identity through their
             # provider instead.
             updates["runtime_identity"] = runtime_identity
-        updates.update(await runtime_initialization_metadata(session_id, runtime))
-        await progress.drain()
+        with startup_stage(session_id, "runtime_initialization_metadata"):
+            updates.update(await runtime_initialization_metadata(session_id, runtime))
+        with startup_stage(session_id, "startup_progress_drain"):
+            await progress.drain()
         ready = await self._publish_ready(ownership, updates)
         self._runtime_manager.forget_published_startup_allocation(session_id, sandbox_id=sandbox_id)
         if is_assistant_workspace_bootstrap(target.session):
@@ -412,7 +418,8 @@ class SessionStartup:
         self, ownership: RecoveryOwnership, updates: dict[str, Any]
     ) -> dict[str, Any]:
         """Write ``READY`` under the claim, announcing the runtime to every reader host."""
-        await ownership.update(updates, notify="reader")
+        with startup_stage(ownership.session_id, "session_ready_publish"):
+            await ownership.update(updates, notify="reader")
         latest = await self._sessions.get_session(ownership.session_id)
         return latest if isinstance(latest, dict) else {"session_id": ownership.session_id, **updates}
 

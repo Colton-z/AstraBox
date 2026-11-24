@@ -5,6 +5,7 @@ USER root
 ARG PLUGIN_CACHE_HASH
 ARG PLUGIN_SHA
 ARG PLUGIN_CACHE_TARGET
+RUN install -d -m0755 /opt/astrabox/session-mcp-fixture
 COPY --chmod=0644 tests/e2e/fixtures/session_mcp/personal_mcp.py /opt/astrabox/session-mcp-fixture/personal_mcp.py
 COPY --chmod=u=rwX,go=rX tests/e2e/fixtures/session_mcp/plugin ${PLUGIN_CACHE_TARGET}
 RUN test -n "$PLUGIN_CACHE_HASH" && test -n "$PLUGIN_SHA" && test -n "$PLUGIN_CACHE_TARGET" && \
