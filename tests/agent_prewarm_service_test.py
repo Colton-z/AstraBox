@@ -211,3 +211,39 @@ async def test_an_agent_edit_during_a_pass_leaves_no_client_pool_unnamed(
         if name != recorded and name not in supplier.retired
     ] == []
     assert await repo.list_retiring_client_pools(agent_id) == []
+
+
+async def test_a_failed_success_report_is_not_reported_as_a_failed_preparation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that prepared its capacity and cannot record so raises that error once.
+
+    Reported inside the preparation's error handling, the failed write was
+    recorded again as a preparation error: a second write to the record the
+    first could not reach, and a success relabelled as a failure.
+    """
+
+    from astrabox.core.service.orchestrator.agent import prepared_slots
+
+    class _ReportingRepo(_Repo):
+        def __init__(self, row: dict[str, Any]) -> None:
+            super().__init__(row)
+            self.reports: list[dict[str, Any]] = []
+
+        async def record_prepared_runtime(self, agent_id: str, **report: Any) -> None:
+            self.reports.append(report)
+            raise ConnectionError("the database did not answer")
+
+    async def _retire(agent_id: str, **_: Any) -> None:
+        return None
+
+    monkeypatch.setattr(prepared_slots, "retire_prepared_runtime", _retire)
+    repo = _ReportingRepo(
+        {"agent_id": "agent-1", "version": 3, "_prewarm_revision": 7, "enabled": False}
+    )
+    service = _service(repo, SimpleNamespace(agent_id="agent-1"))
+
+    with pytest.raises(ConnectionError, match="did not answer"):
+        await service._reconcile_agent_runtime("agent-1")
+
+    assert repo.reports == [{"version": 3, "prewarm_revision": 7, "generation": None}]
