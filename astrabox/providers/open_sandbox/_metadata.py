@@ -9,15 +9,36 @@ import uuid
 
 _LABEL_VALUE_RE = re.compile(r"^[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?$")
 _LABEL_VALUE_MAX_LENGTH = 63
-_CLIENT_POOL_SESSION_RE = re.compile(r"^client-pool-[0-9a-f]{12}-[0-9a-f]{24}$")
+_CLIENT_POOL_SESSION_RE = re.compile(r"^client-pool-(?P<pool>[0-9a-f]{12})-[0-9a-f]{24}$")
+
+
+def client_pool_tag(pool_name: str) -> str:
+    """The digest of ``pool_name`` a member's identity carries in place of the name.
+
+    A pool name need not fit a label value beside a unique suffix; twelve hex
+    characters of its SHA-256 do.
+    """
+
+    return hashlib.sha256(pool_name.encode("utf-8")).hexdigest()[:12]
+
+
+def client_pool_tag_of(session_id: str) -> str | None:
+    """The :func:`client_pool_tag` of the pool a member identity belongs to, or None."""
+
+    match = _CLIENT_POOL_SESSION_RE.fullmatch(session_id)
+    return match.group("pool") if match is not None else None
 
 
 def is_client_pool_identity(session_id: str, assignment_id: str) -> bool:
     """Recognize the provider's member identity until platform adoption.
 
     The identity covers creation, idle inventory, and acquisition before the
-    platform publishes its owner. The SDK controls retirement in all three
-    states; an empty idle snapshot alone does not transfer that authority.
+    platform publishes its owner. While the platform records the member's
+    pool, the SDK controls retirement in all three states; an empty idle
+    snapshot alone does not transfer that authority. A member of a pool the
+    platform has stopped recording is never handed out again, and the
+    ownerless reap destroys it
+    (:meth:`~.sandbox.OpenSandboxSandboxProvider.unclaimed_sandbox_refusal`).
     """
 
     if _CLIENT_POOL_SESSION_RE.fullmatch(session_id) is None:

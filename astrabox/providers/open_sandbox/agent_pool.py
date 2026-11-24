@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import os
 import socket
 import threading
@@ -38,6 +37,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.providers.open_sandbox import _config
+from astrabox.providers.open_sandbox._metadata import client_pool_tag
 from astrabox.providers.open_sandbox.execd_access import (
     execd_access_headers,
     execd_access_required,
@@ -187,8 +187,7 @@ def _member_sandbox_factory(transport: Any) -> type[_MemberSandbox]:
 def _client_pool_session_id(pool_name: str) -> str:
     """Return a unique synthetic session id valid as a Kubernetes label value."""
 
-    pool_hash = hashlib.sha256(pool_name.encode("utf-8")).hexdigest()[:12]
-    return f"client-pool-{pool_hash}-{uuid4().hex[:24]}"
+    return f"client-pool-{client_pool_tag(pool_name)}-{uuid4().hex[:24]}"
 
 
 def _pool_member(spec: SandboxClientPoolSpec) -> SandboxClientPoolMember:
@@ -619,8 +618,16 @@ class OpenSandboxClientPoolRegistry:
     async def retire(self, pool_name: str) -> None:
         """Fence a namespace and destroy its idle members.
 
-        A member whose create finished but never reached the idle inventory is
-        not in the namespace; it expires with the pool's idle lease.
+        Returns once the SDK has fenced the namespace and drained its idle
+        inventory, and raises when it could not, so the platform keeps the pool
+        recorded and retries. The SDK removes a member's id from shared state
+        before destroying the member and only logs a destruction that fails;
+        a later call finds the namespace destroyed and reaches no member. That
+        member, a member whose create finished after the fence, and one whose
+        process took it from the inventory and exited before destroying it are
+        outside the namespace. The ownerless reap destroys each of them once
+        the platform stops recording the pool
+        (:meth:`~.sandbox.OpenSandboxSandboxProvider.unclaimed_sandbox_refusal`).
         """
 
         name = str(pool_name or "").strip()
@@ -657,9 +664,21 @@ class OpenSandboxClientPoolRegistry:
         except Exception as exc:
             raise _pool_unavailable(name, "destroy its namespace", exc) from exc
 
+        unconfirmed = result.drained_idle_count - result.killed_idle_count
+        if unconfirmed:
+            logger.warning(
+                "OpenSandbox client pool retired with idle members whose destruction "
+                "failed: pool=%s unconfirmed=%d (opensandbox.pool_manager logs each "
+                "sandbox_id); the ownerless reap destroys them once the pool is no "
+                "longer recorded",
+                name,
+                unconfirmed,
+            )
         logger.info(
-            "OpenSandbox client pool retired: pool=%s idle_killed=%s tombstone_s=%d",
+            "OpenSandbox client pool retired: pool=%s idle_drained=%s idle_killed=%s "
+            "tombstone_s=%d",
             name,
+            result.drained_idle_count,
             result.killed_idle_count,
             int(_POOL_TOMBSTONE_TTL.total_seconds()),
         )

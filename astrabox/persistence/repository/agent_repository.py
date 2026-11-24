@@ -49,6 +49,7 @@ from sqlalchemy import (
     or_,
     select,
     true,
+    union,
     update,
 )
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -1986,6 +1987,29 @@ class AgentRepository:
                 )
             )
         ) == 1
+
+    async def list_client_pool_names(self, *, backend: str) -> frozenset[str]:
+        """Every client pool this Environment records on ``backend``, deleted Agents' included.
+
+        Each Agent's current pool and every displaced one not yet retired, read
+        in one statement. A pool is recorded before anything starts it and
+        stays recorded until its retirement returns, so the platform acquires
+        from no pool outside this set.
+        """
+        rows = await fetch_all(
+            union(
+                select(_RUNTIMES.c.client_pool_name.label("pool_name")).where(
+                    _RUNTIMES.c.environment_name == self.environment_name,
+                    _RUNTIMES.c.client_pool_backend == backend,
+                    _RUNTIMES.c.client_pool_name.is_not(None),
+                ),
+                select(_RETIRING.c.pool_name).where(
+                    _RETIRING.c.environment_name == self.environment_name,
+                    _RETIRING.c.backend == backend,
+                ),
+            )
+        )
+        return frozenset(str(row["pool_name"]) for row in rows)
 
     async def request_prewarm_refresh(
         self,
