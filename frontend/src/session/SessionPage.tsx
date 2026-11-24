@@ -238,13 +238,20 @@ function SessionPageReady({
     t,
   });
   // Runtime startup/recovery and prerequisite-related refusals ask the gate
-  // again. Ordinary response activity does not invalidate this status read.
+  // again, except a start that binds a new box with a serving runtime, which
+  // checked the prerequisites itself (see useSessionUserAction). Ordinary response
+  // activity does not invalidate this status read.
   const userActionInvalidation = useMemo(() => JSON.stringify([
     session.state === 'CREATING', session.runtime_unavailable === true, session.sandbox_id ?? null,
     ...[...chat.unsent].filter(([, entry]) => entry.userAction).map(([id]) => id),
     ...messages.filter((message) => inputFailure(message)?.user_action).map((message) => message.id),
   ]), [session.state, session.runtime_unavailable, session.sandbox_id, chat.unsent, messages]);
-  const prerequisite = useSessionUserAction(sessionId, session.user_id ?? '', userActionInvalidation, !isTerminated);
+  const prerequisite = useSessionUserAction(sessionId, session.user_id ?? '', userActionInvalidation, !isTerminated, {
+    starting: session.state === 'CREATING',
+    serving: !isTerminated && session.state !== 'RECOVERY_REQUIRED'
+      && session.runtime_unavailable !== true && Boolean(session.sandbox_id),
+    sandboxId: session.sandbox_id ?? null,
+  });
   const composerCanSend = prerequisite.ready && canSend;
 
   // ── Composer input (draft, slash commands, history, keydown) ─
