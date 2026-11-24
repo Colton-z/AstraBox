@@ -35,6 +35,7 @@ from astrabox.core.service.orchestrator.runtime.runtime_profile import (
     resolve_sandbox_permission_level,
     resolve_sandbox_tenancy,
 )
+from astrabox.seams.model import describe_model_access
 from astrabox.seams.sandbox import (
     SANDBOX_TENANCY_CONVERSATION,
     sandbox_for_name,
@@ -126,8 +127,8 @@ async def runtime_generations(
             message="runtime preparation requires an Agent id and engine kind",
             status_code=500,
         )
-    model_access = runtime_manager.resolve_model_access(
-        dict(_value(template, "model_config", {}) or {})
+    model_access = await describe_model_access(
+        runtime_manager.resolve_model_access(dict(_value(template, "model_config", {}) or {}))
     )
     adapter = get_engine_adapter(engine_kind)
     request = adapter.sandbox_request(template=template, model_access=model_access)
@@ -175,6 +176,9 @@ async def runtime_generations(
             "provider": integration.name if integration is not None else None,
             "session_bound": runtime_preparation_plan(template).session_bound,
             "model_credential_delivery": runtime_preparation_plan(template).model_credential_delivery,
+            "session_mcp_servers": [
+                [ref.plugin, ref.name] for ref in runtime_preparation_plan(template).session_mcp_servers
+            ],
         },
         "agent_id": agent_id,
         "prewarm_revision": _value(template, "prewarm_revision"),

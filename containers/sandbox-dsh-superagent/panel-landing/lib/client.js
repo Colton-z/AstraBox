@@ -18,8 +18,23 @@ window.__ModuleLoader__.load({ id: "@astrabox/dsh-panel-landing", factory: (requ
 	const INTERVAL_MS = 50;
 	// Live composition can apply the plugin again; only the page's first load lands.
 	let landed = false;
-	exports.inject = ["layout", "locale"];
+	exports.inject = ["layout", "locale", "uiWorkspace"];
 	exports.apply = (ctx) => {
+		ctx.effect(() => {
+			const workspace = ctx.uiWorkspace;
+			const startSession = workspace.startSession;
+			function startOrdinarySession(workspaceId, options) {
+				// DSH can reuse a blank from any preset if none is requested.
+				// Keep the bundle's blank router Session reserved for its own work.
+				return startSession.call(workspace, workspaceId, {
+					...options, agentPreset: options?.agentPreset ?? "standard",
+				});
+			}
+			workspace.startSession = startOrdinarySession;
+			return () => {
+				if (workspace.startSession === startOrdinarySession) workspace.startSession = startSession;
+			};
+		});
 		if (landed) return;
 		landed = true;
 		let wanted = "";

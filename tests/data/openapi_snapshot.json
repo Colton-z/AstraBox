@@ -3626,6 +3626,17 @@
               }
             ]
           },
+          "last_user_activity_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last User Activity At"
+          },
           "mcp_connections": {
             "items": {},
             "title": "Mcp Connections",
@@ -5306,7 +5317,7 @@
       },
       "AgentRuntimeProfileOption": {
         "additionalProperties": true,
-        "description": "One RuntimeProfile an Agent author may choose, without its secrets.",
+        "description": "One RuntimeProfile an Agent author or Assistant owner may choose, without its secrets.",
         "properties": {
           "display_name": {
             "title": "Display Name",
@@ -5349,6 +5360,22 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "permission_modes": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Permission Modes",
+            "type": "array"
+          },
+          "supported_session_kinds": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Supported Session Kinds",
+            "type": "array"
           }
         },
         "required": [
@@ -5376,6 +5403,247 @@
           "agents"
         ],
         "title": "AgentTag",
+        "type": "object"
+      },
+      "AgentVersionChange": {
+        "additionalProperties": false,
+        "description": "One value that differs between two versions.\n\n``path`` leads to the value from the authored field's name, descending into\nobjects. ``restorable`` says whether restoring a version writes the field.",
+        "properties": {
+          "after": {
+            "title": "After"
+          },
+          "before": {
+            "title": "Before"
+          },
+          "path": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Path",
+            "type": "array"
+          },
+          "restorable": {
+            "title": "Restorable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "path",
+          "restorable"
+        ],
+        "title": "AgentVersionChange",
+        "type": "object"
+      },
+      "AgentVersionChanges": {
+        "additionalProperties": false,
+        "description": "What ``version`` holds that ``base_version`` does not.\n\n``base_version`` is ``null``, with no changes, when ``version`` is the\noldest the Agent kept and no base was named.",
+        "properties": {
+          "base_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Version"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/AgentVersionChange"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "changes"
+        ],
+        "title": "AgentVersionChanges",
+        "type": "object"
+      },
+      "AgentVersionDetail": {
+        "additionalProperties": false,
+        "description": "One version with every authored field it stored, by name.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "author_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author User Id"
+          },
+          "changed_fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed Fields"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "definition": {
+            "additionalProperties": true,
+            "title": "Definition",
+            "type": "object"
+          },
+          "operation": {
+            "enum": [
+              "create",
+              "update",
+              "restore",
+              "baseline"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "restored_from_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restored From Version"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "version",
+          "operation",
+          "created_at",
+          "definition"
+        ],
+        "title": "AgentVersionDetail",
+        "type": "object"
+      },
+      "AgentVersionPage": {
+        "additionalProperties": false,
+        "description": "One page of an Agent's versions, newest first.\n\n``current_version`` is the Agent's version now. Pass the last version of a\npage as ``before`` to read the next one while ``has_more`` is true.",
+        "properties": {
+          "current_version": {
+            "title": "Current Version",
+            "type": "integer"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/AgentVersionRecord"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "current_version",
+          "versions",
+          "has_more"
+        ],
+        "title": "AgentVersionPage",
+        "type": "object"
+      },
+      "AgentVersionRecord": {
+        "additionalProperties": false,
+        "description": "One version of an Agent's definition, without the definition.\n\n``operation`` is ``create``, ``update``, ``restore`` (with the version it\nreapplied in ``restored_from_version``) or ``baseline``: the definition the\nAgent had when version history began, whose earlier versions were not kept.\n``changed_fields`` names the authored fields that differ from the version\nbefore it, and is present on the version list only.",
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "author_user_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Author User Id"
+          },
+          "changed_fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed Fields"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "operation": {
+            "enum": [
+              "create",
+              "update",
+              "restore",
+              "baseline"
+            ],
+            "title": "Operation",
+            "type": "string"
+          },
+          "restored_from_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Restored From Version"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "version",
+          "operation",
+          "created_at"
+        ],
+        "title": "AgentVersionRecord",
         "type": "object"
       },
       "ApiEnvelope_AdminApiWorkspaceResult_": {
@@ -6146,6 +6414,72 @@
           "data"
         ],
         "title": "ApiEnvelope[AgentRuntimeProfileModels]",
+        "type": "object"
+      },
+      "ApiEnvelope_AgentVersionChanges_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentVersionChanges"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentVersionChanges]",
+        "type": "object"
+      },
+      "ApiEnvelope_AgentVersionDetail_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentVersionDetail"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentVersionDetail]",
+        "type": "object"
+      },
+      "ApiEnvelope_AgentVersionPage_": {
+        "properties": {
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/AgentVersionPage"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "data"
+        ],
+        "title": "ApiEnvelope[AgentVersionPage]",
         "type": "object"
       },
       "ApiEnvelope_ArtifactAgentRun_": {
@@ -10621,7 +10955,7 @@
       },
       "AssistantRuntimeSurface": {
         "additionalProperties": false,
-        "description": "How the Assistant's runtime serves its owner.\n\n``conversations``: the console hosts its conversations. ``panel``: the\nruntime serves its own page, opened through ``GET .../panel``.",
+        "description": "How the Assistant's runtime serves its owner.\n\n``conversations``: the runtime supports AstraBox conversation integrations.\n``panel``: the runtime serves its own page, opened through ``GET .../panel``.",
         "properties": {
           "conversations": {
             "title": "Conversations",
@@ -10636,6 +10970,11 @@
           },
           "panel": {
             "title": "Panel",
+            "type": "boolean"
+          },
+          "panel_opens_in_new_tab": {
+            "default": false,
+            "title": "Panel Opens In New Tab",
             "type": "boolean"
           }
         },
@@ -18224,6 +18563,22 @@
         "title": "ResponseView",
         "type": "object"
       },
+      "RestoreAgentVersionRequest": {
+        "additionalProperties": false,
+        "description": "The Agent version the caller compared the restored one against.",
+        "properties": {
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "title": "RestoreAgentVersionRequest",
+        "type": "object"
+      },
       "RuntimeStateLoadRequest": {
         "additionalProperties": false,
         "properties": {
@@ -19386,6 +19741,17 @@
                 "type": "null"
               }
             ]
+          },
+          "last_user_activity_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last User Activity At"
           },
           "model_account_id": {
             "anyOf": [
@@ -20717,7 +21083,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.15",
+    "version": "0.1.16",
     "x-web-identity": "OidcSessionWebIdentityResolver"
   },
   "openapi": "3.1.0",
@@ -26558,6 +26924,137 @@
         "x-required-api-scope": "astrabox:admin"
       }
     },
+    "/api/v1/admin/sessions/{session_id}/child-runs": {
+      "get": {
+        "operationId": "admin_session_child_runs_api_v1_admin_sessions__session_id__child_runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionChildRunPage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session Child Runs",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
+    "/api/v1/admin/sessions/{session_id}/child-runs/{child_run_id}/messages": {
+      "get": {
+        "operationId": "admin_session_child_run_messages_api_v1_admin_sessions__session_id__child_runs__child_run_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "child_run_id",
+            "required": true,
+            "schema": {
+              "title": "Child Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ChildRunMessagePage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session Child Run Messages",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
     "/api/v1/admin/sessions/{session_id}/detail": {
       "get": {
         "operationId": "admin_session_detail_api_v1_admin_sessions__session_id__detail_get",
@@ -26675,6 +27172,176 @@
           }
         ],
         "summary": "Admin Evict Runtime",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
+    "/api/v1/admin/sessions/{session_id}/history-blocks": {
+      "get": {
+        "description": "Read the conversation of a managed session, starting with its newest messages.",
+        "operationId": "admin_session_history_blocks_api_v1_admin_sessions__session_id__history_blocks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionHistoryBlockPage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session History Blocks",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
+    "/api/v1/admin/sessions/{session_id}/history-blocks/{block_id}": {
+      "get": {
+        "description": "Read a managed session's folded process at the cursor it was shown with.",
+        "operationId": "admin_session_history_block_details_api_v1_admin_sessions__session_id__history_blocks__block_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "block_id",
+            "required": true,
+            "schema": {
+              "title": "Block Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": true,
+            "schema": {
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionHistoryBlockDetails_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session History Block Details",
         "tags": [
           "Admin"
         ],
@@ -27759,8 +28426,24 @@
     },
     "/api/v1/agent-configuration/runtime-profiles": {
       "get": {
-        "description": "Secret-free RuntimeProfile choices for the Agent form.",
+        "description": "Secret-free RuntimeProfile choices for the Agent and Assistant forms.",
         "operationId": "list_agent_configuration_runtime_profiles_api_v1_agent_configuration_runtime_profiles_get",
+        "parameters": [
+          {
+            "description": "The product being configured: agent_chat for an Agent, assistant_chat for an Assistant.",
+            "in": "query",
+            "name": "session_kind",
+            "required": false,
+            "schema": {
+              "default": "agent_chat",
+              "enum": [
+                "agent_chat",
+                "assistant_chat"
+              ],
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -30689,6 +31372,322 @@
           "Agents"
         ],
         "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/agents/{agent_id}/versions": {
+      "get": {
+        "description": "The Agent's versions, newest first, for a manager of the Agent.",
+        "operationId": "list_agent_versions_api_v1_agents__agent_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Versions per page.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Read the versions below this one.",
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentVersionPage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "List Agent Versions",
+        "tags": [
+          "Agents"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/agents/{agent_id}/versions/{version}": {
+      "get": {
+        "operationId": "get_agent_version_api_v1_agents__agent_id__versions__version__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentVersionDetail_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Get Agent Version",
+        "tags": [
+          "Agents"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/agents/{agent_id}/versions/{version}/changes": {
+      "get": {
+        "description": "What a version changed, value by value.\n\nNaming the Agent's current version as ``base`` shows what restoring\n``version`` would change.",
+        "operationId": "get_agent_version_changes_api_v1_agents__agent_id__versions__version__changes_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "The version to compare against; the version before this one when omitted.",
+            "in": "query",
+            "name": "base",
+            "required": false,
+            "schema": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentVersionChanges_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Get Agent Version Changes",
+        "tags": [
+          "Agents"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/agents/{agent_id}/versions/{version}/restore": {
+      "post": {
+        "description": "Save the Agent with the editable fields ``version`` stored.\n\nThe body names the Agent version the caller compared against; a change\nmade since answers ``AGENT_VERSION_CONFLICT`` and writes nothing.",
+        "operationId": "restore_agent_version_api_v1_agents__agent_id__versions__version__restore_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "title": "Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version",
+            "required": true,
+            "schema": {
+              "title": "Version",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreAgentVersionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_AgentRecord_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Restore Agent Version",
+        "tags": [
+          "Agents"
+        ],
+        "x-required-api-scope": "astrabox:write"
       }
     },
     "/api/v1/agents/{agent_id}/wake": {
@@ -36937,6 +37936,136 @@
           "Assistant"
         ],
         "x-required-api-scope": "astrabox:read"
+      }
+    },
+    "/api/v1/assistants/{assistant_id}/user-action": {
+      "get": {
+        "operationId": "read_assistant_user_action_api_v1_assistants__assistant_id__user_action_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionUserActionView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Read Assistant User Action",
+        "tags": [
+          "Assistant"
+        ],
+        "x-required-api-scope": "astrabox:read"
+      },
+      "post": {
+        "operationId": "perform_assistant_user_action_api_v1_assistants__assistant_id__user_action_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "assistant_id",
+            "required": true,
+            "schema": {
+              "title": "Assistant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PerformUserAction"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionUserActionView_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Perform Assistant User Action",
+        "tags": [
+          "Assistant"
+        ],
+        "x-required-api-scope": "astrabox:write"
       }
     },
     "/api/v1/assistants/{assistant_id}/workspace": {

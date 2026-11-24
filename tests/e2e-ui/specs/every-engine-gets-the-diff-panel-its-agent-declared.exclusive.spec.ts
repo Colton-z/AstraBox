@@ -89,7 +89,7 @@ async function expectCompletedToolCard(page: Page, marker: string): Promise<void
     const header = card.locator('[data-slot="collapsible-trigger"]').first();
     const wasOpen = await header.getAttribute('aria-expanded') === 'true';
     if (!wasOpen) await header.click();
-    const panel = card.locator('[data-slot="collapsible-content"]');
+    const panel = card.locator('[data-slot="collapsible-panel"]');
     await expect(panel).toBeVisible();
     // A file-change card shows the write as plain diff lines. A generic card
     // shows its Parameters in a CodeBlock, which uses content-visibility:auto:

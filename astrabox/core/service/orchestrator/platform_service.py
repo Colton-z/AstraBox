@@ -43,6 +43,7 @@ from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.service.orchestrator.agent_access import is_platform_admin
+from astrabox.core.service.orchestrator.engine.capabilities import SessionKind
 from astrabox.core.service.orchestrator.vault_service import VaultService
 from astrabox.seams.sandbox import sandbox_for_template
 from astrabox.core.service.orchestrator.assistant.assistant_workspace_service import (
@@ -641,8 +642,10 @@ class AgentPlatformService:
     async def list_runtime_profile_configs(self, user: UserContext) -> list[dict[str, Any]]:
         return await self._agent_config.list_runtime_profile_configs(user)
 
-    async def list_agent_runtime_profile_options(self) -> list[dict[str, Any]]:
-        return await self._agent_config.list_agent_runtime_profile_options()
+    async def list_runtime_profile_options(
+        self, session_kind: SessionKind
+    ) -> list[dict[str, Any]]:
+        return await self._agent_config.list_runtime_profile_options(session_kind)
 
     async def delete_runtime_profile_config(
         self, user: UserContext, name: str,
@@ -834,16 +837,20 @@ class AgentPlatformService:
         allow_download: bool = False,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_share_service.create_session_share(
+        share = await self._session_share_service.create_session_share(
             user,
             session_id,
             expires_in_seconds=expires_in_seconds,
             allow_download=allow_download,
         )
+        await self._sessions_repo.record_user_activity(session_id)
+        return share
 
     async def revoke_session_share(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_share_service.revoke_session_share(user, session_id)
+        revoked = await self._session_share_service.revoke_session_share(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return revoked
 
     async def get_session_share(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
@@ -886,11 +893,13 @@ class AgentPlatformService:
         permission_mode: str,
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.update_session_permission_mode(
+        updated = await self._session_lifecycle.update_session_permission_mode(
             user,
             session_id,
             permission_mode,
         )
+        await self._sessions_repo.record_user_activity(session_id)
+        return updated
 
     async def must_own_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
@@ -916,8 +925,8 @@ class AgentPlatformService:
         """Set the title the owner chose; title generation never replaces it.
 
         The title is one line: runs of whitespace, line breaks included,
-        become one space. Renaming is not activity, so the list keeps its
-        order, and the conversation's open pages reread it from the notice.
+        become one space. Renaming is the owner's action, so the conversation
+        moves first in their list; its open pages reread it from the notice.
         """
 
         await self.ensure_bootstrap()
@@ -940,6 +949,7 @@ class AgentPlatformService:
         )
         if not renamed:
             raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        await self._sessions_repo.record_user_activity(session_id)
         return {"session_id": session_id, "title": clean}
 
     async def archive_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
@@ -948,15 +958,21 @@ class AgentPlatformService:
 
     async def terminate_sandbox(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.terminate_sandbox(user, session_id)
+        terminated = await self._session_lifecycle.terminate_sandbox(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return terminated
 
     async def end_conversation(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.end_conversation(user, session_id)
+        ended = await self._session_lifecycle.end_conversation(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return ended
 
     async def recover_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
-        return await self._session_lifecycle.recover_session(user, session_id)
+        recovered = await self._session_lifecycle.recover_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
+        return recovered
 
     async def get_webshell_url(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self.ensure_bootstrap()
@@ -989,6 +1005,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.upload_files(
             user,
             session_id,
@@ -1005,6 +1022,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.create_directory(
             user,
             session_id,
@@ -1021,6 +1039,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.move_path(
             user,
             session_id,
@@ -1037,6 +1056,7 @@ class AgentPlatformService:
     ) -> dict[str, Any]:
         await self.ensure_bootstrap()
         session = await self._session_service.must_get_owned_session(user, session_id)
+        await self._sessions_repo.record_user_activity(session_id)
         return await self._session_file_service.delete_paths(
             user,
             session_id,
@@ -1418,6 +1438,28 @@ class AgentPlatformService:
 
     async def admin_get_session_detail(self, user: UserContext, session_id: str) -> dict[str, Any]:
         return await self._admin_service.admin_get_session_detail(user, session_id)
+
+    async def admin_get_history_blocks(
+        self, user: UserContext, session_id: str, *, before: str | None, limit: int
+    ) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.history_blocks_for(session_id, before=before, limit=limit, shared=False)
+
+    async def admin_get_history_block_details(
+        self, user: UserContext, session_id: str, block_id: str, *, cursor: str
+    ) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.history_block_details_for(session_id, block_id, cursor=cursor, shared=False)
+
+    async def admin_list_child_runs(self, user: UserContext, session_id: str) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.child_runs_for(session_id)
+
+    async def admin_get_child_run_messages(
+        self, user: UserContext, session_id: str, child_run_id: str
+    ) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.child_run_messages_for(session_id, child_run_id)
 
     async def admin_get_session_trace(
         self,

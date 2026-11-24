@@ -192,6 +192,18 @@ unclaimed pool inventory. Already claimed boxes remain with their Sessions.
 For shared tenancy, injectable configuration changes replace the waiting engine
 slot without replacing the resident box.
 
+Replacing or disabling an Agent's prepared capacity, or deleting the Agent,
+retires its pool: the SDK's pool manager fences the pool so it hands out no
+more boxes, then destroys its idle boxes. The pool manager removes each box
+from the pool's shared state before destroying it, so retiring the pool again
+does not retry a box the lifecycle server failed to destroy; the retirement log
+reports how many there were. The ownerless sweep destroys such a box, and any
+other box of a retired pool that no Session or Agent took, such as one whose
+retiring process exited between removing and destroying it. It waits until the
+box was last renewed at least the sweep's grace (ten minutes) ago, which covers
+a Session that took a box just before the retirement and is still recording
+itself as its owner.
+
 The platform chooses the Agent version, persistent workspace mount,
 credentials, and startup requirements. OpenSandbox supplies sandbox lifecycle and
 pool machinery; it does not participate in AstraBox's user/session workflow.
@@ -747,20 +759,28 @@ sandbox needs its own endpoint before it receives this exemption.
 
 ### Configure a browser-facing Kubernetes Gateway
 
-Install the official OpenSandbox ingress Gateway in `opensandbox-system`, with
+Install the OpenSandbox ingress Gateway chart in `opensandbox-system` with
+AstraBox's gateway image, `ghcr.io/colton-z/astrabox-ingress` at the release's
+version, and with
 `gateway.dataplaneNamespace=opensandbox`, `gateway.gatewayRouteMode=uri`, and
 `gateway.secureAccess.existingSecret` naming a Secret in that namespace. Its
 `keys` entry contains `a=<base64-encoded-secret>`; key ID `a` must match the
 server configuration. Keep the Secret and the lifecycle server's key private.
 The [official chart](https://github.com/opensandbox-group/OpenSandbox/tree/release-1.2.1/manifests/charts/ingress-gateway)
 at tag `release-1.2.1` has chart and image version 1.2.1, the release of the
-bundled lifecycle server. With that checkout and a provisioned signing Secret,
-install it using:
+bundled lifecycle server. AstraBox's image is that gateway with one change: it
+keeps a request's body readable while the response is written. With the
+official image, a command's streamed answer through the Gateway is cut
+intermittently, and an isolated session ends with it
+([`containers/ingress/README.md`](https://github.com/colton-z/astrabox/blob/main/containers/ingress/README.md)).
+With that checkout and a provisioned signing Secret, install it using:
 
 ```bash
 helm upgrade --install opensandbox-ingress \
   ./manifests/charts/ingress-gateway \
   --namespace opensandbox-system \
+  --set gateway.image.repository=ghcr.io/colton-z/astrabox-ingress \
+  --set gateway.image.tag=<version> \
   --set gateway.gatewayRouteMode=uri \
   --set gateway.secureAccess.existingSecret=opensandbox-ingress-signing
 ```

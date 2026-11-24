@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import delete, func, insert, literal, select, update
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.persistence.repository.agent_repository import record_changed_definitions
 from astrabox.persistence.sql import UniqueViolation, fetch_all, to_iso, transaction
 from astrabox.persistence.sql.models.agents import Agent, AgentCategory, AgentCategoryLink
 
@@ -111,27 +112,36 @@ class AgentCategoryRepository:
 
         return await transaction(place)
 
-    async def delete(self, category_id: str) -> int | None:
+    async def delete(self, category_id: str, *, deleted_by: str | None) -> int | None:
         """Delete a category and take it off every Agent; ``None`` when it does not exist.
 
         Returns how many Agents it was taken off. Each of them is an authored
-        change, so their versions move in the same transaction: an edit
-        prepared before the delete cannot write the category back.
+        change by ``deleted_by``, so their versions move and are recorded in
+        the same transaction: an edit prepared before the delete cannot write
+        the category back.
         """
 
         async def remove(conn: AsyncConnection) -> int | None:
             linked = select(_LINKS.c.agent_id).where(_LINKS.c.category_id == category_id)
-            unbound = await conn.execute(
-                update(_AGENTS)
+            unbound = (await conn.execute(
+                select(_AGENTS.c.agent_id)
                 .where(_AGENTS.c.agent_id.in_(linked), _AGENTS.c.state != "DELETED")
-                .values(version=_AGENTS.c.version + 1)
-            )
+                .order_by(_AGENTS.c.agent_id)
+                .with_for_update()
+            )).scalars().all()
+            if unbound:
+                await conn.execute(
+                    update(_AGENTS)
+                    .where(_AGENTS.c.agent_id.in_(unbound))
+                    .values(version=_AGENTS.c.version + 1)
+                )
             removed = await conn.execute(
                 delete(_CATEGORIES).where(_CATEGORIES.c.category_id == category_id)
             )
             if removed.rowcount != 1:
                 return None
-            return int(unbound.rowcount)
+            await record_changed_definitions(conn, unbound, author_user_id=deleted_by)
+            return len(unbound)
 
         return await transaction(remove)
 

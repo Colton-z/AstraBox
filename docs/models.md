@@ -146,7 +146,7 @@ router_settings:
 the original name before it falls back, which adds a few seconds to that
 request.
 
-This behaviour was measured on the bundled LiteLLM (1.99.0) for the Responses
+This behaviour was measured on LiteLLM 1.99.0 for the Responses
 API (`/v1/responses`, streaming and not), which Codex uses: with one of two
 accounts answering 429, every request succeeded and the limited account
 received one request per cooldown period. Entries with an exact `model_name`
@@ -230,6 +230,63 @@ Changing the Agent's model or its RuntimeProfile does not reconfigure an active
 runtime in place. AstraBox resolves the current settings the next time it first
 prepares or rebuilds that Session runtime.
 
+## Describe the model to the Agent programs {#model-description}
+
+Each Agent program sizes its work from what it knows about the model: it
+compacts a conversation against the context window, caps each response, sends
+images only to a model that reads them, and offers the reasoning efforts the
+model accepts. A gateway route name tells it none of this. When AstraBox
+prepares a runtime, it asks the model connection what it states about the
+selected model and writes those facts into the program's own model
+configuration.
+
+| Fact | LiteLLM `/model_group/info` field | Agent programs |
+|---|---|---|
+| Context window | `max_input_tokens` | Claude Code, Codex, Pi, DeepSeek Harness, Hermes |
+| Output limit | `max_output_tokens` | Claude Code, Pi, DeepSeek Harness |
+| Image input | `supports_vision` | Codex, Pi, DeepSeek Harness, Hermes |
+| Reasoning efforts | `supported_reasoning_efforts` | Codex, Pi, DeepSeek Harness |
+
+A fact the connection does not state is left out, and the program applies its
+own default. AstraBox does not judge a model's capabilities itself: a request
+the model or the program refuses fails with that program's own error. A model
+that a program describes in its own catalog, such as the DeepSeek models in
+DeepSeek Harness, keeps that program's description.
+
+LiteLLM answers from its model map. For a route the map does not describe,
+declare the facts in the route's `model_info`:
+
+```yaml
+model_list:
+  - model_name: "company-code-model"
+    litellm_params:
+      model: "openai/provider-model-id"
+      api_base: "https://models.example.com/v1"
+      api_key: os.environ/COMPANY_MODEL_API_KEY
+    model_info:
+      max_input_tokens: 200000
+      max_output_tokens: 32000
+      supports_vision: true
+      supported_reasoning_efforts: ["low", "medium", "high"]
+      supports_low_reasoning_effort: true
+```
+
+LiteLLM reports `supports_vision` as false for a model it does not describe,
+so such a route is described as text-only. `supported_reasoning_efforts` lists
+the levels the route accepts, and LiteLLM rounds a requested level to the
+nearest one listed. Declare the per-level flags as well
+(`supports_none_reasoning_effort`, `supports_minimal_reasoning_effort`,
+`supports_low_reasoning_effort`, `supports_xhigh_reasoning_effort`,
+`supports_max_reasoning_effort`): LiteLLM reads them before forwarding an
+effort on the Messages protocol. The bundled configuration declares the levels
+DeepSeek accepts on its DeepSeek routes.
+
+A model connection other than LiteLLM states these facts through the
+`describe_model` method of its model endpoint provider (entry-point group
+`astrabox.providers.model`); a provider that does not implement it states
+nothing, and each program uses its defaults. AstraBox reads the description
+each time it prepares a runtime.
+
 ## Keep model credentials outside the Agent program
 
 The bundled gateway holds upstream model-service keys. With protected
@@ -289,7 +346,7 @@ services:
       ASTRABOX_TITLE_MODEL_REQUEST_TIMEOUT_SECONDS: "60"
 ```
 
-RuntimeProfile values override application YAML. Restart the application after
+Environment variables override application YAML. Restart the application after
 changing application YAML, or recreate the server container after changing
 Compose environment values. The timeout must be positive and finite; invalid
 values fail settings validation.
@@ -445,7 +502,7 @@ Operators are responsible for the terms of the ChatGPT plans their members
 share.
 
 AstraBox reads a usage limit from Codex's report of the failed turn. Codex
-0.169 does not pass on OpenAI's code `subscription_sharing_usage_limit_exceeded`:
+0.171 does not pass on OpenAI's code `subscription_sharing_usage_limit_exceeded`:
 it reports any HTTP 429 from the model API that it does not recognise as
 `codexErrorInfo` `{"responseTooManyFailedAttempts": {"httpStatusCode": 429}}`.
 AstraBox counts that report, and Codex's own `usageLimitExceeded`, as the

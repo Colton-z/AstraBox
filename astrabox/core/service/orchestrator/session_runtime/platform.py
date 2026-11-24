@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import asyncio
 import dataclasses
 from collections.abc import Awaitable, Callable
@@ -24,9 +26,13 @@ from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.runtime import (
     RUNTIME_PROTOCOL_INCOMPATIBLE, ResponseEnded, RuntimeClient, RuntimeInput,
 )
-from astrabox.core.service.orchestrator.session_lifecycle.startup import runtime_initialization_metadata
+from astrabox.core.service.orchestrator.session_lifecycle.startup import (
+    record_runtime_observation,
+    runtime_engine_capabilities,
+)
 from astrabox.core.service.orchestrator.session_runtime.host import (
     ConnectedRuntime,
+    RuntimeAttachRefused,
     RuntimeEnded,
     RuntimeGone,
     RuntimeNotReady,
@@ -59,7 +65,12 @@ PREPARATION_TIMEOUT_S = 30.0
 FactConsumer = Callable[[str, FactBatch], Awaitable[None]]
 
 
-def _ended(session: dict[str, Any]) -> bool:
+def conversation_ended(session: dict[str, Any]) -> bool:
+    """Whether a Session takes no more input: archived, terminated or deleted.
+
+    Inputs sent to such a Session fail with ``CONVERSATION_ENDED``; a caller
+    that routes new input to a Session asks this before choosing it.
+    """
     return bool(session.get("archived_at")) or session.get("state") in (
         SessionState.TERMINATED.value, SessionState.DELETED.value,
     )
@@ -85,7 +96,7 @@ _START_FAILED = {
 def _attach_is_current(session: dict[str, Any], sandbox_id: str) -> bool:
     """Whether an attach made outside the runtime lock still describes the conversation."""
     return (
-        not _ended(session)
+        not conversation_ended(session)
         and session.get("state") == SessionState.READY.value
         and session.get("recovery_reason") != RUNTIME_PROTOCOL_INCOMPATIBLE
         and not session.get("sandbox_parked_at")
@@ -117,36 +128,43 @@ class PlatformRuntimeConnector:
         and to wake a parked box, and again to publish the attach. In between
         the conversation may be archived, ended or parked, or its box replaced;
         an attach that does not match the conversation by then is evicted, and
-        the reader does not receive it.
+        the reader does not receive it. The engine's optional init snapshot is
+        read by the connection's ``observe``, beside the reader, so neither the
+        lock nor the first input waits for it.
         """
         coordination = get_persistence().coordination
         async with coordination.runtime_lock(session_id):
             session = await self._attachable(session_id)
-        result = await self._ensure.ensure_runtime(session)
-        runtime = result.runtime
-        if runtime is None:
-            if result.sandbox_gone:
-                raise RuntimeGone(session_id, reason="sandbox_lost")
-            if result.delivery_changed:
-                raise RuntimeGone(session_id, reason="model_delivery_changed")
-            raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
+        with startup_stage(session_id, "reader_ensure_runtime"):
+            result = await self._ensure.ensure_runtime(session)
+            runtime = result.runtime
+            if runtime is None:
+                if result.sandbox_gone:
+                    raise RuntimeGone(session_id, reason="sandbox_lost")
+                if result.delivery_changed:
+                    raise RuntimeGone(session_id, reason="model_delivery_changed")
+                if result.refusal is not None:
+                    raise RuntimeAttachRefused(session_id, failure=result.refusal)
+                raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
         client = runtime.engine_client
         if not isinstance(client, RuntimeClient):
             raise TypeError(f"the {runtime.engine_kind} adapter does not serve the runtime contract")
-        async with coordination.runtime_lock(session_id) as check_lock:
+        async with coordination.runtime_lock(session_id):
             current = await self._sessions.get_session(session_id)
             attached = str(runtime.sandbox_id or "")
             if current is None or not _attach_is_current(current, attached):
                 await self._runtime_manager.evict_runtime_if_current(session_id, runtime)
-                if current is None or _ended(current):
+                if current is None or conversation_ended(current):
                     raise RuntimeEnded(session_id, failure=recorded_failure(current))
                 raise RuntimeNotReady(session_id)
-            initialization = await runtime_initialization_metadata(session_id, runtime)
-            await check_lock()
-            await self._sessions.update_session(
-                session_id, {"runtime_versions": initialization["runtime_versions"]},
-                touch_updated_at=False,
+            runtime_engine_capabilities(session_id, runtime)
+        generation = current.get("sandbox_generation")
+
+        async def observe() -> None:
+            await record_runtime_observation(
+                self._sessions, session_id, runtime, sandbox_generation=generation,
             )
+
         return ConnectedRuntime(
             client=client,
             sandbox_id=attached or str(current.get("sandbox_id") or ""),
@@ -154,12 +172,13 @@ class PlatformRuntimeConnector:
             runtime_identity=dict(runtime.runtime_identity or {}),
             engine_kind=str(runtime.engine_kind),
             refresh=runtime.prepare_engine_input,
+            observe=observe,
         )
 
     async def _attachable(self, session_id: str) -> dict[str, Any]:
         """The session as its runtime may be attached now, after waking a parked box for an input."""
         session = await self._sessions.get_session(session_id)
-        if session is None or _ended(session):
+        if session is None or conversation_ended(session):
             raise RuntimeEnded(session_id, failure=recorded_failure(session))
         if session.get("state") != SessionState.READY.value:
             raise RuntimeNotReady(session_id)

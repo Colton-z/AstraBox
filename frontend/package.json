@@ -9,15 +9,14 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.artifact-runtime.json && vite build && node artifact-runtime/build.mjs",
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.artifact-runtime.json && vite build && node artifact-runtime/build.mjs && node precompress.mjs",
     "test": "vitest run",
     "//gen:api": "The generator does not live here. openapi-typescript prints its output through the TypeScript COMPILER API (ts.factory), and this project is on typescript@7 — the Go port, whose npm package exports no compiler API at all, so `ts.factory` is undefined and the tool dies on import. Its peer bound of ^5.x is live, not stale. npm will not nest a conflicting PEER under the dependent, and turning peer resolution off tree-wide (legacy-peer-deps) would silence every future conflict too, so the generator is its own hermetic package on its own typescript@5: scripts/api-codegen. `make check-api-client` regenerates through it and fails on a byte of difference.",
     "gen:api": "npm --prefix ../scripts/api-codegen run gen",
-    "e2e": "playwright test -c ../e2e/playwright.config.ts",
-    "postinstall": "patch-package --error-on-fail"
+    "e2e": "playwright test -c ../e2e/playwright.config.ts"
   },
   "dependencies": {
-    "@ai-sdk/react": "^4.0.168",
+    "@ai-sdk/react": "^4.0.177",
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@fontsource-variable/geist-mono": "^5.3.0",
@@ -29,6 +28,8 @@
     "@streamdown/math": "^1.0.2",
     "@streamdown/mermaid": "^1.0.2",
     "@tailwindcss/browser": "4.3.5",
+    "@ui-sdk/core": "^0.1.0-beta.3",
+    "@ui-sdk/react": "^0.1.0-beta.3",
     "@xyflow/react": "^12.11.6",
     "ai": "^7.0.91",
     "ansi-to-react": "^6.2.6",
@@ -61,7 +62,6 @@
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^4.12.3",
     "react-router-dom": "^7.18.3",
-    "react-virtuoso": "4.18.13",
     "recharts": "3.10.1",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
@@ -90,12 +90,11 @@
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/three": "0.186.0",
-    "@vitejs/plugin-react": "^6.2.1",
+    "@vitejs/plugin-react": "^6.3.0",
     "jsdom": "^30.0.1",
-    "patch-package": "8.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
-    "vite": "^8.3.6",
+    "vite": "^8.3.8",
     "vitest": "^5.1.0"
   },
   "overrides": {

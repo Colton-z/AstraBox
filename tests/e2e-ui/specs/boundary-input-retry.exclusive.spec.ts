@@ -267,7 +267,8 @@ test('a persisted refusal survives a lost input receipt and its same-id retry', 
       data: { input_id: original.input_id, ...expectedFailure },
     }));
     await refusalHandled;
-    await expect(row.getByText(SENDING)).toBeVisible();
+    // The last message's sending state is the line that holds the reply's place.
+    await expect(page.getByTestId('response-pending')).toHaveText(SENDING);
     const stored = sessionInputRows(sessionId).find((input) => input.input_id === original.input_id)!;
     expect(stored.state).toBe('failed');
     expect(stored.admitted_at, 'preparation refused the input before native admission').toBeNull();

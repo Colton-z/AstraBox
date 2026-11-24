@@ -240,6 +240,7 @@ Anthropic 兼容端点，优先使用它。
 | `ASTRABOX_INSTALL_DIR` | 安装目录，默认 `~/astrabox`。 |
 | `ASTRABOX_INSTALL_BUNDLE` | 已下载的 `astrabox-deploy-<version>.tar.gz` 路径，供无法访问 GitHub 的主机使用。 |
 | `ASTRABOX_IMAGE_PREFIX` | 保存同一批镜像的镜像仓库前缀，组件名会追加在其后，默认 `ghcr.io/colton-z/astrabox-`。 |
+| `ASTRABOX_INSTALL_PULL` | `always`（默认）每次运行都拉取该版本的镜像；`missing` 只拉取主机上还没有的镜像，用于已预装镜像的机器镜像，例如 [AstraBox 云镜像](cloud-images.md)。 |
 | `ASTRABOX_INSTALL_MODEL_PROVIDER` | `anthropic`、`deepseek`、`anthropic-compatible`、`openai-compatible` 或 `none`。 |
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | 模型服务的 API Key。 |
 | `ASTRABOX_INSTALL_MODEL_NAME` | 写入为 `ANTHROPIC_MODEL` 的模型 ID，全新安装用它创建内置 Agent。DeepSeek 默认为 `deepseek-flash`。 |
@@ -293,7 +294,8 @@ HTTPS 代理之后。只在本机登录时，两个 URL 都不要设置。
 
 每个发布版本都会推送下列镜像，并以版本号作为标签。安装脚本把该版本写入设置文件的
 `ASTRABOX_IMAGE_TAG`；未指定镜像的部署，其服务端、各 Agent 程序的沙箱和工作区挂载
-辅助程序都运行 `<ASTRABOX_IMAGE_PREFIX><component>:<ASTRABOX_IMAGE_TAG>`。
+辅助程序都运行 `<ASTRABOX_IMAGE_PREFIX><component>:<ASTRABOX_IMAGE_TAG>`。Kubernetes 网关模式的部署还运行
+ingress Gateway 镜像（[配置面向浏览器的 Kubernetes Gateway](providers/opensandbox.md#configure-a-browser-facing-kubernetes-gateway)）。
 
 | 镜像 | 架构 |
 |---|---|
@@ -303,6 +305,7 @@ HTTPS 代理之后。只在本机登录时，两个 URL 都不要设置。
 | `ghcr.io/colton-z/astrabox-sandbox-deepseek-harness` | amd64、arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-hermes` | amd64、arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-pi` | amd64、arm64 |
+| `ghcr.io/colton-z/astrabox-ingress` | amd64、arm64 |
 | `ghcr.io/colton-z/astrabox-workspace-mounter` | amd64 |
 
 工作区挂载辅助程序只有 amd64：它安装的 mergerfs 发布包只面向该架构。

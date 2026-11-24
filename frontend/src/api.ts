@@ -48,6 +48,8 @@ import type {
   AgentFavorite,
   AgentListPage,
   AgentTag,
+  AgentVersionChanges,
+  AgentVersionPage,
   DeletedAgentCategory,
   ListPageQuery,
   AgentPreparedRuntimeStatus,
@@ -934,6 +936,21 @@ export async function listAgentRuntimeProfiles(): Promise<RuntimeProfileConfig[]
   );
 }
 
+/**
+ * Secret-free RuntimeProfile choices for an Assistant, available to any
+ * signed-in user: only enabled profiles whose installed program serves
+ * Assistants.
+ */
+export async function listAssistantRuntimeProfiles(): Promise<RuntimeProfileConfig[]> {
+  return expectList<RuntimeProfileConfig>(
+    await send((wire) => client.GET('/api/v1/agent-configuration/runtime-profiles', {
+      ...wire,
+      params: { query: { session_kind: 'assistant_chat' } },
+    })),
+    '/agent-configuration/runtime-profiles',
+  );
+}
+
 /** Model routing ids advertised by the selected RuntimeProfile's gateway. */
 export async function listAgentRuntimeProfileModels(runtimeProfileName: string): Promise<string[]> {
   if (!runtimeProfileName.trim()) return [];
@@ -1103,6 +1120,55 @@ export async function setAgentExtensions(
     params: { path: { agent_id: agentId } },
     body: selection,
   })) as Promise<AgentExtensionCatalog>;
+}
+
+/**
+ * One page of an Agent's versions, newest first, for a manager of the Agent.
+ * Pass a page's last version as `before` to read the page after it.
+ */
+export async function listAgentVersions(
+  agentId: string,
+  query: { limit?: number; before?: number } = {},
+): Promise<AgentVersionPage> {
+  return send((wire) => client.GET('/api/v1/agents/{agent_id}/versions', {
+    ...wire,
+    params: { path: { agent_id: agentId }, query },
+  }));
+}
+
+/**
+ * Each value `version` holds that `base` does not; without `base`, what
+ * `version` changed from the version before it. Naming the Agent's current
+ * version as `base` shows what restoring `version` would change.
+ */
+export async function getAgentVersionChanges(
+  agentId: string,
+  version: number,
+  base?: number,
+): Promise<AgentVersionChanges> {
+  return send((wire) => client.GET('/api/v1/agents/{agent_id}/versions/{version}/changes', {
+    ...wire,
+    params: { path: { agent_id: agentId, version }, query: { base } },
+  }));
+}
+
+/**
+ * Save the Agent with the editable fields `version` stored, as a new version.
+ *
+ * `comparedWith` is the Agent version the reader compared `version` against.
+ * The server answers 409 AGENT_VERSION_CONFLICT and writes nothing when the
+ * Agent changed since.
+ */
+export async function restoreAgentVersion(
+  agentId: string,
+  version: number,
+  comparedWith: number,
+): Promise<AgentConfig> {
+  return send((wire) => client.POST('/api/v1/agents/{agent_id}/versions/{version}/restore', {
+    ...wire,
+    params: { path: { agent_id: agentId, version } },
+    body: { version: comparedWith },
+  })) as Promise<AgentConfig>;
 }
 
 const CONVERSATION_CREATE_TIMEOUT_MS = 8_000;
@@ -2278,6 +2344,49 @@ export async function getSessionChildRunMessages(
     ...wire,
     params: { path: { session_id: sessionId, child_run_id: childRunId } },
     signal: init?.signal ?? undefined,
+  })));
+}
+
+export async function adminGetHistoryBlocks(
+  sessionId: string,
+  before?: string,
+  limit = 50,
+  init?: RequestInit,
+): Promise<HistoryBlockPage> {
+  return asDeclared<HistoryBlockPage>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/history-blocks', {
+    ...wire,
+    params: { path: { session_id: sessionId }, query: { before, limit } },
+    signal: init?.signal ?? undefined,
+  })));
+}
+
+export async function adminGetHistoryBlockDetails(
+  sessionId: string,
+  blockId: string,
+  cursor: string,
+  init?: RequestInit,
+): Promise<HistoryBlockDetails> {
+  return asDeclared<HistoryBlockDetails>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/history-blocks/{block_id}', {
+    ...wire,
+    params: { path: { session_id: sessionId, block_id: blockId }, query: { cursor } },
+    signal: init?.signal ?? undefined,
+  })));
+}
+
+export async function adminListSessionChildRuns(sessionId: string): Promise<SessionChildRunPage> {
+  return asDeclared<SessionChildRunPage>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/child-runs', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+  })));
+}
+
+export async function adminGetSessionChildRunMessages(
+  sessionId: string,
+  childRunId: string,
+): Promise<ChildRunMessagePage> {
+  return asDeclared<ChildRunMessagePage>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/child-runs/{child_run_id}/messages', {
+    ...wire,
+    params: { path: { session_id: sessionId, child_run_id: childRunId } },
   })));
 }
 

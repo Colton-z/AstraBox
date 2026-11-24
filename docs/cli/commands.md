@@ -23,6 +23,7 @@ Each command below includes its purpose, parameters/options, examples, and opera
 | `status` | **View status**: Probe the deployment's health and readiness endpoints. | Monitor a local or remote deployment. |
 | `destroy` | **Clean up resources**: Delete the Agents declared in a file. | Remove declared Agents with explicit confirmation. |
 | `model-account` | **Keep model accounts**: Sign in to a ChatGPT account and link it to your user, add an Anthropic API key, list your accounts, or share a ChatGPT account with your team. | Let conversations you start spend your ChatGPT plan or your Anthropic API key. |
+| `assistant` | **Configure an Assistant**: Read and change one of your Assistants' model and Agent-program configuration, set the credentials its runtime asks for, and pause or resume its workspace. | Switch an Assistant's model or reasoning effort from a script and keep its history. |
 | `up` | **Start locally**: Start the maintained Compose deployment. | Run AstraBox from a source checkout. |
 | `down` | **Stop locally**: Stop the maintained Compose deployment. | Stop services or delete their volumes. |
 | `logs` | **View local logs**: Read or follow Compose service logs. | Diagnose a local deployment. |
@@ -244,7 +245,7 @@ astrabox schema runtime_profile
 
 | Parameter | Description | Allowed values |
 | :--- | :--- | :--- |
-| `kind` | Resource type whose authoring schema should be shown. | `agent`, `environment` |
+| `kind` | Resource type whose authoring schema should be shown. | `agent`, `runtime_profile` |
 
 #### Candidate values
 
@@ -398,8 +399,8 @@ astrabox get runtime_profiles --output json
 The default table displays the identifying and commonly used fields for the selected collection. `--output json` returns the complete documents.
 
 ```text
-NAME        MODEL              ENVIRONMENT_NAME  ENABLED  AGENT_ID
-researcher  <model-name>       default           true     <agent-id>
+NAME        MODEL         RUNTIME_PROFILE_NAME  ENABLED  AGENT_ID
+researcher  <model-name>  default               true     <agent-id>
 ```
 
 ### Examples
@@ -493,9 +494,9 @@ astrabox diff -f astrabox.yaml --output json
 The default table contains one row per declared resource:
 
 ```text
-KIND         NAME        ACTION     FIELDS
-environment  default     unchanged
-agent        researcher  update     model, system
+KIND             NAME        ACTION     FIELDS
+runtime_profile  default     unchanged
+agent            researcher  update     model, system
 ```
 
 - `create`: The resource does not exist and `apply` would create it.
@@ -798,9 +799,9 @@ Resources omitted from the file are not touched.
 ### Execution Output
 
 ```text
-KIND         NAME        ACTION    FIELDS
-agent        researcher  delete
-environment  default     retained
+KIND             NAME        ACTION    FIELDS
+agent            researcher  delete
+runtime_profile  default     retained
 ```
 
 ### Usage Examples
@@ -905,7 +906,101 @@ astrabox model-account unshare mact_0123456789abcdef0123456789abcdef
 
 ### Output
 
-`login` prints the linked account and `list` prints every linked account, with the columns `LABEL`, `EMAIL`, `STATUS`, `IS_DEFAULT` and `ACCOUNT_ID`. `STATUS` is `active`, or `sign_in_required` once OpenAI refused to renew the account's access token for good. A declined sign-in exits with code 5 and the deployment's `MODEL_ACCOUNT_AUTHORIZATION_DECLINED`.
+`login` prints the linked account and `list` prints every linked account, with the columns `LABEL`, `VENDOR`, `EMAIL`, `STATUS`, `IS_DEFAULT`, `SHARED`, `USAGE_LIMITED_UNTIL`, `POOL_LAST_USED_AT` and `ACCOUNT_ID`. `STATUS` is `active`, or `sign_in_required` once OpenAI refused to renew the account's access token for good. A declined sign-in exits with code 5 and the deployment's `MODEL_ACCOUNT_AUTHORIZATION_DECLINED`.
+
+---
+
+## `astrabox assistant`
+
+`astrabox assistant` reads and changes one of your [Assistants](../assistants.md): its model, its Agent program's configuration, the credentials its runtime asks you for, and its workspace. Each command sends the request the Assistant's management page sends for the same action, so the console shows what the command changed. Only the Assistant's owner can use them.
+
+`astrabox.yaml` does not declare Assistants: an Assistant belongs to its owner and holds write-only credentials. `diff`, `apply` and `destroy` refuse an `assistants` key and name this command.
+
+### Usage
+
+```bash
+astrabox assistant show <assistant> [options]
+astrabox assistant set <assistant> [--model <model> | --inherit-model] [--engine-option <key>=<json>]... [options]
+astrabox assistant secret list <assistant> [options]
+astrabox assistant secret set <assistant> <key> [--from-file <path>] [options]
+astrabox assistant hibernate <assistant> [options]
+astrabox assistant wake <assistant> [options]
+```
+
+### Parameter Description
+
+| Option | Description | Default |
+| :--- | :--- | :--- |
+| `<assistant>` | The Assistant's ID, or its display name. `astrabox get assistants` lists yours. A display name that several of your Assistants share exits with code 5 and lists their IDs. | Required |
+| `--model` | The model the Assistant uses, a model name its RuntimeProfile's model connection offers (`set` only). It is stored as `model_config_override.model_name`. | Unchanged |
+| `--inherit-model` | Remove the Assistant's own model, so that it uses the model the [Assistant defaults](../assistants.md#defaults) name (`set` only). | Unchanged |
+| `--engine-option` | `KEY=JSON`: replace the Agent program's configuration block `KEY` in `engine_options` with the JSON value, keeping the other blocks; `null` removes the block (`set` only). Repeatable. The keys and fields are the program's own, those its **Skills, plugins and configuration** card on the management page shows. | Unchanged |
+| `<key>` | The credential's key, as `secret list` shows it (`secret set` only). | Required |
+| `--from-file` | Read the credential from this file (`secret set` only). | Terminal or standard input |
+| `--endpoint` | Deployment base URL. | `ASTRABOX_ENDPOINT`, then `http://127.0.0.1:$ASTRABOX_SERVER_HOST_PORT` |
+| `--token` | Bearer token. | `ASTRABOX_TOKEN`, then OAuth client credentials |
+| `--output`, `-o` | Output format: `table` or `json`. | `table` |
+
+### Change the model and reasoning effort
+
+`set` sends only the fields you name. The deployment checks every value against the Assistant's Agent program before it stores it. A dsh-superagent Assistant takes its reasoning effort in the native `reasoningEffort` field of its `default_model` block ([dsh-superagent](../assistants.md#dsh-superagent)):
+
+```bash
+astrabox assistant set <assistant> --model <model-name> \
+  --engine-option 'default_model={"reasoningEffort": "xhigh"}'
+astrabox assistant show <assistant>
+```
+
+Saving a change starts a refresh of a `READY` workspace in its current sandbox, which keeps its files and the runtime's history; a dsh-superagent runtime restarts its harness there to read a changed model or configuration. A workspace that is not running reads the change when it next starts. See [When a change takes effect](../assistants.md#when-a-change-takes-effect) for Hermes.
+
+### Set a credential
+
+`secret list` shows the credentials the Assistant's runtime declares, such as dsh-superagent's `github_token`, and whether each is set. `secret set` reads the value from a prompt that does not echo it, from standard input when that is not a terminal, or from `--from-file`, and stores it without surrounding whitespace. The value never appears on the command line or in any output: the deployment keeps it in its secret store and reports only `configured`, when it was last set (`updated_at`), whether the deployment provides a shared value (`deployment_default`) and whether the runtime needs one to start (`required`). Setting it again replaces it, and a `READY` workspace is prepared again with it.
+
+The model connection's own credential is not an Assistant setting. It belongs to the Assistant's RuntimeProfile, which an administrator configures, or, for a model connection that spends your own model account, to [`astrabox model-account`](#astrabox-model-account).
+
+### Pause and resume the workspace
+
+`hibernate` is the management page's **Pause workspace**: the deployment saves the Agent program's native state in its database and releases the sandbox. It exits with code 1, and prints the deployment's answer, when it could not confirm both; run it again. `wake` is **Resume workspace**: the deployment restores the saved state into a new sandbox. `wake` returns once the deployment accepts the request; follow `workspace_state` with `show` until it is `READY`. An answer with `retryable: true` means an earlier sandbox is not yet confirmed gone; run `wake` again. See [Pause and resume the workspace](../assistants.md#pause-and-resume-the-workspace) for what is restored.
+
+| `workspace_state` | Meaning |
+| :--- | :--- |
+| `NOT_MATERIALIZED` | The Assistant has no workspace yet. |
+| `MATERIALIZING` | A sandbox is being prepared for the workspace. |
+| `READY` | The workspace runs in `current_sandbox_id`. |
+| `HIBERNATING` | With a `current_sandbox_id`, the state is being saved before that sandbox is released; without one, the workspace is paused. |
+| `RECOVERY_REQUIRED` | The workspace needs attention: the deployment has not confirmed that `current_sandbox_id` was destroyed, or the workspace was destroyed. `wake` destroys that sandbox first, then builds a new one. |
+
+A start that failed is reported by `show` as `workspace_action`, an action only the owner can take, such as setting a credential, or as `workspace_error`.
+
+### Usage Examples
+
+```bash
+# Example 1: read the Assistant's configuration and workspace state
+astrabox assistant show "Model evaluation"
+
+# Example 2: switch the model and the reasoning effort
+astrabox assistant set asst_0123 --model deepseek-v4-pro \
+  --engine-option 'default_model={"reasoningEffort": "high"}'
+
+# Example 3: go back to the model the Assistant defaults name, and DSH's own default effort
+astrabox assistant set asst_0123 --inherit-model --engine-option default_model=null
+
+# Example 4: list the credentials the runtime asks for
+astrabox assistant secret list asst_0123
+
+# Example 5: set the GitHub agent account token from a password manager
+op read "op://Private/GitHub bot/token" | astrabox assistant secret set asst_0123 github_token
+
+# Example 6: pause the workspace, resume it, and check its state
+astrabox assistant hibernate asst_0123
+astrabox assistant wake asst_0123
+astrabox assistant show asst_0123 --output json
+```
+
+### Output
+
+`show` and `set` print one `FIELD`/`VALUE` row for each of the Assistant's ID, name, Agent program, RuntimeProfile, `model_config_override`, each `engine_options` block, and, for `show`, the workspace's state and sandbox; nested values print as JSON. `--output json` prints the whole record. `secret list` and `secret set` print `KEY`, `CONFIGURED`, `DEPLOYMENT_DEFAULT`, `REQUIRED`, `UPDATED_AT` and `LABEL`. `hibernate` and `wake` print the deployment's answer.
 
 ---
 

@@ -1949,6 +1949,16 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "containers.pi.run",
     ),
     (
+        "ASTRABOX_PI_MODEL_ENTRY",
+        "internal",
+        "",
+        "The model's entry fields rendered from the model connection's profile "
+        "(contextWindow, maxTokens, input, reasoning, thinkingLevelMap) as a "
+        "JSON object, {} when nothing is known. The image merges it into the "
+        "model's entry in models.json under the model id.",
+        "containers.pi.run",
+    ),
+    (
         "ASTRABOX_SANDBOX_PIDS_LIMIT",
         "public",
         "512",
@@ -2109,7 +2119,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "OpenSandbox endpoint mode for the bundled Kubernetes lifecycle server. "
         "Use direct only when AstraBox and its clients can route to sandbox Pod "
         "addresses. Use gateway for a multi-node deployment after installing the "
-        "official OpenSandbox ingress component.",
+        "OpenSandbox ingress gateway chart with AstraBox's ingress image.",
         "astrabox.deploy.sandbox_server",
     ),
     (
@@ -2516,6 +2526,15 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "Container hostname; names this replica in the agent pool's lease owner "
         "(socket.gethostname() when absent).",
         "astrabox.providers.open_sandbox.agent_pool",
+    ),
+    (
+        "ASTRABOX_HERMES_WEBAPP_EMBEDDED",
+        "public",
+        "false",
+        "Open Hermes inside the console. The HTTPS sandbox gateway must allow "
+        "the exact console origin in the Hermes Webapp's frame-ancestors policy, "
+        "and the gateway and console must be on the same site.",
+        "astrabox.config.settings",
     ),
     # ---- Hermes engine: config-merge runtime (sandbox-side) -----------------
     (

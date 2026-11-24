@@ -79,6 +79,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_script_writer import (
     install_verified_text_script,
 )
 from astrabox.providers.execd import EXECD_PORT
+from astrabox.seams.model import ModelProfile, described_profile
 
 logger = get_logger(__name__)
 
@@ -102,6 +103,9 @@ PI_CREDENTIAL_ENV_VAR = "ASTRABOX_PI_API_KEY"
 #: any session claims the box, which is what keeps a prewarmed box valid.
 PI_BASE_URL_ENV_VAR = "ASTRABOX_PI_BASE_URL"
 PI_MODEL_ENV_VAR = "ASTRABOX_PI_MODEL"
+#: The model's entry fields rendered from the model connection's profile, as
+#: a JSON object merged under the model's ``id`` in the same rendering.
+PI_MODEL_ENTRY_ENV_VAR = "ASTRABOX_PI_MODEL_ENTRY"
 PI_WORKSPACE_ENV_VAR = "ASTRABOX_WORKSPACE"
 
 #: The provider name the image writes into ``models.json``. Pi addresses a
@@ -387,6 +391,39 @@ def _settings(template: Any) -> dict[str, Any]:
     return settings
 
 
+#: Pi's thinking levels it offers up to ``high`` unless mapped to null, and the
+#: ones it offers only when mapped (``model-schema.js`` in pi-ai 1.6.0).
+PI_LADDER_THINKING_LEVELS = ("minimal", "low", "medium", "high")
+PI_OPT_IN_THINKING_LEVELS = ("xhigh", "max")
+
+
+def _model_entry(profile: ModelProfile) -> dict[str, Any]:
+    """The model's entry fields in Pi's provider table, from what is known.
+
+    An unknown fact is left out, so Pi applies its own default. A level the
+    route accepts goes on the wire under its own name, and Pi's ``off`` is the
+    wire's ``none``; LiteLLM renders the same mapping for Pi.
+    """
+
+    entry: dict[str, Any] = {}
+    if profile.context_window is not None:
+        entry["contextWindow"] = profile.context_window
+    if profile.max_output_tokens is not None:
+        entry["maxTokens"] = profile.max_output_tokens
+    if profile.input_modalities is not None:
+        entry["input"] = list(profile.input_modalities)
+    efforts = profile.reasoning_efforts
+    if efforts is not None:
+        entry["reasoning"] = bool(efforts)
+    if efforts:
+        entry["thinkingLevelMap"] = {
+            "off": "none" if "none" in efforts else None,
+            **{level: level if level in efforts else None for level in PI_LADDER_THINKING_LEVELS},
+            **{level: level for level in PI_OPT_IN_THINKING_LEVELS if level in efforts},
+        }
+    return entry
+
+
 async def _park_pi_child(
     sandbox: Any,
     template: Any,
@@ -461,9 +498,7 @@ async def _install_agent_instructions(
     )
 
 
-def _engine_sandbox_request(
-    model_access: Any, *, model: str
-) -> EngineSandboxRequest:
+def _engine_sandbox_request(model_access: Any, *, model: str) -> EngineSandboxRequest:
     """What a box holding one pi conversation must be. One declaration.
 
     Read by both creates — the Session's own, and a prepared slot's — because
@@ -495,18 +530,22 @@ def _engine_sandbox_request(
         env={
             PI_BASE_URL_ENV_VAR: str(model_access.base_url or "").strip(),
             PI_MODEL_ENV_VAR: model,
+            PI_MODEL_ENTRY_ENV_VAR: json.dumps(
+                _model_entry(described_profile(model_access)),
+                ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            ),
         },
     )
 
 
-def _slot_spawn_fingerprint(template: Any, *, base_url: str, model: str) -> str:
+def _slot_spawn_fingerprint(template: Any, *, model_access: Any) -> str:
     """The box-frozen facts a prepared pi box answers for, as one digest.
 
     Covers exactly what the box CREATE fixes and a later spawn cannot
-    override: the image and its entrypoint, and the gateway base URL and model
-    the image renders into ``models.json`` at boot — a box carries one
-    provider table with one model in it, so both rotate the box rather than
-    the process. The workload identity contract is here too because the
+    override: the image and its entrypoint, and the gateway base URL, model
+    and model entry the image renders into ``models.json`` at boot — a box
+    carries one provider table with one model in it, so each rotates the box
+    rather than the process. The workload identity contract is here too because the
     workspace and account paths the create pre-renders come from it.
 
     Spawn-borne facts are deliberately absent. ``AGENTS.md`` (the Agent's
@@ -523,8 +562,9 @@ def _slot_spawn_fingerprint(template: Any, *, base_url: str, model: str) -> str:
         "engine_kind": ENGINE_KIND,
         "image": resolve_runtime_template_name(template),
         "entrypoint": list(PI_IMAGE_ENTRYPOINT),
-        "base_url": str(base_url or ""),
-        "model": str(model or ""),
+        "base_url": str(getattr(model_access, "base_url", "") or ""),
+        "model": _model_reference(model_access),
+        "model_entry": _model_entry(described_profile(model_access)),
         "provider": PI_PROVIDER_NAME,
         "workload_user": SANDBOX_IMAGE_WORKLOAD_USER,
         "workload_home": SANDBOX_IMAGE_WORKLOAD_HOME,
@@ -881,7 +921,7 @@ class PiEngineAdapter(EngineAdapter):
         return {
             "engine_kind": ENGINE_KIND,
             "spawn_fingerprint": _slot_spawn_fingerprint(
-                template, base_url=base_url, model=model
+                template, model_access=context.model_access
             ),
             # Platform tools are already registered against the slot address.
             "activation_mcp_servers": [],
@@ -930,9 +970,7 @@ class PiEngineAdapter(EngineAdapter):
         is_prepared = context.prepared_manifest is not None
         if str(prepared.get("placement") or "") == "conversation_box":
             expected_spawn = _slot_spawn_fingerprint(
-                template,
-                base_url=str(getattr(context.model_access, "base_url", "") or ""),
-                model=model,
+                template, model_access=context.model_access
             )
             if expected_spawn != str(prepared.get("spawn_fingerprint") or ""):
                 raise APIError(

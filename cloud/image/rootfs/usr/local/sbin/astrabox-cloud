@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# AstraBox on a machine built from the AstraBox cloud image.
+#
+#   astrabox-cloud info     the console address and the sign-in details
+#   astrabox-cloud status   the setup state and the running containers
+#   astrabox-cloud logs     the first-boot log
+set -euo pipefail
+
+readonly STATE_DIR=/var/lib/astrabox-cloud
+readonly CREDENTIALS_FILE=/root/astrabox-credentials.txt
+
+[ "$(id -u)" = 0 ] || { echo "Run with sudo: sudo astrabox-cloud ${1:-info}" >&2; exit 1; }
+
+case "${1:-info}" in
+  info)
+    if [ -f "$CREDENTIALS_FILE" ]; then
+      cat "$CREDENTIALS_FILE"
+    elif [ -f "$STATE_DIR/first-boot.failed" ]; then
+      echo "Setup failed: $(cat "$STATE_DIR/first-boot.failed")"
+      echo "See: astrabox-cloud logs"
+      exit 1
+    else
+      echo "AstraBox is still being set up. Follow it with: astrabox-cloud logs"
+    fi ;;
+  status)
+    systemctl --no-pager status astrabox-first-boot || true
+    (cd /opt/astrabox/containers 2>/dev/null && docker compose ps) || true
+    docker ps --filter name=astrabox-edge ;;
+  logs)
+    exec tail -n 200 -f /var/log/astrabox-first-boot.log ;;
+  *)
+    echo "Usage: astrabox-cloud [info|status|logs]" >&2
+    exit 2 ;;
+esac

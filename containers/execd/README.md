@@ -3,11 +3,13 @@
 This image carries OpenSandbox execd from release 1.2.1, source commit
 `72e9feda4356a3087ae279af254ac67bb98c0129` (the commit the release's images
 are built from, per `docs/releases/1.2.1.yaml`), with `stream-upload.patch`,
-`pty-refusal-frames.patch` and `access-token.patch` applied. The source archive is checksum-pinned.
+`pty-refusal-frames.patch`, `access-token.patch` and `workload-interrupt.patch`
+applied. The source archive is checksum-pinned.
 The Apache-2.0 licence is retained in the image. Bootstrap, supervisor and
-isolation helpers come from the matching official image
+bubblewrap come from the matching official image
 `opensandbox/execd:release-1.2.1`, pinned by digest; both ordinary and eBPF
-Linux execd binaries carry these patches.
+Linux execd binaries carry these patches, and the image's isolated-session
+gate is rebuilt from the same patched source.
 
 The supplier's `specs/execd-api.yaml` defines ordered metadata/file pairs.
 The supplier's handler parses the whole multipart body first, which spools
@@ -51,16 +53,23 @@ like every other route. execd authenticates before it validates a request, so
 an empty `POST /internal/init` without the token answers 401 from this build
 and 400 from the supplier's; with `ASTRABOX_SANDBOX_EXECD_ACCESS_TOKEN=true`,
 AstraBox uses that answer to refuse an execd image without the patch
-(`astrabox/providers/open_sandbox/execd_access.py`). The image carries the patch
-whether or not the setting is on; without a token in force it changes nothing.
-The patch
-also removes `X-EXECD-ACCESS-TOKEN` from requests that `/proxy/<port>` passes
-to another in-box service, as the supplier's per-user filesystem proxy
-(`filesystem_identity_linux.go`) already does, so a service running as the
-workload's account never receives execd's credential. A request for execd's own
-port keeps it: on the Docker runtime the lifecycle server's endpoint for execd
-is `/proxy/44772` on execd itself, so every SDK request to execd passes through
-that route.
+(`astrabox/providers/open_sandbox/execd_access.py`). The patch also strips
+`X-EXECD-ACCESS-TOKEN` from a request to another in-box port when the outer
+execd authenticated the request with that header. With outer authentication
+disabled, the proxy preserves the destination service's credential, such as
+the credential of a Pi session's execd. A request for execd's own port retains
+its credential for the second authentication on the Docker endpoint
+`/proxy/44772`.
+
+An isolated session runs its shell under bubblewrap, which execd starts as a
+process-group leader. When a run's client disconnects or its run is
+cancelled, the supplier's execd sends SIGINT to that group. The shell's
+`trap : INT` keeps the shell alive, but bubblewrap takes the default action and
+exits, and the session ends with it. With `workload-interrupt.patch`, the
+session gate makes the workload lead its own process group before it executes
+the shell, and execd sends the run's SIGINT to that group: the running command
+ends and the session stays open for the next run. A command that still ignores
+SIGINT at the supplier's deadline is killed with the whole session, as before.
 
 The Claude Code, Codex, DeepSeek Harness and Pi image targets build the default
 execd image first. An explicit `EXECD_IMAGE` selects an existing image without

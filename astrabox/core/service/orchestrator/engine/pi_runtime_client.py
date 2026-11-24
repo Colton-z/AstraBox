@@ -343,6 +343,12 @@ class _Translation:
             events = self._message_started(wire)
         elif kind == "message_end":
             events = self._message_ended(wire)
+        elif kind in {"tool_execution_start", "tool_execution_end"} and record.get("parentToolCallId"):
+            # A call another tool made through `ctx.executeTool()`, such as the
+            # `subagent_launch` pi-subagents makes for each workflow child, even
+            # after the run settled. Pi keeps it out of the transcript and the
+            # calling tool reports it (docs/extensions.md, "Calling Other Tools").
+            events = [_diagnostic(kind, record)]
         elif kind in {"turn_start", "turn_end", "message_update", "tool_execution_start", "tool_execution_end"}:
             events = self._content(wire, kind)
         elif kind == "extension_ui_request":

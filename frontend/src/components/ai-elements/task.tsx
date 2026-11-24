@@ -7,7 +7,7 @@ import {
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
 import { ChevronDownIcon, SearchIcon } from "lucide-react";
-import type { ComponentProps } from "react";
+import type { ComponentProps, ReactNode } from "react";
 
 export type TaskItemFileProps = ComponentProps<"div">;
 
@@ -66,7 +66,7 @@ export const TaskTrigger = ({
   </CollapsibleTrigger>
 );
 
-export type TaskContentProps = ComponentProps<typeof CollapsibleContent>;
+export type TaskContentProps = Omit<ComponentProps<typeof CollapsibleContent>, 'children'> & { children?: ReactNode };
 
 export const TaskContent = ({
   children,

@@ -27,14 +27,13 @@ from tests.artifact_service_test import (
 def mcp_service(
     service: ArtifactService, *, user_id: str = "owner", grant: dict | None = None,
     agent_id: str | None = "agent-1", assistant_id: str | None = None,
-    source_type: str = "agent",
 ) -> PlatformMCPService:
     binding = {
         "session_id": "session",
         "user_id": user_id,
         "scope_kind": "session",
     }
-    session = {**binding, "agent_id": agent_id, "source_type": source_type,
+    session = {**binding, "agent_id": agent_id, "source_type": "agent",
         "workspace_ref": {"kind": "assistant", "assistant_id": assistant_id} if assistant_id else {"kind": "agent", "agent_id": agent_id},
         "session_kind": "assistant_chat" if assistant_id else "agent_chat",
         "artifact_grant": grant}
@@ -220,16 +219,3 @@ async def test_artifact_tools_cannot_cross_binding_agent_or_assistant_origin(art
         for name, extra in [("get_artifact", {}), ("update_artifact", {"content": "stolen"}), ("artifact_data", {"action": "get", "path": "items/a"}), ("artifact_data", {"action": "set", "path": "items/a", "data": {}})]:
             response = await tool(mcp, name, {"artifact_id": forbidden, **extra})
             assert "ARTIFACT_NOT_FOUND" in response["error"]["message"]
-
-
-@pytest.mark.asyncio
-async def test_channel_session_and_claimed_slot_cannot_discover_or_call_artifact_tools(artifact_service) -> None:
-    mcp = mcp_service(artifact_service, source_type="channel")
-    aid = await create_page(artifact_service)
-    for deployment_id in ("session", "mcp_prepared-slot"):
-        listing = await mcp.handle_jsonrpc(deployment_id, "artifacts", {"id": 1, "method": "tools/list"})
-        assert listing["error"]["code"] == -32601
-        response = await mcp.handle_jsonrpc(deployment_id, "artifacts", {
-            "id": 1, "method": "tools/call", "params": {"name": "get_artifact", "arguments": {"artifact_id": aid}},
-        })
-        assert response["error"]["code"] == -32601

@@ -6,7 +6,10 @@ it creates a runtime, attaches to one, or reuses a binding its owner already
 prepared; the runtime manager does the sandbox work, a prepared-slot claim
 included. The ``READY`` write publishes the box and sends the session's
 ``reader`` notice from the same statement, so a reader in any process starts
-on the runtime as soon as it can be used.
+on the runtime as soon as it can be used. ``READY`` carries the verified
+engine manifest; the engine's optional init snapshot (slash commands, Skills,
+versions) is recorded afterwards by the connection that serves the session
+(:func:`record_runtime_observation`), so a slow read never holds input back.
 
 A startup that fails leaves the session marked: ``TERMINATED`` with its
 error, or ``READY`` carrying the action only the user can take
@@ -17,6 +20,8 @@ row's undestroyed ledger when its destruction is not confirmed.
 """
 
 from __future__ import annotations
+
+from astrabox.observability.startup import startup_stage
 
 import asyncio
 import contextlib
@@ -29,7 +34,10 @@ from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.chunk_processing import extract_agent_session_metadata
-from astrabox.core.service.orchestrator.engine.base import bound_engine_client_manifest
+from astrabox.core.service.orchestrator.engine.base import (
+    EngineCapabilityManifest,
+    bound_engine_client_manifest,
+)
 from astrabox.core.service.orchestrator.runtime.preparation import require_session_user_prerequisites
 from astrabox.core.service.orchestrator.runtime_binding import is_assistant_workspace_bootstrap
 from astrabox.core.service.orchestrator.runtime_subject import (
@@ -209,7 +217,8 @@ class SessionStartup:
                         message="A ready runtime binding has no sandbox_id",
                         status_code=500,
                     )
-                await progress.drain()
+                with startup_stage(session_id, "startup_progress_drain"):
+                    await progress.drain()
                 ready = await self._publish_ready(
                     ownership,
                     {
@@ -359,15 +368,17 @@ class SessionStartup:
                     sandbox_id,
                 )
         try:
-            real_expires_at = await self._runtime_manager.get_sandbox_expires_at(sandbox_id)
+            with startup_stage(session_id, "sandbox_expiry_read"):
+                real_expires_at = await self._runtime_manager.get_sandbox_expires_at(sandbox_id)
             expires_at = real_expires_at.isoformat() if real_expires_at is not None else None
-            await self._runtime_subjects.publish_runtime_ready(
-                session=target.session,
-                template=template,
-                sandbox_id=sandbox_id,
-                expires_at=expires_at,
-                runtime_identity=getattr(runtime, "runtime_identity", None),
-            )
+            with startup_stage(session_id, "runtime_subject_ready"):
+                await self._runtime_subjects.publish_runtime_ready(
+                    session=target.session,
+                    template=template,
+                    sandbox_id=sandbox_id,
+                    expires_at=expires_at,
+                    runtime_identity=getattr(runtime, "runtime_identity", None),
+                )
         except Exception as exc:
             return await fail(
                 f"failed to publish runtime subject readiness: {exc}",
@@ -397,14 +408,19 @@ class SessionStartup:
             # session; shared subjects publish owner identity through their
             # provider instead.
             updates["runtime_identity"] = runtime_identity
-        updates.update(await runtime_initialization_metadata(session_id, runtime))
-        await progress.drain()
+        updates.update(runtime_engine_capabilities(session_id, runtime))
+        with startup_stage(session_id, "startup_progress_drain"):
+            await progress.drain()
         ready = await self._publish_ready(ownership, updates)
         self._runtime_manager.forget_published_startup_allocation(session_id, sandbox_id=sandbox_id)
         if is_assistant_workspace_bootstrap(target.session):
             # A workspace's own Session has prepared its box (a first
             # materialization or a profile refresh). Conversations attach on
-            # their own and this Session has no reader, so it keeps no client.
+            # their own and this Session has no reader, so it keeps no client;
+            # this startup is the one connection that can record what the box runs.
+            await record_runtime_observation(
+                self._sessions, session_id, runtime, sandbox_generation=ownership.sandbox_generation,
+            )
             await self._runtime_manager.evict_runtime(session_id)
         return ready
 
@@ -412,7 +428,8 @@ class SessionStartup:
         self, ownership: RecoveryOwnership, updates: dict[str, Any]
     ) -> dict[str, Any]:
         """Write ``READY`` under the claim, announcing the runtime to every reader host."""
-        await ownership.update(updates, notify="reader")
+        with startup_stage(ownership.session_id, "session_ready_publish"):
+            await ownership.update(updates, notify="reader")
         latest = await self._sessions.get_session(ownership.session_id)
         return latest if isinstance(latest, dict) else {"session_id": ownership.session_id, **updates}
 
@@ -488,26 +505,28 @@ class SessionStartup:
         return latest if isinstance(latest, dict) else {**current, **updates}
 
 
-async def runtime_initialization_metadata(session_id: str, runtime: Any) -> dict[str, Any]:
-    """The verified engine manifest and the optional engine init snapshot.
+def runtime_engine_capabilities(session_id: str, runtime: Any) -> dict[str, Any]:
+    """The verified engine manifest a session stores when its runtime becomes ``READY``.
 
     The manifest is construction-time evidence and is stored with the session,
     so a host restart does not erase the operation vocabulary the page shows.
-    Server info adds slash commands, skills and the model, when the engine
-    declares it. The caller passes the runtime it just constructed; reading
-    the process-local runtime map again would be a second, racy authority.
+    The caller passes the runtime it just constructed; reading the
+    process-local runtime map again would be a second, racy authority.
+
+    Raises ``ENGINE_CAPABILITY_CONTRACT_VIOLATION`` when the runtime carries no
+    verified manifest, or declares server info without implementing it.
     """
-    try:
-        manifest = bound_engine_client_manifest(runtime)
-    except TypeError as exc:
-        raise APIError(
-            code="ENGINE_CAPABILITY_CONTRACT_VIOLATION",
-            message=(
-                "runtime startup completed without a verified engine manifest "
-                f"(session={session_id}): {exc}"
-            ),
-            status_code=502,
-        ) from exc
+    return {"engine_capabilities": asdict(_verified_manifest(session_id, runtime))}
+
+
+async def runtime_observation(session_id: str, runtime: Any) -> dict[str, Any]:
+    """The engine's optional init snapshot: slash commands, Skills, model and component versions.
+
+    Only an engine that declares server info is asked. A read that fails or
+    times out leaves the commands as they are and records its reason in
+    ``runtime_versions``.
+    """
+    manifest = _verified_manifest(session_id, runtime)
     observation: dict[str, Any] = {
         "observed_at": utcnow_iso(),
         "sandbox_id": runtime.sandbox_id,
@@ -515,25 +534,15 @@ async def runtime_initialization_metadata(session_id: str, runtime: Any) -> dict
         "components": [],
         "reason": "server_info_not_supported",
     }
-    metadata: dict[str, Any] = {"engine_capabilities": asdict(manifest), "runtime_versions": observation}
+    metadata: dict[str, Any] = {"runtime_versions": observation}
     if not manifest.supports_server_info:
         return metadata
     observation["reason"] = "engine_versions_not_reported"
-    info_fn = getattr(getattr(runtime, "engine_client", None), "get_server_info", None)
-    if not callable(info_fn):
-        raise APIError(
-            code="ENGINE_CAPABILITY_CONTRACT_VIOLATION",
-            message=(
-                "runtime declared server-info capability without a callable "
-                f"implementation (session={session_id})"
-            ),
-            status_code=502,
-        )
     try:
-        info = await info_fn()
+        info = await runtime.engine_client.get_server_info()
     except Exception as exc:
         logger.warning(
-            "startup initialization metadata fetch failed session=%s err=%s", session_id, exc
+            "runtime observation read failed session=%s err=%s", session_id, exc
         )
         info = None
         observation["reason"] = "server_info_unavailable"
@@ -562,6 +571,70 @@ async def runtime_initialization_metadata(session_id: str, runtime: Any) -> dict
                 observation["reason"] = "invalid_engine_version_observation"
                 logger.warning("invalid engine version observation session=%s", session_id)
     return metadata
+
+
+async def record_runtime_observation(
+    sessions: Any, session_id: str, runtime: Any, *, sandbox_generation: str | None,
+) -> None:
+    """Store :func:`runtime_observation` while the session is still ``READY`` on ``runtime``.
+
+    Neither ``READY`` nor input delivery waits for this read. The write is
+    fenced on the session's box and ``sandbox_generation``, so a read that
+    completes after the session moved to another box or generation writes
+    nothing. It sends the ``session`` notice, which an open page receives as
+    ``data-session-changed`` and answers by reading the session again, so the
+    slash commands reach the composer when they arrive. A failed write is
+    logged: the snapshot is optional, and the next connection reads it again.
+    """
+    with startup_stage(session_id, "runtime_observation"):
+        updates = await runtime_observation(session_id, runtime)
+        try:
+            applied = await sessions.compare_and_update_session(
+                session_id,
+                expected={
+                    "state": SessionState.READY.value,
+                    "sandbox_id": runtime.sandbox_id,
+                    "sandbox_generation": sandbox_generation,
+                },
+                updates=updates,
+                touch_updated_at=False,
+                notify="session",
+            )
+        except Exception:
+            logger.warning("runtime observation write failed session=%s", session_id, exc_info=True)
+            return
+    if not applied:
+        logger.info(
+            "runtime observation discarded: session=%s left sandbox=%s generation=%s",
+            session_id, runtime.sandbox_id, sandbox_generation,
+        )
+
+
+def _verified_manifest(session_id: str, runtime: Any) -> EngineCapabilityManifest:
+    """The runtime's construction-time manifest, refused when it breaks the capability contract."""
+    try:
+        manifest = bound_engine_client_manifest(runtime)
+    except TypeError as exc:
+        raise APIError(
+            code="ENGINE_CAPABILITY_CONTRACT_VIOLATION",
+            message=(
+                "runtime startup completed without a verified engine manifest "
+                f"(session={session_id}): {exc}"
+            ),
+            status_code=502,
+        ) from exc
+    if manifest.supports_server_info and not callable(
+        getattr(getattr(runtime, "engine_client", None), "get_server_info", None)
+    ):
+        raise APIError(
+            code="ENGINE_CAPABILITY_CONTRACT_VIOLATION",
+            message=(
+                "runtime declared server-info capability without a callable "
+                f"implementation (session={session_id})"
+            ),
+            status_code=502,
+        )
+    return manifest
 
 
 async def _settled(inner: asyncio.Future[Any], session_id: str) -> Any:

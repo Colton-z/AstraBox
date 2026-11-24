@@ -14,13 +14,12 @@
  * (the SDK's) where the product says "Done". `tsc` sees a string, `vitest` sees
  * a string, the build is clean.
  *
- * The chevron is the same silence one attribute down. Base UI marks the
- * collapsible ROOT `data-open` and the TRIGGER `data-panel-open`; the Radix
- * spelling `data-[state=open]` matched neither and the arrow simply never
- * turned. A `group-*` variant that matches nothing throws nothing — so this
- * asserts the attribute the chevron on THIS card actually reads, off the
- * element that actually carries the `group` class, rather than one spelling
- * for both card kinds.
+ * The chevron is the same silence one attribute down. UI SDK marks both the
+ * collapsible ROOT and its TRIGGER `data-open`; the Radix spelling
+ * `data-[state=open]` matched neither and the arrow simply never turned. A
+ * `group-*` variant that matches nothing throws nothing — so this asserts the
+ * attribute the chevron reads, off the element on THIS card that actually
+ * carries the `group` class.
  *
  * `DiffPanel`'s file rows were `div`s with an `onClick` and a `cursor-pointer`:
  * a press no Tab could reach and no screen reader was told about. A spec that
@@ -212,7 +211,7 @@ test('a completed tool call reads Done, opens on its header, and lands in the di
   const card: Locator = (await named.count()) > 0 ? named.last() : toolCards.last();
   const header = card.locator('[data-slot="collapsible-trigger"]').first();
   const badge = header.locator('[data-slot="badge"]').first();
-  const panel = card.locator('[data-slot="collapsible-content"]');
+  const panel = card.locator('[data-slot="collapsible-panel"]');
 
   // ── 1. The badge speaks the product's vocabulary. ────────────────────────
   await expect(
@@ -229,7 +228,7 @@ test('a completed tool call reads Done, opens on its header, and lands in the di
   });
 
   // ── 2. The header is the disclosure. ─────────────────────────────────────
-  // Base UI does not keep a closed panel mounted, so "collapsed" is countable.
+  // UI SDK does not keep a closed panel mounted, so "collapsed" is countable.
   await expect(panel, 'a settled tool card starts collapsed').toHaveCount(0);
   await header.click();
   await expect(panel, 'pressing the card header must open it').toBeVisible();
@@ -239,15 +238,13 @@ test('a completed tool call reads Done, opens on its header, and lands in the di
   ).toContainText(contentMarker);
   await expect(card, 'the card must name the file the tool wrote').toContainText(fileName);
 
-  // The chevron turns off a `group-*` variant, and the two card kinds put the
-  // `group` class in different places: the `Task` TRIGGER for a file change
-  // (whose chevron reads `group-data-panel-open`), the `Tool` ROOT for a
-  // generic call (`group-data-open`). Assert the attribute this card's chevron
-  // actually reads, off the element that actually carries the class — asserting
-  // one spelling for both is how the arrow stopped turning in the first place.
+  // The chevron turns off `group-data-open`, and the two card kinds put the
+  // `group` class in different places: the `Task` TRIGGER for a file change,
+  // the `Tool` ROOT for a generic call. Assert the attribute off the element
+  // that actually carries the class on this card.
   const headerIsTheGroup = await header.evaluate((el) => el.classList.contains('group'));
   const chevronGroup = headerIsTheGroup ? header : card;
-  const openAttribute = headerIsTheGroup ? 'data-panel-open' : 'data-open';
+  const openAttribute = 'data-open';
   await expect(
     chevronGroup,
     `the chevron's group must carry ${openAttribute} while the card is open, or the arrow never turns`,

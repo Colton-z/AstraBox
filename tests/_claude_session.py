@@ -160,8 +160,14 @@ class _Replay:
         self._closed.set()
 
 
-async def record(session_id: str, journal: RunnerJournal, *, consumers: Sequence[FactConsumer] = ()) -> None:
-    """Translate the journal with the Claude client and record it with a session reader."""
+async def record(
+    session_id: str,
+    journal: RunnerJournal,
+    *,
+    consumers: Sequence[FactConsumer] = (),
+    sandbox_id: str = "sandbox-1",
+) -> None:
+    """Translate the journal with the Claude client and record it with a session reader in ``sandbox_id``."""
     client = ClaudeRuntimeClient(
         cast(Any, _JournalLink(journal.frames)),
         session_id=session_id,
@@ -191,6 +197,7 @@ async def record(session_id: str, journal: RunnerJournal, *, consumers: Sequence
     reader = SessionReader(
         lease=lease,
         client=cast(Any, replay),
+        sandbox_id=sandbox_id,
         repo=repo,
         feed=SessionFeed(),
         hooks=ReaderHooks(prepare=nothing, committed=committed, status=nothing, permission_mode=nothing),

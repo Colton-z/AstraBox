@@ -1,9 +1,9 @@
 """DeepSeek Harness child Sessions projected across the engine seam.
 
 The Web Host API owns the durable child catalog and transcript.  This adapter
-keeps its three native identities private: a child Session is the resource,
-its direct parent is the authority, and a continuable address is the control
-handle.  Core receives only canonical child-resource facts and never parses a
+keeps its native identities private: a child Session is the resource, and the
+address of a running continuable child is the handle a user's stop goes
+through.  Core receives only canonical child-resource facts and never parses a
 DSH Session id, mode, activity, event, or content block.
 """
 
@@ -38,7 +38,7 @@ DSH_ENGINE_KIND = "deepseek_harness"
 
 _CATALOG_METHOD = "session/projections"
 _SUMMARY_METHOD = "session/list"
-_INTERRUPT_METHOD = "subagents/interruptByParent"
+_INTERRUPT_METHOD = "subagents/interruptByUser"
 
 _CHILD_MODES = frozenset({"one-shot", "continuable", "unknown"})
 _VISIBLE_USER_SOURCES = frozenset({"user", "user-rpc"})
@@ -682,10 +682,14 @@ async def interrupt_dsh_child(
     call: DshCall,
     control_ref: str,
 ) -> None:
-    """Interrupt a continuable child through the exact vendor address."""
+    """Interrupt a continuable child as its user; the harness authorizes the child Session.
+
+    Acceptance means the harness admitted the cancel signal, not that the
+    child has stopped; its pending input and Activation are kept.
+    """
 
     address = decode_child_control_ref(control_ref)
-    value = await call(_INTERRUPT_METHOD, {"args": address})
+    value = await call(_INTERRUPT_METHOD, {"args": {"childSessionId": address["childSessionId"]}})
     if not isinstance(value, dict) or value.get("accepted") is not True:
         raise APIError(
             code="AGENT_RUNTIME_ERROR",

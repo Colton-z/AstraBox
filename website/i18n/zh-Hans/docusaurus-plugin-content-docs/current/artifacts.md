@@ -13,7 +13,7 @@ Artifact 默认私有，属于创建会话所代表的用户。管理员不会�
 > 创建一个标题为“项目清单”的 HTML Artifact，包含可在浏览器中使用的任务清单。
 > 请使用 artifacts 工具发布。
 
-Agent 和 Assistant 会话可使用内置 `artifacts` 工具；Agent 关闭了**作品**开关，或 Session 由消息渠道启动时，不提供这些工具。
+Agent 和 Assistant 会话可使用内置 `artifacts` 工具；Agent 关闭了**作品**开关时不提供。消息渠道会话以触发器的执行账号（见[消息执行身份](channels.md#run-messages-as)）使用这些工具，发布的作品与在控制台发布的一样归该账号所有。
 `create_artifact` 接受标题、类型，
 以及内容或工作区 `file_path`。平台在发布时复制文件；之后打开页面不依赖该文件或沙箱。
 
@@ -61,7 +61,7 @@ Agent 面板列出该 Session 发布的 Artifact；Assistant 面板列出该 Ass
 同一用户在同一 Agent 或 Assistant 中的后续会话可通过 `list_artifacts`、`get_artifact` 和
 `update_artifact` 查找并更新同一页面。该 Agent 的定时 Deployment 也可这样做。
 这些工具不能访问其他 Agent 或 Assistant 来源的 Artifact。
-定时、Webhook 和手动运行提供这些工具，除非 Agent 关闭了**作品**开关；消息渠道启动的 Session 不提供。
+定时、Webhook、手动运行和消息渠道会话都提供这些工具，除非 Agent 关闭了**作品**开关。
 
 ## 分享 {#sharing}
 

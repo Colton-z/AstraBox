@@ -34,6 +34,7 @@ from astrabox.seams.runtime_preparation import (
     ResourcePreparationOperation,
     RuntimeFile,
     RuntimeMaterials,
+    RuntimePreparationPlan,
     PreparationUserActionRequired,
     SessionPreparationContext,
     SessionUserActionContext,
@@ -422,6 +423,16 @@ async def deliver_runtime_files(
             raise
 
 
+def bound_runtime_preparation_plan(
+    template: Any, runtime_identity: Mapping[str, Any] | None,
+) -> RuntimePreparationPlan:
+    """Read the installed-package plan for an already claimed runtime."""
+    policy = (runtime_identity or {}).get("prepared_package_policy")
+    if policy is not None:
+        return RuntimePreparationPlan(**policy["plan"])
+    return runtime_preparation_plan(template)
+
+
 async def prepare_session_runtime_context(context: EngineStartupContext) -> EngineStartupContext:
     """Finish Session materials before the engine sees its startup context.
 
@@ -431,6 +442,24 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
     """
     provider = runtime_preparation_provider()
     prepared = context.prepared_manifest
+    initial_plan = runtime_preparation_plan(context.template)
+    policy = (context.runtime_identity or {}).get("prepared_package_policy")
+    if policy is not None and (prepared is not None or context.attach_mode is not None):
+        if prepared is not None:
+            from astrabox.core.service.orchestrator.agent.runtime_preparation import package_inventory_record
+
+            adapter = get_engine_adapter(context.template.engine_kind)
+            packages = await adapter.inspect_prepared_packages(context.sandbox, context.template)
+            if packages is None or package_inventory_record(packages) != policy["packages"]:
+                raise APIError(
+                    code="AGENT_PREWARM_CONFIG_INVALID",
+                    message="claimed runtime no longer matches its installed package inventory",
+                    status_code=409,
+                )
+        plan = bound_runtime_preparation_plan(context.template, context.runtime_identity)
+        context = dataclasses.replace(
+            context, template=dataclasses.replace(context.template, runtime_preparation=plan),
+        )
     if (runtime_preparation_plan(context.template).session_mcp_servers
             and not get_engine_adapter(context.template.engine_kind).supports_session_mcp_activation()):
         raise APIError(code="MCP_ACTIVATION_UNSUPPORTED", status_code=400,
@@ -496,7 +525,7 @@ async def prepare_session_runtime_context(context: EngineStartupContext) -> Engi
             if any(not isinstance(k, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k)
                    or not isinstance(v, str) or "\0" in v for k, v in environment.items()):
                 raise ValueError("invalid runtime environment")
-            if runtime_preparation_plan(config).session_bound and not materials.files and not environment:
+            if initial_plan.session_bound and not materials.files and not environment:
                 raise ValueError("Session-bound preparation returned no materials")
             if environment:
                 if subject.kind == "assistant":

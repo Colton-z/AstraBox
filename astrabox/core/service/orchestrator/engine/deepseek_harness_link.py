@@ -167,11 +167,16 @@ class DshApiLink:
         The snapshot's ``cursor`` is the last durable event it covers; every
         event after it arrives on :meth:`iter_frames` in order, preceded by the
         process-local assistant baseline taken at the same cut.
+
+        ``activate`` asks the harness to resume a cold ordinary Agent, as its
+        own Web client does; without it the follow only reads. The harness
+        never activates a subagent Session through a follow.
         """
         key = json.dumps(address, sort_keys=True)
         if key not in self._snapshots:
             snapshot = await self._open_stream("session/follow", {"args": {"request": {
                 "address": address, "maxMessages": 1, "assistantStream": True,
+                "activate": True,
             }}})
             if snapshot.get("type") != "snapshot":
                 raise EngineStreamDetached("deepseek_harness follow did not open with a snapshot")

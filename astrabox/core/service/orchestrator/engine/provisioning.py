@@ -50,6 +50,7 @@ from astrabox.persistence.repository.session_repository import (
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso
+from astrabox.observability.startup import startup_stage
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     required_network_host,
     resolve_network_policy,
@@ -635,9 +636,11 @@ async def session_model_access(
     keeps the model account the Session spends now (a box being attached to
     may be in the middle of a response).
     """
-    from astrabox.seams.model import model_endpoint_for_name
+    from astrabox.seams.model import describe_model_access, model_endpoint_for_name
 
-    access: ResolvedModelAccess = platform.resolve_model_access(template.model_config or {})
+    access: ResolvedModelAccess = await describe_model_access(
+        platform.resolve_model_access(template.model_config or {})
+    )
     provider = model_endpoint_for_name(access.endpoint_provider)
     if provider.credential_owner != "session_owner":
         from astrabox.core.service.model_accounts.service import get_model_account_service
@@ -2100,10 +2103,12 @@ async def claim_prepared_engine_sandbox(
     from astrabox.core.service.orchestrator.agent.client_pool import prepared_capacity
 
 
-    source_type = getattr(template, "session_source_type", None)
-    if not prepared_runtime_serves(source_type):
+    if not prepared_runtime_serves(template):
         # Prepared native processes froze their platform MCP servers before any Session existed.
-        logger.info("%s Session %s starts its own runtime with its own platform tools", source_type, session_id)
+        logger.info(
+            "%s Session %s is given other platform tools than a prepared runtime holds; it starts its own",
+            getattr(template, "session_source_type", None), session_id,
+        )
         return None
 
     if (
@@ -2482,7 +2487,7 @@ async def _claim_conversation_pool_box(
 ) -> _ConversationPoolClaim | None:
     """Recover or atomically acquire the Session's official-pool box."""
 
-    if recovered_assignment is None and not prepared_runtime_serves(getattr(template, "session_source_type", None)):
+    if recovered_assignment is None and not prepared_runtime_serves(template):
         return None
 
     from astrabox.core.service.orchestrator.agent.client_pool import (
@@ -2598,7 +2603,8 @@ async def provision_engine_sandbox(
             reconcile_runtime_generation,
         )
 
-        await reconcile_runtime_generation(template, runtime_manager=manager)
+        with startup_stage(session_id, "runtime_generation_check"):
+            await reconcile_runtime_generation(template, runtime_manager=manager)
 
     backend_adapter = sandbox_for_name(persisted_backend)
 

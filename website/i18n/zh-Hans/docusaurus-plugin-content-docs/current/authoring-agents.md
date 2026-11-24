@@ -70,13 +70,34 @@ Agent 在 Session 中执行任务。AstraBox 让 Agent 随时可用，创建或�
 | Claude Code | `sdk_options` | `ClaudeAgentOptions`；嵌套的 `settings` 序列化后传给 CLI 的 `--settings`。 |
 | Codex | `config` | `thread/start` 和 `thread/resume` 的配置覆盖值。 |
 | Codex | `turn_start` | 每次 `turn/start` 的参数对象。 |
-| Codex | `model_catalog` | 完整的原生 `models.json` 对象。 |
 | Pi | `settings` | 当前对话的 `~/.pi/agent/settings.json` 根对象。 |
 | DeepSeek Harness | `session_create` | 原生 `session/create` 请求参数，包括 `agentPreset`。 |
+| DeepSeek Harness | `select_model` | 原生 `session/selectModel` 请求参数，例如 `reasoningEffort`。 |
 
 输入 `{}` 表示传入空对象，清空编辑器则移除对应配置块。运行配置 JSON 与模型网关配置
 各有用途，可以同时使用。部署配置了 LiteLLM 管理地址时，模型字段会提供相应入口。
 Session 身份、通信设置和已分配的模型凭证由平台管理。
+
+### 推理档位 {#reasoning-effort}
+
+各 Agent 程序在自己的配置里选择推理档位。在 Agent 的原生运行配置 JSON 中设置后，
+所有对话都使用同一档位，适合对比模型效果。
+
+| 引擎 | 原生运行配置 JSON |
+| --- | --- |
+| Claude Code | `{"sdk_options": {"effort": "high"}}` |
+| Codex | `{"config": {"model_reasoning_effort": "high"}}`，或在 `turn_start` 中按轮设置 `effort` |
+| Pi | `{"settings": {"defaultThinkingLevel": "high"}}` |
+| DeepSeek Harness | `{"select_model": {"reasoningEffort": "high"}}` |
+
+程序为网关模型提供哪些档位，来自模型连接（[向 Agent 程序描述模型](models.md#model-description)）。
+模型连接未说明某个模型的档位时，各程序使用自己的默认值。
+
+- **Pi** 会把模型未提供的档位降到它提供的档位。
+- **DeepSeek Harness** 拒绝模型未声明的 `reasoningEffort`，对话以
+  `AGENT_MODEL_SELECTION_REFUSED` 失败，并带上 Harness 给出的原因。
+
+档位对新对话生效，也在已有对话每次重连时生效。
 
 ### MCP 服务器、Skill 和 Plugin
 

@@ -63,7 +63,7 @@ class Session(Base):
 
     __tablename__ = "sessions"
     __table_args__ = (
-        Index("ix_sessions_user_list", "user_id", "hidden", "deleted", text("updated_at DESC"), text("session_id DESC")),
+        Index("ix_sessions_user_list", "user_id", "hidden", "deleted", text("last_user_activity_at DESC"), text("session_id DESC")),
         Index("ix_sessions_agent_list", "agent_id", "session_kind", "deleted", text("updated_at DESC")),
         Index(None, "assistant_id", "user_id"),
         Index(None, "owner_type", "owner_id"),
@@ -134,8 +134,12 @@ class Session(Base):
     runtime_versions: Mapped[dict[str, Any] | None]
 
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
-    #: The session list's order: moves when someone sends or the runtime answers.
     updated_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    #: The owner's session list order: when the conversation was created or
+    #: its owner last acted on it, by a message, an answer, a stop, a terminal
+    #: command, a file change or a change to its settings. Replies, generated
+    #: titles, reading and the runtime's own changes leave it where it is.
+    last_user_activity_at: Mapped[datetime] = mapped_column(server_default=func.now())
     read_at: Mapped[datetime | None]
     last_output_at: Mapped[datetime | None]
     runtime_status: Mapped[str | None] = mapped_column(payload_text())
@@ -390,7 +394,14 @@ class SessionResponse(Base):
     outcome: Mapped[str | None] = mapped_column(payload_text())
     native_reason: Mapped[str | None] = mapped_column(payload_text())
     usage: Mapped[dict[str, Any] | None]
+    #: Why the response failed, as the conversation's people are shown it.
     error: Mapped[dict[str, Any] | None]
+    #: Operator evidence about the engine process a failed response ended
+    #: with, and the sandbox it ran in: for Claude Code the exit code, Claude
+    #: Code's own terminal reason and a redacted, bounded stderr tail
+    #: (``sandbox_runner._process_report``). Read by the admin session trace;
+    #: no conversation view carries it.
+    diagnostic: Mapped[dict[str, Any] | None]
     #: An imported reply's source identity, completion, parent, digest and
     #: browser parts.
     import_record: Mapped[dict[str, Any] | None]

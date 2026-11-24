@@ -1,12 +1,14 @@
 """Report a conversation's own Hermes cron runs back into that conversation.
 
 Hermes runs a scheduled job in its gateway daemon, in a session of its own,
-and delivers the result only to a messaging platform the gateway connects to
-(``cron/scheduler_delivery.py`` at the pinned commit). An Assistant's gateway
-connects none, so Hermes keeps the result in
-``$HERMES_HOME/cron/output/<job_id>/`` and nothing reaches the conversation
-that asked for the job. This module closes that gap without platform
-credentials in the box:
+and saves each run in ``$HERMES_HOME/cron/output/<job_id>/``. By default a
+job created in a local chat, as an Assistant conversation is, delivers the
+run into that chat's history as a note the agent reads on its next turn
+(``deliver_to_local_chat`` in ``gateway/session_cron.py`` at the pinned
+commit). A note is not a turn: the gateway publishes it as a
+``message.complete`` with no text, so the result reaches neither the
+conversation's viewers nor its channels. This module reports each run there
+without platform credentials in the box:
 
 1. When the conversation's own stream shows ``cronjob_manage`` creating a job,
    the job is recorded as that conversation's

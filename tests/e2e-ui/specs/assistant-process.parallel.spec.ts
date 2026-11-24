@@ -423,7 +423,7 @@ test('a settled tool turn folds, names itself, and reopens once per page load', 
 
   await openProcess(live);
   await expect(
-    live.getByTestId('assistant-turn-process').locator(':scope > [data-slot="collapsible-content"]'),
+    live.getByTestId('assistant-turn-process').locator(':scope > [data-slot="collapsible-panel"]'),
     'the opened header must show the work it stands for',
   ).toBeVisible();
   await expect(

@@ -145,9 +145,6 @@
         "reject": "decline"
       },
       "engine_kind": "codex",
-      "engine_option_files": {
-        "model_catalog": "tests/e2e-contract/codex-model-catalog.json"
-      },
       "engine_options": {
         "config": {"approval_policy": "on-request"}
       },

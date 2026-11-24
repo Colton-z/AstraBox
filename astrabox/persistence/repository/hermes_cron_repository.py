@@ -1,12 +1,11 @@
 """Which AstraBox conversation each Hermes cron job reports to.
 
-Hermes stores no creator on a job a TUI session schedules: the job's
-``origin`` is filled only from a messaging platform's chat
-(``tools/cronjob_job_args.py`` at the pinned commit), and an Assistant
-conversation is not one. One row per (Hermes profile, job id) records the
-conversation that created the job and the newest run already delivered to it,
-so a run is reported once even when several readers see it. The row is
-deleted with its conversation.
+Hermes delivers a run to the local chat that created the job only as a note
+in that chat's history, which no viewer receives
+(:mod:`astrabox.core.service.orchestrator.engine.hermes_cron`). One row per
+(Hermes profile, job id) records the conversation that created the job and
+the newest run already delivered to it, so a run is reported once even when
+several readers see it. The row is deleted with its conversation.
 """
 
 from __future__ import annotations

@@ -9,6 +9,8 @@ Self-registers as engine_kind="claude_code" on import.
 
 from typing import Any, Literal, get_args
 
+from astrabox.seams.runtime_preparation import ResolvedPackage
+
 from claude_agent_sdk import PermissionMode
 from claude_agent_sdk.types import TERMINAL_TASK_STATUSES, TaskUpdatedStatus
 
@@ -74,6 +76,11 @@ class ClaudeCodeEngineAdapter(EngineAdapter):
 
     def supports_session_mcp_activation(self) -> bool:
         return True
+
+    async def inspect_prepared_packages(self, sandbox: Any, template: Any) -> tuple[ResolvedPackage, ...] | None:
+        from astrabox.core.service.orchestrator.engine.claude_plugin_inventory import inspect_prepared_plugins
+
+        return await inspect_prepared_plugins(sandbox, template)
 
     def canonical_child_message_content(
         self, content: list[dict[str, Any]]

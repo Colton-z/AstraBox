@@ -16,6 +16,8 @@ import back into ``runtime_manager`` from here would be a load-time cycle.
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import asyncio
 import contextlib
 import dataclasses
@@ -242,7 +244,7 @@ def sandbox_request(
     )
 
 
-def _model_runtime_creds(model_config: Any, *, vault: bool = False) -> dict[str, str]:
+def _model_runtime_creds(model_config: Any, *, vault: bool = False) -> dict[str, Any]:
     """Per-conversation model identity injected via options.env.
 
     Delivers the model name and auth token onto the per-session `claude` launch
@@ -282,6 +284,10 @@ def _model_runtime_creds(model_config: Any, *, vault: bool = False) -> dict[str,
         # Forwarded host-side so build_claude_options can ask the selected
         # provider for endpoint-specific request headers.
         "endpoint_provider": str(getattr(model_config, "endpoint_provider", "") or "").strip(),
+        # What the model connection states about the model, for Claude Code's
+        # window and output cap; ``None`` leaves Claude Code's default.
+        "context_window": getattr(model_config, "context_window", None),
+        "max_output_tokens": getattr(model_config, "max_output_tokens", None),
     }
 
 
@@ -497,12 +503,13 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             )
             # A start that claimed nothing is this seat's setup: the runner
             # admits the prepare inside configure only against this file.
-            await deliver_in_box_service_token(
-                context.sandbox,
-                context.runtime_identity,
-                file_name=RUNNER_TOKEN_FILE_NAME,
-                token=activation_token,
-            )
+            with startup_stage(context.session_id, "runner_token_delivery"):
+                await deliver_in_box_service_token(
+                    context.sandbox,
+                    context.runtime_identity,
+                    file_name=RUNNER_TOKEN_FILE_NAME,
+                    token=activation_token,
+                )
             engine_client = await _connect_runner_engine_client(
                 runner_endpoint,
                 activation_token=activation_token,
@@ -512,11 +519,12 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
                 sandbox_death_notice=context.sandbox_death_notice,
                 sign_in_hint=sign_in_hint,
             )
-        engine_manifest = await initialize_runtime_client(
-            engine_client,
-            engine_kind="claude_code",
-            resume_session_key=context.resume_session_key,
-        )
+        with startup_stage(context.session_id, "runtime_client_initialize"):
+            engine_manifest = await initialize_runtime_client(
+                engine_client,
+                engine_kind="claude_code",
+                resume_session_key=context.resume_session_key,
+            )
     except APIError:
         if engine_client is not None:
             with contextlib.suppress(BaseException):
@@ -722,6 +730,10 @@ async def prepare_runtime(context: EnginePreparationContext) -> dict[str, Any]:
         runtime_env=context.runtime_env,
     )
 
+    options = _disable_plugin_mcp_autostart(
+        options, list(runtime_identity.get("plugin_mcp_server_ids") or []),
+        _session_mcp_references(template),
+    )
     wire_options = _session_mcp_options(options, template)
     spawn_fingerprint = hashlib.sha256(
         json.dumps(
@@ -814,14 +826,16 @@ async def _connect_runner_engine_client(
             status_code=500,
         )
     link = RunnerLink(runner_endpoint, activation_token=activation_token)
-    await link.__aenter__()
+    with startup_stage(session_id, "runner_connect"):
+        await link.__aenter__()
     try:
-        hello = await link.configure(
-            session_id,
-            options=sdk_options,
-            store={"base_url": store_base_url},
-            death_notice={"url": death_notice_url},
-        )
+        with startup_stage(session_id, "runner_configure_ack"):
+            hello = await link.configure(
+                session_id,
+                options=sdk_options,
+                store={"base_url": store_base_url},
+                death_notice={"url": death_notice_url},
+            )
     except BaseException:
         with contextlib.suppress(Exception):
             await link.close()
@@ -884,18 +898,20 @@ async def _activate_runner_engine_client(
             status_code=500,
         )
     link = RunnerLink(runner_endpoint, activation_token=activation_token)
-    await link.__aenter__()
+    with startup_stage(session_id, "runner_connect"):
+        await link.__aenter__()
     try:
-        hello = await link.activate(
-            slot_id,
-            session_id,
-            permission_mode=normalize_claude_permission_mode(permission_mode),
-            resume_session_key=resume_session_key,
-            mcp_servers=activation_mcp_servers,
-            store={"base_url": store_base_url},
-            death_notice={"url": death_notice_url},
-            environment=environment,
-        )
+        with startup_stage(session_id, "runner_activate_ack"):
+            hello = await link.activate(
+                slot_id,
+                session_id,
+                permission_mode=normalize_claude_permission_mode(permission_mode),
+                resume_session_key=resume_session_key,
+                mcp_servers=activation_mcp_servers,
+                store={"base_url": store_base_url},
+                death_notice={"url": death_notice_url},
+                environment=environment,
+            )
     except BaseException:
         with contextlib.suppress(Exception):
             await link.close()
@@ -937,14 +953,16 @@ async def _attach_runner_engine_client(
     from astrabox.core.service.orchestrator.engine.runner_link import RunnerLink
 
     link = RunnerLink(runner_endpoint, activation_token=activation_token)
-    await link.__aenter__()
+    with startup_stage(session_id, "runner_connect"):
+        await link.__aenter__()
     try:
-        hello = await link.attach(
-            session_id,
-            last_seen_seq=0,
-            required_option_keys=sdk_options.keys(),
-            permission_mode=str(sdk_options.get("permission_mode") or "default"),
-        )
+        with startup_stage(session_id, "runner_attach_ack"):
+            hello = await link.attach(
+                session_id,
+                last_seen_seq=0,
+                required_option_keys=sdk_options.keys(),
+                permission_mode=str(sdk_options.get("permission_mode") or "default"),
+            )
         return (
             ClaudeRuntimeClient(
                 link,

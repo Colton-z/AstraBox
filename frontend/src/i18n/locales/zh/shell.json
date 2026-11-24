@@ -52,6 +52,8 @@
     "stopped": "{{name}} 没有启动",
     "stopped_hint": "它的运行环境在就绪前停止了。",
     "open_failed": "无法打开 {{name}}",
+    "open_in_tab": "在新标签页打开 {{name}}",
+    "tab_blocked": "请允许此网站打开新标签页，然后重新打开助手。",
     "route_unsupported": "本部署无法显示 {{name}}",
     "panel_unsupported": "{{name}} 没有可显示的页面",
     "renew_failed": "无法续期与 {{name}} 的连接。当前连接到期后，页面将停止响应。",
@@ -59,6 +61,8 @@
     "secret_required_one": "{{name}} 还需要你提供 {{count}} 项凭据",
     "secret_required_other": "{{name}} 还需要你提供 {{count}} 项凭据",
     "secret_required_hint": "请在它的设置中填写{{labels}}，然后重新打开它。",
-    "open_settings": "打开设置"
+    "open_settings": "打开设置",
+    "action_required": "{{name}} 需要你先完成一项操作",
+    "check_failed": "无法确认 {{name}} 启动前需要什么"
   }
 }

@@ -10,7 +10,9 @@ A reader whose event stream ends reconnects through the connector, which
 decides whether the runtime is still there. When it is confirmed gone, the
 host records what was lost under the reader lease, takes back the inputs the
 runtime never durably held, and, if any are waiting, asks for a replacement
-runtime; the replacement's readiness notice starts the next reader.
+runtime; the replacement's readiness notice starts the next reader. When the
+attach fails with an error a retry cannot clear, the waiting inputs fail with
+that error.
 """
 
 from __future__ import annotations
@@ -98,6 +100,19 @@ class RuntimeStartFailed(Exception):
         self.failure = failure
 
 
+class RuntimeAttachRefused(Exception):
+    """Attaching the session's runtime failed with an error that is not retryable.
+
+    Attaching the same box again fails the same way, so the waiting inputs fail
+    with ``failure``, ``{code, message}``. The session keeps its box: a later
+    message attaches again, and recovery can move the session to a new box.
+    """
+
+    def __init__(self, session_id: str, *, failure: dict[str, Any]) -> None:
+        super().__init__(session_id)
+        self.failure = failure
+
+
 @dataclass(frozen=True, slots=True)
 class ConnectedRuntime:
     """A live client and the box it runs in."""
@@ -109,14 +124,18 @@ class ConnectedRuntime:
     engine_kind: str
     #: The adapter's host-side refresh before each input (rotated MCP credentials).
     refresh: Callable[..., Awaitable[None]] | None = None
+    #: Reads of the connected runtime that no input waits for. The host runs
+    #: it beside the reader and cancels it when the connection ends.
+    observe: Callable[[], Awaitable[None]] | None = None
 
 
 class RuntimeConnector(Protocol):
     async def connect(self, session_id: str) -> ConnectedRuntime:
         """A live client for the session's runtime.
 
-        Raises :class:`RuntimeGone` when the runtime cannot serve it and
-        :class:`RuntimeNotReady` when there is none yet.
+        Raises :class:`RuntimeGone` when the runtime cannot serve it,
+        :class:`RuntimeAttachRefused` when attaching it failed with an error a
+        retry cannot clear, and :class:`RuntimeNotReady` when there is none yet.
         """
         ...
 
@@ -228,6 +247,10 @@ class ReaderHost:
                 except RuntimeGone as gone:
                     await self._runtime_gone(lease, reason=gone.reason)
                     return
+                except RuntimeAttachRefused as refused:
+                    logger.warning("session %s runtime attach refused: %s", session_id, refused.failure["code"])
+                    await self._fail_open_inputs(lease, refused.failure)
+                    return
                 except RuntimeEnded as ended:
                     await self._runtime_gone(
                         lease, reason="conversation_ended", ended_failure=ended.failure
@@ -239,13 +262,23 @@ class ReaderHost:
                 reader = SessionReader(
                     lease=lease,
                     client=connected.client,
+                    sandbox_id=connected.sandbox_id,
                     repo=self._repo,
                     feed=self._feed,
                     hooks=self._hooks(session_id, connected),
                 )
+                observing = (
+                    asyncio.create_task(connected.observe(), name=f"runtime-observe-{session_id}")
+                    if connected.observe is not None
+                    else None
+                )
                 try:
                     ended = await reader.run()
                 finally:
+                    # Cancelled before the client closes, so a read cut off by
+                    # the close is not recorded as the runtime's answer.
+                    if observing is not None:
+                        observing.cancel()
                     with contextlib.suppress(Exception):
                         await connected.client.close()
                 if ended in ("lease_lost", "protocol_error"):

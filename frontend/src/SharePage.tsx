@@ -7,7 +7,7 @@ import { Download, FileText, Lock } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { ErrorNote } from '@/components/shell/ErrorNote';
-import { VirtualizedMessageList } from '@/session/components/VirtualizedMessageList';
+import { MessageList } from '@/session/components/MessageList';
 import { useSessionHistory } from '@/session/hooks/useSessionHistory';
 import { TranscriptAccessContext, sharedTranscriptAccess } from '@/session/TranscriptAccess';
 import {
@@ -25,7 +25,7 @@ export default function SharePage() {
   const access = useMemo(() => sharedTranscriptAccess(token), [token]);
   return (
     <TranscriptAccessContext.Provider value={access}>
-      <ArtifactNavigationProvider sharedTranscript><SharedConversation key={token} token={token} /></ArtifactNavigationProvider>
+      <ArtifactNavigationProvider readOnlyTranscript><SharedConversation key={token} token={token} /></ArtifactNavigationProvider>
     </TranscriptAccessContext.Provider>
   );
 }
@@ -104,9 +104,8 @@ function SharedConversation({ token }: { token: string }) {
           {messages.length === 0 ? (
             <div className="py-20 text-center text-sm text-muted-foreground">{t('misc:share.no_messages')}</div>
           ) : (
-            <VirtualizedMessageList
+            <MessageList
               messages={messages}
-              shouldAutoFollow={false}
               firstItemIndex={100_000 - messages.length}
               hasMore={history.hasMore}
               loadingMore={history.loadingMore}

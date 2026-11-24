@@ -204,12 +204,19 @@ class _Translation:
             self.interrupted_response_id = response_id
             return events
         if op == "error":
+            # The runner's process report (``sandbox_runner._process_report``)
+            # holds the CLI's stderr, so it goes to operators and the person
+            # is told ``detail``.
+            process = frame.get("process")
+            if not isinstance(process, dict):
+                raise ValueError(f"runner error carries no process report: {frame!r}")
             error = {"code": str(frame.get("error_class") or "RUNNER_ERROR"), "message": str(frame.get("detail") or "")}
             events: list[RuntimeEvent] = [RuntimeDiagnostic(None, "claude_code.runner_error", dict(frame))]
             if self.response_id is not None:
                 events += self._end(
                     "failed", error["code"], usage=None, error=error,
                     parts=[{"type": "error", "errorText": error["message"] or error["code"]}, _finish("error")],
+                    diagnostic=dict(process),
                 )
             return events
         if op == "input_ack":
@@ -476,12 +483,15 @@ class _Translation:
         usage: dict[str, Any] | None,
         error: dict[str, Any] | None,
         parts: list[dict[str, Any]],
+        diagnostic: dict[str, Any] | None = None,
     ) -> list[RuntimeEvent]:
         response_id = self.response_id
         assert response_id is not None
         events = self._reopen()
         events += [ResponseOutput(None, response_id, part) for part in parts]
-        events.append(ResponseEnded(None, response_id, outcome, native_reason, usage, error))
+        events.append(
+            ResponseEnded(None, response_id, outcome, native_reason, usage, error, diagnostic=diagnostic)
+        )
         self.interactions = {k: v for k, v in self.interactions.items() if v["response_id"] != response_id}
         self.login_refused = False
         self.response_id = None

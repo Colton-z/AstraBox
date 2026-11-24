@@ -103,9 +103,10 @@ _ALLOWED_UNRESOLVED: frozenset[tuple[str, int]] = frozenset({("astrabox.secrets"
 #: ``os.environ`` expression of this repository can show the read. Hermes
 #: receives its custom provider key in a private profile env file; the bundled
 #: gateway's Langfuse export reads the three observability values; the pi image
-#: renders the vendor's models.json from its base URL and model, and pi resolves
-#: the credential from the environment at request time (models.json carries the
-#: variable's NAME, so the value never lands on disk); the image-owned
+#: renders the vendor's models.json from its base URL, model and model entry,
+#: and pi resolves the credential from the environment at request time
+#: (models.json carries the variable's NAME, so the value never lands on
+#: disk); the image-owned
 #: JavaScript clients of both engines read the platform MCP servers.
 _EXTERNAL_RUNTIME_ENV_READS: frozenset[str] = frozenset(
     {
@@ -113,6 +114,7 @@ _EXTERNAL_RUNTIME_ENV_READS: frozenset[str] = frozenset(
         "ASTRABOX_PI_API_KEY",
         "ASTRABOX_PI_BASE_URL",
         "ASTRABOX_PI_MODEL",
+        "ASTRABOX_PI_MODEL_ENTRY",
         "ASTRABOX_PLATFORM_MCP_SERVERS",
         "LANGFUSE_HOST",
         "LANGFUSE_PUBLIC_KEY",

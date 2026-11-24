@@ -22,6 +22,8 @@ title: CLI 命令详解
 | `run` | **运行 Agent**：发送任务并流式输出回复。 | 从终端或脚本使用 Agent。 |
 | `status` | **查看状态**：检查部署的健康状态和就绪状态。 | 监控本地或远程部署。 |
 | `destroy` | **清理资源**：删除文件声明的 Agent。 | 在明确确认后移除 Agent。 |
+| `model-account` | **保存模型账号**：登录 ChatGPT 账号并关联到你的用户，添加 Anthropic API key，列出你的账号，或把 ChatGPT 账号共享给团队。 | 让你发起的对话使用你的 ChatGPT 套餐或 Anthropic API key。 |
+| `assistant` | **配置 Assistant**：读取和修改你的某个 Assistant 的模型与 Agent 程序配置，设置其运行时要求的凭据，暂停或恢复其工作区。 | 在脚本中切换 Assistant 的模型或推理强度，并保留其历史。 |
 | `up` | **本地启动**：启动官方维护的 Compose 部署。 | 从源码目录运行 AstraBox。 |
 | `down` | **本地停止**：停止官方维护的 Compose 部署。 | 停止服务或删除数据卷。 |
 | `logs` | **查看本地日志**：读取或持续输出 Compose 服务日志。 | 排查本地部署问题。 |
@@ -243,7 +245,7 @@ astrabox schema runtime_profile
 
 | 参数 | 说明 | 可选值 |
 | :--- | :--- | :--- |
-| `kind` | 需要查看字段的资源类型。 | `agent`、`environment` |
+| `kind` | 需要查看字段的资源类型。 | `agent`、`runtime_profile` |
 
 #### 候选值
 
@@ -397,8 +399,8 @@ astrabox get runtime_profiles --output json
 默认表格会显示所选资源中用于识别和日常查看的字段；`--output json` 会返回完整文档。
 
 ```text
-NAME        MODEL              ENVIRONMENT_NAME  ENABLED  AGENT_ID
-researcher  <model-name>       default           true     <agent-id>
+NAME        MODEL         RUNTIME_PROFILE_NAME  ENABLED  AGENT_ID
+researcher  <model-name>  default               true     <agent-id>
 ```
 
 ### 使用示例
@@ -492,9 +494,9 @@ astrabox diff -f astrabox.yaml --output json
 默认表格会为每项声明显示一行：
 
 ```text
-KIND         NAME        ACTION     FIELDS
-environment  default     unchanged
-agent        researcher  update     model, system
+KIND             NAME        ACTION     FIELDS
+runtime_profile  default     unchanged
+agent            researcher  update     model, system
 ```
 
 - `create`：资源不存在，`apply` 将创建它。
@@ -797,9 +799,9 @@ astrabox destroy -f astrabox.yaml --yes
 ### 运行效果
 
 ```text
-KIND         NAME        ACTION    FIELDS
-agent        researcher  delete
-environment  default     retained
+KIND             NAME        ACTION    FIELDS
+agent            researcher  delete
+runtime_profile  default     retained
 ```
 
 ### 使用示例
@@ -826,6 +828,179 @@ astrabox destroy -f astrabox.yaml --yes --output json
 3. **名称有歧义时会失败**：部署中有多个同名 Agent 时，命令返回冲突，不会自行选择。
 4. **不支持删除 RuntimeProfile**：RuntimeProfile 会保留在部署中。
 5. **保留可恢复的声明**：如果以后可能重新创建 Agent，请把经过检查的配置文件保存到版本控制中。
+
+---
+
+## `astrabox model-account`
+
+`astrabox model-account` 在你的 AstraBox 用户下保存为你的模型请求付费的模型账号：通过 OpenAI 的 Sign in with ChatGPT 关联的 ChatGPT 账号，以及 Anthropic API key。部署保存每个账号的令牌或 key；`list` 从不显示它们。参阅[使用 ChatGPT 套餐](../models.md#use-a-chatgpt-plan)和[使用你自己的 Anthropic API key](../models.md#anthropic-api-key)。
+
+### 用法
+
+```bash
+astrabox model-account login chatgpt [--account <account_id>] [--timeout <seconds>] [options]
+astrabox model-account add anthropic [--label <label>] [--account <account_id>] [options]
+astrabox model-account list [options]
+astrabox model-account share <account_id> [options]
+astrabox model-account unshare <account_id> [options]
+```
+
+### 参数说明
+
+| 选项 | 说明 | 默认值 |
+| :--- | :--- | :--- |
+| `chatgpt` | 账号的厂商（仅 `login`）。 | 必填 |
+| `anthropic` | 账号的厂商（仅 `add`）。 | 必填 |
+| `--account` | `login`：重新登录这个已关联的账号，而不是关联另一个账号。`add`：替换这个账号的 key，而不是添加账号。 | 无 |
+| `--label` | 添加的账号的名称（仅 `add`）。 | `Anthropic API key …` 加上 key 的最后四个字符 |
+| `<account_id>` | 要共享给团队池或停止共享的 ChatGPT 账号（`share` 和 `unshare`）。 | 必填 |
+| `--timeout` | 等待浏览器返回的秒数（仅 `login`）。 | `600` |
+| `--endpoint` | 部署的基础 URL。 | `ASTRABOX_ENDPOINT`，然后是 `http://127.0.0.1:$ASTRABOX_SERVER_HOST_PORT` |
+| `--token` | Bearer Token。 | `ASTRABOX_TOKEN`，然后是 OAuth 客户端凭证 |
+| `--output`, `-o` | 输出格式：`table` 或 `json`。 | `table` |
+
+### `login` 的工作方式
+
+OpenAI 会把浏览器送回 `http://127.0.0.1:<port>/auth/callback`，这个地址指向运行浏览器的那台计算机。请在那台计算机上针对你的部署地址运行 `login`：
+
+1. 命令在 `127.0.0.1` 的一个空闲端口上监听。
+2. 命令请部署为这个地址开始一次登录，并在浏览器中打开部署返回的 OpenAI 页面。它也会打印这个页面的地址，供浏览器没有自动打开时使用。
+3. 你在 OpenAI 批准该账号及其套餐用量。浏览器回到监听器，并显示一个可以关闭的页面。
+4. 命令把浏览器带回的结果交给部署，部署兑换授权码、验证登录并保存账号。命令打印已关联的账号。
+
+一次已开始的登录只能完成一次，并且必须在十分钟内完成。你关联的第一个 ChatGPT 账号会成为你的默认 ChatGPT 账号。
+
+### `add` 的工作方式
+
+`add anthropic` 提示输入 key 且不回显；标准输入不是终端时，读取标准输入的第一行。因此 key 不会出现在命令行或 shell 历史中。部署用这个 key 读取 Anthropic 的模型列表来检查它，只有 Anthropic 接受时才保存；否则命令以 `MODEL_ACCOUNT_API_KEY_REJECTED` 失败。你的第一个 key 会成为你的默认 Anthropic API key。
+
+### 与团队共享账号
+
+`share` 让其他成员的对话在他们自己的账号达到套餐用量上限后使用该账号的 ChatGPT 套餐；`unshare` 从他们的下一次回复起收回该账号。部署的团队池必须开启（`ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED`），否则 `share` 以 `MODEL_ACCOUNT_POOL_DISABLED` 失败。只有 ChatGPT 账号可以共享：共享 Anthropic API key 会以 `MODEL_ACCOUNT_NOT_SHAREABLE` 失败。`list` 显示 `shared`、团队池最近一次把该账号交给队友使用的时间（`pool_last_used_at`），以及已报告的用量上限让它暂停使用到何时（`usage_limited_until`）。参阅[与团队共享账号](../models.md#share-accounts-with-the-team)。
+
+### 使用示例
+
+```bash
+# 示例 1：在远程部署上把一个 ChatGPT 账号关联到你的用户
+astrabox model-account login chatgpt --endpoint https://astrabox.example.com
+
+# 示例 2：重新登录状态为 sign_in_required 的账号
+astrabox model-account login chatgpt --account mact_0123456789abcdef0123456789abcdef
+
+# 示例 3：在提示中输入并添加一个 Anthropic API key
+astrabox model-account add anthropic --label "Personal key"
+
+# 示例 4：用密码管理器的输出替换某个账号的 key
+op read "op://Private/Anthropic/credential" | astrabox model-account add anthropic --account mact_0123456789abcdef0123456789abcdef
+
+# 示例 5：列出你的账号
+astrabox model-account list
+
+# 示例 6：以可供程序读取的格式列出
+astrabox model-account list --output json
+
+# 示例 7：把 ChatGPT 账号共享给团队池，然后停止共享
+astrabox model-account share mact_0123456789abcdef0123456789abcdef
+astrabox model-account unshare mact_0123456789abcdef0123456789abcdef
+```
+
+### 输出
+
+`login` 打印已关联的账号，`list` 打印所有已关联的账号，列为 `LABEL`、`VENDOR`、`EMAIL`、`STATUS`、`IS_DEFAULT`、`SHARED`、`USAGE_LIMITED_UNTIL`、`POOL_LAST_USED_AT` 和 `ACCOUNT_ID`。`STATUS` 为 `active`；OpenAI 永久拒绝续期该账号的访问令牌后为 `sign_in_required`。登录被拒绝时，命令以退出码 5 结束，并带有部署的 `MODEL_ACCOUNT_AUTHORIZATION_DECLINED`。
+
+---
+
+## `astrabox assistant`
+
+`astrabox assistant` 读取和修改你的某个 [Assistant](../assistants.md)：它的模型、Agent 程序配置、运行时要求你提供的凭据，以及它的工作区。每个命令发送的请求与 Assistant 管理页执行同一操作时发送的相同，因此控制台显示的就是命令所做的修改。只有 Assistant 的所有者可以使用这些命令。
+
+`astrabox.yaml` 不声明 Assistant：Assistant 属于它的所有者，并持有只写的凭据。`diff`、`apply` 和 `destroy` 遇到 `assistants` 字段会失败，并指出本命令。
+
+### 用法
+
+```bash
+astrabox assistant show <assistant> [options]
+astrabox assistant set <assistant> [--model <model> | --inherit-model] [--engine-option <key>=<json>]... [options]
+astrabox assistant secret list <assistant> [options]
+astrabox assistant secret set <assistant> <key> [--from-file <path>] [options]
+astrabox assistant hibernate <assistant> [options]
+astrabox assistant wake <assistant> [options]
+```
+
+### 参数说明
+
+| 选项 | 说明 | 默认值 |
+| :--- | :--- | :--- |
+| `<assistant>` | Assistant 的 ID 或显示名称。`astrabox get assistants` 列出你的 Assistant。你的多个 Assistant 共用同一显示名称时，命令以退出码 5 结束并列出它们的 ID。 | 必填 |
+| `--model` | Assistant 使用的模型，取其 RuntimeProfile 的模型连接提供的模型名称（仅 `set`）。保存为 `model_config_override.model_name`。 | 不变 |
+| `--inherit-model` | 移除 Assistant 自己的模型，改用 [Assistant 默认配置](../assistants.md#defaults)指定的模型（仅 `set`）。 | 不变 |
+| `--engine-option` | `KEY=JSON`：用该 JSON 值替换 `engine_options` 中 Agent 程序的配置块 `KEY`，其他配置块保持不变；`null` 移除该配置块（仅 `set`）。可重复。键和字段都是该程序自己的，即管理页 **技能、插件与配置** 卡片中显示的那些。 | 不变 |
+| `<key>` | 凭据的键，与 `secret list` 显示的一致（仅 `secret set`）。 | 必填 |
+| `--from-file` | 从该文件读取凭据（仅 `secret set`）。 | 终端或标准输入 |
+| `--endpoint` | 部署的基础 URL。 | `ASTRABOX_ENDPOINT`，然后是 `http://127.0.0.1:$ASTRABOX_SERVER_HOST_PORT` |
+| `--token` | Bearer Token。 | `ASTRABOX_TOKEN`，然后是 OAuth 客户端凭证 |
+| `--output`, `-o` | 输出格式：`table` 或 `json`。 | `table` |
+
+### 修改模型和推理强度
+
+`set` 只发送你指定的字段。部署在保存前会按 Assistant 的 Agent 程序检查每个值。dsh-superagent Assistant 的推理强度写在其 `default_model` 配置块的原生字段 `reasoningEffort` 中（见 [dsh-superagent](../assistants.md#dsh-superagent)）：
+
+```bash
+astrabox assistant set <assistant> --model <model-name> \
+  --engine-option 'default_model={"reasoningEffort": "xhigh"}'
+astrabox assistant show <assistant>
+```
+
+保存修改后，`READY` 状态的工作区会在当前沙箱中刷新，文件和运行时的历史都保留；dsh-superagent 运行时会在沙箱内重启其 harness，以读取变更后的模型或配置。未运行的工作区在下次启动时读取变更。Hermes 的情况见[修改何时生效](../assistants.md#修改何时生效)。
+
+### 设置凭据
+
+`secret list` 显示 Assistant 运行时声明的凭据（例如 dsh-superagent 的 `github_token`）以及每项是否已设置。`secret set` 从不回显输入的提示符读取值；标准输入不是终端时从标准输入读取；或者从 `--from-file` 读取，去掉首尾空白后保存。值不会出现在命令行或任何输出中：部署把它保存在密钥存储中，只报告 `configured`、最近设置时间（`updated_at`）、部署是否提供共享值（`deployment_default`），以及运行时启动是否需要它（`required`）。再次设置会替换原值，`READY` 状态的工作区会用新值重新准备。
+
+模型连接本身的凭据不是 Assistant 的设置。它属于 Assistant 的 RuntimeProfile，由管理员配置；如果模型连接使用你自己的模型账号，则通过 `astrabox model-account` 管理。
+
+### 暂停和恢复工作区
+
+`hibernate` 对应管理页的 **暂停工作区**：部署把 Agent 程序的原生状态保存到数据库，然后释放沙箱。如果两步无法都得到确认，命令以退出码 1 结束并输出部署的应答，请再次运行。`wake` 对应 **恢复工作区**：部署把保存的状态恢复到新沙箱。部署接受请求后 `wake` 即返回；用 `show` 查看 `workspace_state`，直到它变为 `READY`。应答中 `retryable: true` 表示先前的沙箱尚未确认销毁，请再次运行 `wake`。恢复的内容见[暂停与恢复工作区](../assistants.md#暂停与恢复工作区)。
+
+| `workspace_state` | 含义 |
+| :--- | :--- |
+| `NOT_MATERIALIZED` | Assistant 还没有工作区。 |
+| `MATERIALIZING` | 正在为工作区准备沙箱。 |
+| `READY` | 工作区运行在 `current_sandbox_id` 中。 |
+| `HIBERNATING` | 带有 `current_sandbox_id` 时，正在保存状态，之后释放该沙箱；没有时，工作区已暂停。 |
+| `RECOVERY_REQUIRED` | 工作区需要处理：部署尚未确认 `current_sandbox_id` 已销毁，或工作区已被销毁。`wake` 会先销毁该沙箱，再构建新的沙箱。 |
+
+启动失败时，`show` 会报告 `workspace_action`（只有所有者能完成的操作，例如设置凭据）或 `workspace_error`。
+
+### 使用示例
+
+```bash
+# 示例 1：查看 Assistant 的配置和工作区状态
+astrabox assistant show "Model evaluation"
+
+# 示例 2：切换模型和推理强度
+astrabox assistant set asst_0123 --model deepseek-v4-pro \
+  --engine-option 'default_model={"reasoningEffort": "high"}'
+
+# 示例 3：恢复使用 Assistant 默认配置的模型和 DSH 自身的默认推理强度
+astrabox assistant set asst_0123 --inherit-model --engine-option default_model=null
+
+# 示例 4：列出运行时要求的凭据
+astrabox assistant secret list asst_0123
+
+# 示例 5：从密码管理器设置 GitHub 代理账号令牌
+op read "op://Private/GitHub bot/token" | astrabox assistant secret set asst_0123 github_token
+
+# 示例 6：暂停工作区、恢复它并查看状态
+astrabox assistant hibernate asst_0123
+astrabox assistant wake asst_0123
+astrabox assistant show asst_0123 --output json
+```
+
+### 输出
+
+`show` 和 `set` 为 Assistant 的 ID、名称、Agent 程序、RuntimeProfile、`model_config_override`、每个 `engine_options` 配置块，以及（仅 `show`）工作区状态和沙箱各输出一行 `FIELD`/`VALUE`；嵌套值以 JSON 输出。`--output json` 输出完整记录。`secret list` 和 `secret set` 输出 `KEY`、`CONFIGURED`、`DEPLOYMENT_DEFAULT`、`REQUIRED`、`UPDATED_AT` 和 `LABEL`。`hibernate` 和 `wake` 输出部署的应答。
 
 ---
 

@@ -280,6 +280,10 @@ class ResponseEnded(RuntimeEvent):
     declared reading that the model provider refused the response's request
     because a usage limit of the credential it spent was reached; the platform
     holds that credential's model account back from later responses.
+    ``diagnostic`` is the adapter's account of the engine process a failed
+    response ended with, such as its exit status and stderr. It is operator
+    evidence: recorded with the response and never sent to a browser, unlike
+    ``error``.
     """
 
     response_id: str
@@ -288,6 +292,7 @@ class ResponseEnded(RuntimeEvent):
     usage: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
     usage_limited: bool = False
+    diagnostic: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -588,3 +588,27 @@ export function buildAgentEditSections(
   const sections = [...schemaSections, accessControlSection(draft ?? {})];
   return { sections, advancedKeys };
 }
+
+/**
+ * What the edit form calls each stored field, keyed by the field's dotted path
+ * in the Agent record (`display_meta.display_name`, `engine_options.sdk_options`,
+ * `visibility`), whether or not the form shows that field right now.
+ */
+export function agentFieldLabels(
+  schema: FormSchema | null,
+  opts: AgentEditOpts,
+): Map<string, string> {
+  const labels = new Map<string, string>();
+  for (const field of schema?.fields ?? []) {
+    labels.set(field.path ?? field.key, String(toFieldSpec(field, opts).label));
+    // An expanded field (an engine's native block) is keyed by its own path.
+    for (const spec of expandField(field, opts)) {
+      if (spec.key !== field.key) labels.set(spec.key, String(spec.label));
+    }
+  }
+  // The allowlist field exists only under allowlist visibility; name it anyway.
+  for (const spec of accessControlSection({ visibility: 'allowlist' }).fields) {
+    labels.set(spec.key, String(spec.label));
+  }
+  return labels;
+}

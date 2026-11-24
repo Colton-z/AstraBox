@@ -61,20 +61,17 @@ async function observeAnchorStability(page: Page, anchor: VisibleAnchor) {
           finalOffsetTop = match.getBoundingClientRect().top - viewport.top;
           const movement = Math.abs(finalOffsetTop - observed.offsetTop);
           if (measurements.length === 0 || movement > maxMovement) {
-            const list = scroller.querySelector<HTMLElement>('[data-testid="virtuoso-item-list"]');
             measurements.push({
               elapsedMs: performance.now() - startedAt,
               offsetTop: finalOffsetTop,
               scrollTop: scroller.scrollTop,
               scrollHeight: scroller.scrollHeight,
-              listStyle: list?.getAttribute('style'),
-              rows: Array.from(scroller.querySelectorAll<HTMLElement>('[data-known-size]'))
+              rows: Array.from(scroller.querySelectorAll<HTMLElement>('[data-message-id]'))
                 .map((element) => ({
-                  index: element.dataset.itemIndex,
-                  knownSize: element.dataset.knownSize,
+                  index: element.dataset.messageVirtualIndex,
                   height: element.getBoundingClientRect().height,
                   offsetTop: element.getBoundingClientRect().top - viewport.top,
-                  messageId: element.querySelector<HTMLElement>('[data-message-id]')?.dataset.messageId,
+                  messageId: element.dataset.messageId,
                 })),
             });
           }
@@ -313,7 +310,8 @@ test('long session history loads one page per upward arrival and preserves the r
   expect(historyRequests.every((url) => url.searchParams.get('limit') === '50')).toBe(true);
   const firstWindowRows = scroller.locator('[data-message-virtual-index]');
   expect(await firstWindowRows.count()).toBeGreaterThan(0);
-  expect(await firstWindowRows.count(), 'the initial history window must not mount all 50 rows').toBeLessThan(50);
+  // The page shows what it loaded and nothing it did not: one page of history.
+  expect(await firstWindowRows.count(), 'the initial history window is one page').toBeLessThanOrEqual(50);
 
   for (const [index, cursor] of [firstBlockCursor, secondBlockCursor].entries()) {
     await test.step(`physical upward arrival ${index + 1}`, async () => {
@@ -349,7 +347,8 @@ test('long session history loads one page per upward arrival and preserves the r
   }), [users[0].id, users[1].id]);
   expect(rowHeights[0] - rowHeights[1],
     'the final partial page must exercise substantially different row heights').toBeGreaterThan(60);
-  expect(await scroller.locator('[data-message-id]').count(), 'offscreen loaded history must not all remain in the DOM').toBeLessThan(history.length);
+  // Every page the reader asked for is on the page, once.
+  expect(await scroller.locator('[data-message-id]').count(), 'the loaded history is all there').toBe(history.length);
   expect(olderRequests).toEqual([firstBlockCursor, secondBlockCursor]);
   await page.getByRole('button', { name: /Scroll to latest messages|回到最新消息/ }).click();
   await expect(page.getByTestId('user-message').filter({ hasText: prompts[50] })).toBeVisible();

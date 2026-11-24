@@ -82,4 +82,6 @@ async def perform_session_user_action(session_id: str, request: Request, body: P
     if context is None:
         raise APIError(code="SESSION_READ_ONLY", status_code=409,
                        message="This conversation is read-only; no preparation operation is available")
-    return success_response(await user_action_state(context, action_id=body.action_id))
+    state = await user_action_state(context, action_id=body.action_id)
+    await SessionRepository().record_user_activity(session_id)
+    return success_response(state)

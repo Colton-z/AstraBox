@@ -94,8 +94,3 @@ async def test_the_relay_acts_as_the_sessions_person_and_lists_tools_for_anyone(
     owners = _relay_service(None, {"scope_kind": "assistant_workspace", "assistant_id": "asst_1", "user_id": "owner"})
     await owners.relay_connector(server, call, session_id=None, protocol_version=None)
     assert hub.seen[-1]["as"] == hub.member_email("owner")
-
-    # A channel conversation of an Agent acts for no one either.
-    channel = _relay_service({"user_id": "author", "agent_id": "agent-1", "source_type": "channel"}, None)
-    assert (await channel.relay_connector(server, call, session_id=None, protocol_version=None)).message["result"]["isError"]
-    assert len(hub.seen) == 3

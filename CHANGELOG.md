@@ -7,6 +7,98 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-24
+
+## English
+
+### Added
+
+- **Cloud image.** Build an AstraBox machine image for AWS, DigitalOcean, Alibaba Cloud, Tencent Cloud, Huawei Cloud or any Ubuntu 24.04 cloud (`cloud/`); a machine started from it installs AstraBox on first boot without reaching GitHub or a registry. [Guide](https://www.astrabox.ai/docs/cloud-images)
+- **Agent version history and restore.** Every version of an Agent's configuration is kept with who changed it and when; a manager can compare two versions and restore one. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **Hermes Assistants open in the native Hermes Webapp**, signed in with a one-use link; `ASTRABOX_HERMES_WEBAPP_EMBEDDED` shows it inside the console behind an HTTPS gateway. [Guide](https://www.astrabox.ai/docs/assistants#panel-runtimes)
+- **Engines learn the model's limits from the model connection**: context window, output cap, image input and reasoning efforts, read from the gateway. [Guide](https://www.astrabox.ai/docs/models#model-description)
+- **Reasoning effort for DeepSeek Harness and Pi Agents.** [Guide](https://www.astrabox.ai/docs/authoring-agents#reasoning-effort)
+- **The administrator's Session page shows the conversation** as its owner sees it, with tool work and child conversations, beside the event log.
+- **`astrabox assistant`** changes one of your Assistants' model and Agent-program configuration, such as dsh-superagent's reasoning effort, sets the credentials its runtime asks for without showing them, and pauses or resumes its workspace. [Guide](https://www.astrabox.ai/docs/cli/commands#astrabox-assistant)
+- `ASTRABOX_INSTALL_PULL=missing` makes the installer pull only the images the host does not have.
+
+### Fixed and improved
+
+- The session list is ordered by the owner's last action on each conversation (`last_user_activity_at`), not by the row's update time.
+- A conversation reconnects with the Agent version its sandbox was prepared from; after a Plugins change, reconnecting failed with `PACKAGE_INVALID`.
+- A message fails with the reason when its sandbox cannot be reconnected, instead of waiting while the server retries.
+- Channel conversations get the Agent's tools and its prepared capacity, and a message to an archived conversation starts a new one.
+- A member can create a personal Assistant; the form asked for an administrator's role.
+- A panel Assistant whose start needs its owner's action shows the action's link and asks before starting again.
+- A conversation becomes ready and takes its first message without waiting for the engine's optional slash commands, Skills and versions, which reach the composer when the engine reports them; the console no longer re-checks the owner's prerequisites at that point.
+- Starting a conversation reads and resolves its Agent once, and starting from prepared capacity no longer waits on the Agent's runtime record lock or records the same allocation at every hand-off. Startup logs time each phase. [Phases](https://www.astrabox.ai/docs/deploy#time-a-conversations-startup)
+- When a Claude Code process exits, the failed response keeps its exit code, Claude Code's terminal reason and a redacted stderr tail for administrators on the Session page; the conversation shows only the exit code.
+- Retiring an Agent's OpenSandbox prepared pool no longer leaves an idle sandbox running for its whole lease when destroying it fails or the retiring process exits; the ownerless sweep destroys it ten minutes after its last renewal.
+- A database error while recording a successful Agent preparation is reported as that error, not as a failed preparation written a second time.
+- Prepared Claude Code conversations resolve Plugin MCP policy before the engine starts, so each conversation sees only its owner's materials.
+- Pi conversations that share a sandbox reach their own Pi runtime.
+- On Kubernetes in gateway mode, commands and isolated-session runs are no longer cut off intermittently, which ended the session and failed conversation starts. AstraBox publishes `astrabox-ingress`, the OpenSandbox 1.2.1 gateway that keeps a request's body readable while it streams the answer. [Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
+- In a shared sandbox, interrupting a running command, or losing the connection while it runs, no longer ends the conversation's isolated session: AstraBox's execd now interrupts only the session's shell and the command it runs. [Execd](https://github.com/colton-z/astrabox/blob/main/containers/execd/README.md)
+- The DeepSeek Harness web profile applies the Assistant's model to both entry points and keeps its router out of ordinary new chats.
+- The console is sent Brotli- or gzip-compressed, and an Assistant page stays loaded while you use another page.
+- A console page whose scripts fail to load reloads itself, at most five times; a missing `/assets/` file is a 404. [Upgrading replicas](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+- The conversation view holds one status line from send to the first reply text and keeps the reader's place when older messages load.
+- Claude Code 2.1.330 with claude-agent-sdk 0.2.187, Codex 0.171.0, Pi 1.6.0 with pi-subagents 0.90.0, Hermes Agent 0.23.3, DeepSeek Harness 0.2.2-rc.5, LiteLLM 1.110.2; dependency updates.
+
+### Upgrading
+
+- Every sandbox runtime image changes.
+- Kubernetes deployments in gateway mode switch the ingress Gateway chart to `ghcr.io/colton-z/astrabox-ingress` at this release's version.
+- Schema revisions `0028` (Agent versions), `0029` (the version each conversation's sandbox was prepared from), `0030` (session list order) and `0031` (a failed response's process diagnostic) apply on startup.
+- External persistence providers keep the Session's `last_user_activity_at` and order the owner's session list by it.
+- External model endpoint providers can answer the new `describe_model`; an unknown field stays empty.
+- `SEAMS_API_VERSION` is 12. A provider that pins `seams_api_version = 11` is refused at startup; a sandbox provider that overrides `unclaimed_sandbox_refusal` accepts its new `client_pools` and `grace_seconds` arguments before updating the pin.
+
+## 中文
+
+### 新增
+
+- **云镜像。** 可为 AWS、DigitalOcean、阿里云、腾讯云、华为云或任何 Ubuntu 24.04 云构建 AstraBox 机器镜像（`cloud/`）；由它启动的机器首次开机即安装 AstraBox，不访问 GitHub 或镜像仓库。[指南](https://www.astrabox.ai/docs/cloud-images)
+- **Agent 版本历史与恢复。** 保存 Agent 配置的每个版本及修改人和时间；管理者可以比较两个版本并恢复其中一个。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **Hermes Assistant 在原生 Hermes Webapp 中打开**，用一次性链接登录；`ASTRABOX_HERMES_WEBAPP_EMBEDDED` 可在 HTTPS 网关后把它嵌入控制台。[指南](https://www.astrabox.ai/docs/assistants#panel-runtimes)
+- **引擎从模型连接获知模型参数**：上下文窗口、输出上限、图片输入与推理强度，由网关提供。[指南](https://www.astrabox.ai/docs/models#model-description)
+- **DeepSeek Harness 与 Pi Agent 可设置推理强度。** [指南](https://www.astrabox.ai/docs/authoring-agents#reasoning-effort)
+- **管理员的 Session 页面显示对话本身**，与所有者看到的一致，包括工具调用和子对话，事件日志仍在旁边。
+- **`astrabox assistant`** 可修改你的某个 Assistant 的模型和 Agent 程序配置（如 dsh-superagent 的推理强度），设置其运行时要求的凭据且不显示其值，并暂停或恢复其工作区。[指南](https://www.astrabox.ai/docs/cli/commands#astrabox-assistant)
+- 安装脚本新增 `ASTRABOX_INSTALL_PULL=missing`，只拉取主机上还没有的镜像。
+
+### 修复与改进
+
+- 会话列表按所有者最后一次操作对话的时间（`last_user_activity_at`）排序，不再按行的更新时间。
+- 对话重连时沿用其沙箱准备时的 Agent 版本；此前插件改动后重连会报 `PACKAGE_INVALID`。
+- 沙箱无法重连时消息带着原因失败，不再在服务端重试时一直等待。
+- 渠道对话获得 Agent 的工具和预备容量；发给已归档对话的消息会开启新对话。
+- 普通成员可以创建个人 Assistant；此前表单要求管理员角色。
+- 面板 Assistant 启动需要所有者操作时，会显示操作链接，并在再次启动前先询问。
+- 对话不必等待引擎可选的斜杠命令、Skills 和版本信息即可就绪并接收第一条消息，这些信息在引擎报告后出现在输入框中；控制台此时也不再重新检查所有者的前置条件。
+- 开始对话只读取并解析一次 Agent；从预备容量启动不再等待 Agent 运行时记录的行锁，也不在每次交接时重复记录同一分配。启动日志记录各阶段耗时。[阶段说明](https://www.astrabox.ai/docs/deploy#time-a-conversations-startup)
+- Claude Code 进程退出时，失败的回复会保留退出码、Claude Code 自己的结束原因和脱敏后的 stderr 末尾，管理员可在 Session 页面查看；对话里只显示退出码。
+- 退役 Agent 的 OpenSandbox 预备池时，销毁失败或退役进程中途退出而留下的空闲沙箱不再一直运行到租约结束；无主回收会在它最后一次续期十分钟后将其销毁。
+- 记录 Agent 预备成功时发生的数据库错误按该错误本身报告，不再被当作预备失败再写一次。
+- 预备的 Claude Code 对话在引擎启动前确定插件 MCP 策略，每个对话只看到其所有者的资料。
+- 共享沙箱的 Pi 对话能连到各自的 Pi 运行时。
+- Kubernetes 网关模式下，命令和隔离会话的执行不再被间歇截断（截断会结束会话、导致对话启动失败）。AstraBox 发布 `astrabox-ingress`：在 OpenSandbox 1.2.1 Gateway 基础上，流式返回期间请求体保持可读。[Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
+- 共享沙箱中，中断正在运行的命令或在运行期间断开连接，不再结束该对话的隔离会话：AstraBox 的 execd 只中断会话的 shell 及其正在运行的命令。[Execd](https://github.com/colton-z/astrabox/blob/main/containers/execd/README.md)
+- DeepSeek Harness Web 配置让两个入口都使用 Assistant 的模型，并让其路由器不进入普通新对话。
+- 控制台资源以 Brotli 或 gzip 压缩发送；切到其他页面时 Assistant 页面保持加载。
+- 控制台页面脚本加载失败时自动重新加载，最多五次；缺失的 `/assets/` 文件返回 404。[升级副本](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+- 对话视图从发送到第一段回复文字只显示一行状态，加载更早消息时保持阅读位置。
+- Claude Code 2.1.330 与 claude-agent-sdk 0.2.187、Codex 0.171.0、Pi 1.6.0 与 pi-subagents 0.90.0、Hermes Agent 0.23.3、DeepSeek Harness 0.2.2-rc.5、LiteLLM 1.110.2；依赖更新。
+
+### 升级说明
+
+- 所有沙箱运行时镜像都有变化。
+- Kubernetes 网关模式的部署把 ingress Gateway chart 的镜像换成本版本的 `ghcr.io/colton-z/astrabox-ingress`。
+- 启动时应用 Schema 修订 `0028`（Agent 版本）、`0029`（每个对话沙箱准备时的版本）、`0030`（会话列表排序）和 `0031`（失败回复的进程诊断）。
+- 外部持久化提供方需保存 Session 的 `last_user_activity_at`，并按它排序所有者的会话列表。
+- 外部模型端点提供方可实现新的 `describe_model`；未知字段保持为空。
+- `SEAMS_API_VERSION` 升为 12。声明 `seams_api_version = 11` 的提供方在启动时会被拒绝；覆写 `unclaimed_sandbox_refusal` 的沙箱提供方先接受新增的 `client_pools` 与 `grace_seconds` 参数，再更新声明。
+
 ## [0.1.15] - 2026-11-15
 
 ## English

@@ -105,6 +105,18 @@ providers must not construct scoped aliases. This declaration is non-secret,
 participates in runtime generation, and defaults to no deferred connections.
 An engine without native Session MCP activation refuses a non-empty declaration.
 
+Implement `plan_prepared_packages(config=…, initial_plan=…, packages=…)` when
+the first plan depends on package contents. AstraBox calls it after installing
+the packages into an inventory box and before initializing the engine. Each
+`ResolvedPackage` identifies its index in the configured package list, its
+actual Git commit and the MCP server references read from its selected plugins.
+The callback can narrow whole-engine deferral to individual connections.
+It runs without a claimant and must have no external writes. The refined plan
+keeps the initial model credential delivery and any MCP deferrals already
+declared. The prepared receipt binds it to the inspected checkouts and AstraBox
+checks that evidence again on claim. A cold start or an inventory whose
+package declarations cannot be verified uses the initial plan.
+
 Claude initializes the same process with only these connections disabled in its
 private, per-project native configuration. It checks the native disabled state
 before publishing prepared inventory (`engine_initialized=true`). Ordinary MCPs
@@ -412,6 +424,17 @@ sending while a prerequisite is unknown or pending. A status read is advisory:
 `prepare_turn` remains the authority for every caller, including those that do
 not use the console.
 
+An Assistant's owner reads the same state without a conversation through
+`GET /api/v1/assistants/{assistant_id}/user-action`, and runs an offered
+operation through `POST` at the same path. The context's `session_id` is
+`None`, its principal is the owner and its `subject` is the Assistant; only the
+owner may call either. The console uses it for an Assistant that works from a
+panel: it reads the state before it wakes the workspace, and while the state
+reports a pending requirement it shows the action's message, its link and the
+offered operations, and wakes nothing. A workspace start that ended on a user
+action shows that action's message and link; starting again reads the state
+first.
+
 The HTTP view also carries platform-owned `applicable`. For an ended Session,
 or one whose Agent is `DELETING` or `DELETED`, GET returns
 `{"applicable": false, "ready": false, "user_action": null, "actions": []}`
@@ -424,7 +447,12 @@ state cannot restore an action. Executable conversations return
 
 The console re-reads prerequisites when startup or runtime recovery changes
 the Session binding, when the page regains focus or visibility, and when the
-browser comes back online. Return reads use the console's shared throttling
+browser comes back online. A start the page watched bind the Session to a new
+box with a running runtime is the exception: binding a new box takes a
+startup, which reads `read_user_actions` before it takes the box, so the
+console takes the prerequisites as met for that binding and enables sending
+without another read. A start that stopped on a user action, and a recovery
+that reattached the same box, are read again. Return reads use the console's shared throttling
 and in-flight deduplication; there is no prerequisite polling timer. A stale
 operation refused with `409 INVALID_REQUEST` triggers a status read, without
 replaying the operation. These reads initiate no consent or registration.

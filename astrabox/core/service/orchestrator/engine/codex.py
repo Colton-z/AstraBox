@@ -80,6 +80,7 @@ from astrabox.core.service.orchestrator.engine.runtime_profiles import (
 from astrabox.core.service.orchestrator.runtime.models import SessionRuntime
 from astrabox.core.service.orchestrator.runtime.sandbox_client import extract_sandbox_id
 from astrabox.seams.sandbox import SANDBOX_CONTAINER_ENGINE_DOCKER
+from astrabox.seams.model import described_profile
 
 logger = get_logger(__name__)
 
@@ -114,8 +115,9 @@ CODEX_PROVIDER_ID = "astrabox"
 CODEX_SESSIONS_DIR_TEMPLATE = "{home}/.codex/sessions"
 CODEX_MIRROR_SUBPATH_PREFIX = "codex/"
 
-#: The environment variable the image reads the catalog from.
-CODEX_MODEL_CATALOG_ENV_VAR = "CODEX_MODEL_CATALOG_JSON"
+#: The environment variable the image reads the gateway model's entry facts
+#: from (``astrabox-model-catalog.py``).
+CODEX_GATEWAY_MODEL_ENV_VAR = "CODEX_GATEWAY_MODEL_JSON"
 
 CODEX_CONFIG_PROTECTED_KEYS = (
     "model",
@@ -143,20 +145,6 @@ CODEX_TURN_PROTECTED_KEYS = (
 )
 
 CODEX_ENGINE_OPTIONS_SCHEMA: tuple[dict[str, Any], ...] = (
-    {
-        "key": "model_catalog",
-        "label": "Model catalog",
-        "type": "object",
-        "help": (
-            "The vendor's `models.json` for the models this environment "
-            "serves. Replaces the complete models.json object at box startup. "
-            "Codex looks its model up by slug here; without "
-            "an entry it falls back to its behaviour for an unknown model, "
-            "which against a gateway answers one message twice. The fields "
-            "that decide the transport live in this file, so it is the "
-            "engine's own answer rather than a display detail."
-        ),
-    },
     {
         "key": "config",
         "label": "Codex config overrides",
@@ -315,11 +303,33 @@ def _codex_mcp_server(name: str, server: dict[str, Any], *, platform: bool) -> d
     )
 
 
-def _model_catalog(template: Any) -> str | None:
-    if "model_catalog" not in (getattr(template, "engine_options", None) or {}):
-        return None
-    catalog = _engine_option(template, "model_catalog")
-    return json.dumps(catalog, sort_keys=True)
+def _gateway_model(model_access: Any) -> str:
+    """The model's Codex catalog facts, as the JSON the image completes.
+
+    The image completes these with Codex's own fields for a model it does not
+    know and adds the entry to the release's bundled catalog; a model the
+    bundled catalog already names keeps Codex's entry. An unknown fact is left
+    out, so Codex applies its default: without a ``default_reasoning_level``
+    a request that chooses no effort carries none, and the upstream uses its
+    own default.
+    """
+
+    profile = described_profile(model_access)
+    model = str(model_access.model_name or "").strip()
+    entry: dict[str, Any] = {"slug": model, "display_name": model}
+    if profile.context_window is not None:
+        entry["context_window"] = profile.context_window
+        entry["max_context_window"] = profile.context_window
+    if profile.input_modalities is not None:
+        entry["input_modalities"] = list(profile.input_modalities)
+    if profile.reasoning_efforts is not None:
+        entry["supported_reasoning_levels"] = [
+            {"effort": effort, "description": f"Sends reasoning effort {effort}"}
+            for effort in profile.reasoning_efforts
+        ]
+        if profile.default_reasoning_effort in profile.reasoning_efforts:
+            entry["default_reasoning_level"] = profile.default_reasoning_effort
+    return json.dumps(entry, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def provider_config(base_url: str, *, endpoint_provider: str | None = None) -> dict[str, Any]:
@@ -420,7 +430,7 @@ def _forward_token(sandbox_id: str, runtime_identity: dict[str, Any] | None) -> 
     )
 
 
-def _engine_sandbox_request(model_access: Any, catalog: str | None) -> EngineSandboxRequest:
+def _engine_sandbox_request(model_access: Any) -> EngineSandboxRequest:
     """What a codex box must be, for the cold create and the prepared box alike.
 
     One builder for both paths so a box prepared before its Session exists is
@@ -431,10 +441,10 @@ def _engine_sandbox_request(model_access: Any, catalog: str | None) -> EngineSan
 
     return EngineSandboxRequest(
         entrypoint=CODEX_IMAGE_ENTRYPOINT,
-        # The image writes this to `models.json` before starting the server;
-        # it is a box-create fact because the server reads its catalog once,
-        # at boot.
-        env=({CODEX_MODEL_CATALOG_ENV_VAR: catalog} if catalog else {}),
+        # The image builds `models.json` from this before starting the
+        # server; it is a box-create fact because the server reads its
+        # catalog once, at boot.
+        env={CODEX_GATEWAY_MODEL_ENV_VAR: _gateway_model(model_access)},
         credential=ModelCredentialRequest(
             access=model_access,
             # Codex's only wire is the Responses API, so this is the path the
@@ -459,11 +469,11 @@ def _engine_sandbox_request(model_access: Any, catalog: str | None) -> EngineSan
     )
 
 
-def _slot_spawn_fingerprint(template: Any, *, base_url: str, catalog: str | None) -> str:
+def _slot_spawn_fingerprint(template: Any, *, model_access: Any) -> str:
     """The box-frozen facts a prepared codex box answers for, as one digest.
 
     Covers exactly what the box CREATE fixes and `thread/start` cannot
-    override: the image and its entrypoint, the model catalog baked into
+    override: the image and its entrypoint, the model entry baked into
     `models.json` at boot, the gateway base URL frozen into the egress
     allowlist, and the workload identity contract the workspace/cwd renders
     from. Thread-borne facts — model, instructions, sandbox mode, approval
@@ -478,8 +488,8 @@ def _slot_spawn_fingerprint(template: Any, *, base_url: str, catalog: str | None
         "engine_kind": ENGINE_KIND,
         "image": resolve_runtime_template_name(template),
         "entrypoint": list(CODEX_IMAGE_ENTRYPOINT),
-        "model_catalog_json": str(catalog or ""),
-        "base_url": str(base_url or ""),
+        "gateway_model": _gateway_model(model_access),
+        "base_url": str(getattr(model_access, "base_url", "") or "").strip(),
         "workload_user": SANDBOX_IMAGE_WORKLOAD_USER,
         "workload_home": SANDBOX_IMAGE_WORKLOAD_HOME,
         "workspace": SANDBOX_IMAGE_WORKSPACE_DIR,
@@ -754,8 +764,6 @@ class CodexEngineAdapter(EngineAdapter):
                 status_code=500,
             )
         template = context.template
-        base_url = str(getattr(context.model_access, "base_url", "") or "").strip()
-        catalog = _model_catalog(template)
         link = None
         try:
             link = await CodexAppServerLink.connect(
@@ -777,7 +785,7 @@ class CodexEngineAdapter(EngineAdapter):
         return {
             "engine_kind": ENGINE_KIND,
             "spawn_fingerprint": _slot_spawn_fingerprint(
-                template, base_url=base_url, catalog=catalog
+                template, model_access=context.model_access
             ),
             # MCP connects when the claiming Session starts its native thread.
             "activation_mcp_servers": [],
@@ -791,8 +799,7 @@ class CodexEngineAdapter(EngineAdapter):
     ) -> EngineSandboxRequest:
         """Declare Codex's image contract; the platform owns realization."""
 
-        catalog = _model_catalog(template)
-        return _engine_sandbox_request(model_access, catalog)
+        return _engine_sandbox_request(model_access)
 
     async def activate_runtime(
         self,
@@ -818,10 +825,9 @@ class CodexEngineAdapter(EngineAdapter):
                 message="codex model gateway base url is missing",
                 status_code=500,
             )
-        catalog = _model_catalog(template)
         prepared = context.prepared_manifest or {}
         if str(prepared.get("placement") or "") == "conversation_box":
-            expected_spawn = _slot_spawn_fingerprint(template, base_url=base_url, catalog=catalog)
+            expected_spawn = _slot_spawn_fingerprint(template, model_access=model_access)
             if expected_spawn != str(prepared.get("spawn_fingerprint") or ""):
                 raise APIError(
                     code="AGENT_PREWARM_CONFIG_INVALID",

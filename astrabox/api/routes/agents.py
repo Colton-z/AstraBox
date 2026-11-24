@@ -16,8 +16,13 @@ from astrabox.api.routes.conversation_models import (
 from astrabox.api.routes.response_envelope import ApiEnvelope
 from astrabox.api.routes.sessions import SessionRecord
 from astrabox.common.utils.api_response import success_response
+from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
 from astrabox.core.service.orchestrator.agent_schema import AGENT_FIELD_SCHEMA, get_agent_schema
+from astrabox.core.service.orchestrator.engine.capabilities import (
+    SESSION_KINDS,
+    require_session_kind,
+)
 from astrabox.core.service.orchestrator.service_registry import (
     get_agent_service,
     get_platform_service,
@@ -101,6 +106,84 @@ class AgentRecord(BaseModel):
     can_start_conversation: bool | None = None
 
 
+class AgentVersionRecord(BaseModel):
+    """One version of an Agent's definition, without the definition.
+
+    ``operation`` is ``create``, ``update``, ``restore`` (with the version it
+    reapplied in ``restored_from_version``) or ``baseline``: the definition the
+    Agent had when version history began, whose earlier versions were not kept.
+    ``changed_fields`` names the authored fields that differ from the version
+    before it, and is present on the version list only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: str
+    version: int
+    operation: Literal["create", "update", "restore", "baseline"]
+    restored_from_version: int | None = None
+    author_user_id: str | None = None
+    created_at: str
+    changed_fields: list[str] | None = None
+
+
+class AgentVersionDetail(AgentVersionRecord):
+    """One version with every authored field it stored, by name."""
+
+    definition: dict[str, Any]
+
+
+class AgentVersionPage(BaseModel):
+    """One page of an Agent's versions, newest first.
+
+    ``current_version`` is the Agent's version now. Pass the last version of a
+    page as ``before`` to read the next one while ``has_more`` is true.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_version: int
+    versions: list[AgentVersionRecord]
+    has_more: bool
+
+
+class AgentVersionChange(BaseModel):
+    """One value that differs between two versions.
+
+    ``path`` leads to the value from the authored field's name, descending into
+    objects. ``restorable`` says whether restoring a version writes the field.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: list[str]
+    before: Any = None
+    after: Any = None
+    restorable: bool
+
+
+class AgentVersionChanges(BaseModel):
+    """What ``version`` holds that ``base_version`` does not.
+
+    ``base_version`` is ``null``, with no changes, when ``version`` is the
+    oldest the Agent kept and no base was named.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int
+    base_version: int | None = None
+    changes: list[AgentVersionChange]
+
+
+class RestoreAgentVersionRequest(BaseModel):
+    """The Agent version the caller compared the restored one against."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: int = Field(ge=1)
+
+
 class AgentListPage(BaseModel):
     """One page of the Agents the caller may see, by name regardless of case.
 
@@ -179,7 +262,7 @@ class AgentFormSchema(BaseModel):
 
 
 class AgentRuntimeProfileOption(BaseModel):
-    """One RuntimeProfile an Agent author may choose, without its secrets."""
+    """One RuntimeProfile an Agent author or Assistant owner may choose, without its secrets."""
 
     model_config = ConfigDict(extra="allow")
 
@@ -187,6 +270,10 @@ class AgentRuntimeProfileOption(BaseModel):
     display_name: str
     engine_kind: str
     enabled: bool
+    #: The products the installed engine serves.
+    supported_session_kinds: list[str] = []
+    #: The permission modes the engine declares; empty when it has none.
+    permission_modes: list[str] = []
     #: The RuntimeProfile's model endpoint provider; null when the
     #: deployment's default serves it.
     endpoint_provider: str | None = None
@@ -240,6 +327,25 @@ class AgentPreparedRuntimeStatus(BaseModel):
     sandbox_id: str | None = None
     prepared_at: str | None = None
     last_error: str | None = None
+
+
+def _version_parameter(request: Request, name: str) -> int | None:
+    """An optional Agent version number given as a query parameter."""
+
+    raw = request.query_params.get(name)
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        value = 0
+    if value < 1:
+        raise APIError(
+            code="INVALID_REQUEST",
+            message=f"{name} must be a version number",
+            status_code=400,
+        )
+    return value
 
 
 def register_agent_routes(app: Any) -> None:
@@ -322,11 +428,29 @@ def register_agent_routes(app: Any) -> None:
         "/api/v1/agent-configuration/runtime-profiles",
         response_model=ApiEnvelope[list[AgentRuntimeProfileOption]],
         response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "session_kind",
+                    "string",
+                    "The product being configured: agent_chat for an Agent, "
+                    "assistant_chat for an Assistant.",
+                    default="agent_chat",
+                    enum=sorted(SESSION_KINDS),
+                ),
+            ]
+        },
     )
     async def list_agent_configuration_runtime_profiles(request: Request):
-        """Secret-free RuntimeProfile choices for the Agent form."""
+        """Secret-free RuntimeProfile choices for the Agent and Assistant forms."""
         await _resolve_user(request)
-        result = await get_platform_service().list_agent_runtime_profile_options()
+        try:
+            session_kind = require_session_kind(
+                request.query_params.get("session_kind", "agent_chat")
+            )
+        except ValueError as exc:
+            raise APIError(code="INVALID_REQUEST", message=str(exc), status_code=400) from exc
+        result = await get_platform_service().list_runtime_profile_options(session_kind)
         return success_response(result)
 
     @app.get(
@@ -423,6 +547,90 @@ def register_agent_routes(app: Any) -> None:
         # concurrent edit from silently replacing another.
         user = await _resolve_user(request)
         result = await _service.update_agent(user, agent_id, payload)
+        return success_response(result)
+
+    @app.get(
+        "/api/v1/agents/{agent_id}/versions",
+        response_model=ApiEnvelope[AgentVersionPage],
+        response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "limit", "integer", "Versions per page.", default=50, minimum=1, maximum=100,
+                ),
+                query_parameter(
+                    "before", "integer", "Read the versions below this one.", minimum=1,
+                ),
+            ]
+        },
+    )
+    async def list_agent_versions(agent_id: str, request: Request):
+        """The Agent's versions, newest first, for a manager of the Agent."""
+
+        user = await _resolve_user(request)
+        result = await _service.list_agent_versions(
+            user,
+            agent_id,
+            before=_version_parameter(request, "before"),
+            limit=list_page_limit(request.query_params.get("limit")),
+        )
+        return success_response(result)
+
+    @app.get(
+        "/api/v1/agents/{agent_id}/versions/{version}",
+        response_model=ApiEnvelope[AgentVersionDetail],
+        response_model_exclude_unset=True,
+    )
+    async def get_agent_version(agent_id: str, version: int, request: Request):
+        user = await _resolve_user(request)
+        result = await _service.get_agent_version(user, agent_id, version)
+        return success_response(result)
+
+    @app.get(
+        "/api/v1/agents/{agent_id}/versions/{version}/changes",
+        response_model=ApiEnvelope[AgentVersionChanges],
+        response_model_exclude_unset=True,
+        openapi_extra={
+            "parameters": [
+                query_parameter(
+                    "base", "integer",
+                    "The version to compare against; the version before this one when omitted.",
+                    minimum=1,
+                ),
+            ]
+        },
+    )
+    async def get_agent_version_changes(agent_id: str, version: int, request: Request):
+        """What a version changed, value by value.
+
+        Naming the Agent's current version as ``base`` shows what restoring
+        ``version`` would change.
+        """
+
+        user = await _resolve_user(request)
+        result = await _service.get_agent_version_changes(
+            user, agent_id, version, base=_version_parameter(request, "base")
+        )
+        return success_response(result)
+
+    @app.post(
+        "/api/v1/agents/{agent_id}/versions/{version}/restore",
+        response_model=ApiEnvelope[AgentRecord],
+        response_model_exclude_unset=True,
+    )
+    async def restore_agent_version(
+        agent_id: str, version: int, request: Request, body: RestoreAgentVersionRequest
+    ):
+        """Save the Agent with the editable fields ``version`` stored.
+
+        The body names the Agent version the caller compared against; a change
+        made since answers ``AGENT_VERSION_CONFLICT`` and writes nothing.
+        """
+
+        user = await _resolve_user(request)
+        result = await _service.restore_agent_version(
+            user, agent_id, version, expected_version=body.version
+        )
         return success_response(result)
 
     @app.post(

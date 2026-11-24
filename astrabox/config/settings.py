@@ -274,6 +274,10 @@ class AstraBoxSettings(BaseSettings):
         default="open_sandbox",
         description="Name of the registered sandbox backend (resolved at the runtime seam; fails loud if unknown).",
     )
+    hermes_webapp_embedded: bool = Field(
+        default=False,
+        description="Embed Hermes when the HTTPS sandbox gateway permits the console origin to frame it.",
+    )
 
     @field_validator("sandbox_backend", mode="before")
     @classmethod

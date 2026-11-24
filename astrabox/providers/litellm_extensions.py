@@ -91,6 +91,7 @@ AGENT_MANAGEMENT_ROUTES = (
     "/mcp-rest/tools/call",
     "/get/mcp_semantic_filter_settings",
     "/model_group/info",
+    "/management/v1/users/me",
 )
 
 _SHELL_STYLE = """
@@ -868,6 +869,12 @@ def register_litellm_extension_routes(app: Any) -> None:
     @app.get("/model_group/info", include_in_schema=False)
     async def extension_console_model_group_info(request: Request) -> Response:
         return await _extension_api(request, "/model_group/info")
+
+    # LiteLLM's pages read the signed-in user here on every load and sign the
+    # browser out when the read fails.
+    @app.get("/management/v1/users/me", include_in_schema=False)
+    async def extension_console_current_user(request: Request) -> Response:
+        return await _extension_api(request, "/management/v1/users/me")
 
     async def _direct_admin_user(request: Request) -> UserContext | RedirectResponse:
         resolver = getattr(request.app.state, "web_identity_resolver", None)

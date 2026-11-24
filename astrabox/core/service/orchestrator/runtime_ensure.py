@@ -12,6 +12,8 @@ orchestration around it and the session write-backs.
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import contextlib
 import uuid
 from collections.abc import Callable
@@ -47,7 +49,7 @@ _RUNTIME_ENSURE_ATTACH_FAILED = "ATTACH_FAILED"
 class _RuntimeEnsureResult:
     """What one ensure attempt produced: a runtime, or why there is none."""
 
-    __slots__ = ("status", "runtime", "error_text", "session", "sandbox_gone", "delivery_changed")
+    __slots__ = ("status", "runtime", "error_text", "session", "sandbox_gone", "delivery_changed", "refusal")
 
     def __init__(
         self,
@@ -58,6 +60,7 @@ class _RuntimeEnsureResult:
         session: dict[str, Any] | None = None,
         sandbox_gone: bool = False,
         delivery_changed: bool = False,
+        refusal: dict[str, Any] | None = None,
     ) -> None:
         self.status = status
         self.runtime = runtime
@@ -70,6 +73,18 @@ class _RuntimeEnsureResult:
         # delivery owner the configuration does not declare; the reader host
         # replaces it, since no reattachment can serve the declared owner.
         self.delivery_changed = delivery_changed
+        # The box is alive, but the attach failed with an APIError that is not
+        # retryable, ``{code, message}``: attaching it again fails the same
+        # way, so the reader host fails the waiting inputs with this error
+        # instead of reconnecting.
+        self.refusal = refusal
+
+
+def _attach_refusal(exc: BaseException) -> dict[str, Any] | None:
+    """The error an attach failure answers waiting inputs with, when retrying cannot clear it."""
+    if isinstance(exc, APIError) and not exc.retryable:
+        return {"code": exc.code, "message": exc.message}
+    return None
 
 
 def _is_sandbox_gone_error(exc: BaseException) -> bool:
@@ -146,7 +161,7 @@ class RuntimeEnsure:
                 message="agent_chat runtime_identity is required",
                 status_code=409,
             )
-        template = await self._agent_config.resolve_session_harness(session)
+        template = await self._agent_config.resolve_bound_session_harness(session)
         if template is None:
             raise APIError(
                 code="TEMPLATE_NOT_ALLOWED",
@@ -348,6 +363,7 @@ class RuntimeEnsure:
                 session=session,
                 sandbox_gone=gone,
                 delivery_changed=delivery_changed,
+                refusal=None if gone or delivery_changed else _attach_refusal(exc),
             )
         with contextlib.suppress(Exception):
             await self._sessions_repo.update_session(session_id, write_back)
@@ -395,10 +411,11 @@ class RuntimeEnsure:
         # missing/dead binding falls through to the same attach-or-recreate path.
         sandbox_id = str(session.get("sandbox_id") or "").strip()
 
-        runtime = self._runtime_manager.get_runtime(
-            session_id,
-            sandbox_id=sandbox_id or None,
-        )
+        with startup_stage(session_id, "reader_local_lookup"):
+            runtime = self._runtime_manager.get_runtime(
+                session_id,
+                sandbox_id=sandbox_id or None,
+            )
         if runtime is not None:
             return _RuntimeEnsureResult(
                 status=_RUNTIME_ENSURE_ATTACHED,
@@ -442,15 +459,16 @@ class RuntimeEnsure:
             sandbox_id=sandbox_id,
         )
 
-        attach_result = await self._attach_runtime_for_turn(
-            session=session,
-            sandbox_id=sandbox_id,
-            engine_session_key=engine_session_key,
-            workspace_plan=workspace_plan,
-            session_kind="agent_chat",
-            runtime_identity=runtime_identity,
-            log_context="agent_chat turn prepare",
-        )
+        with startup_stage(session_id, "reader_remote_attach"):
+            attach_result = await self._attach_runtime_for_turn(
+                session=session,
+                sandbox_id=sandbox_id,
+                engine_session_key=engine_session_key,
+                workspace_plan=workspace_plan,
+                session_kind="agent_chat",
+                runtime_identity=runtime_identity,
+                log_context="agent_chat turn prepare",
+            )
         # A gone box is reported, not replaced here: the reader host ends what
         # the box took with it and starts a replacement only for waiting inputs.
         return attach_result
@@ -643,7 +661,7 @@ class RuntimeEnsure:
                     sandbox_id,
                     lightweight_exc,
                 )
-                template = await self._agent_config.resolve_session_harness(session)
+                template = await self._agent_config.resolve_bound_session_harness(session)
                 if template is None:
                     raise lightweight_exc
                 runtime = await self._runtime_manager.ensure_runtime(
@@ -724,12 +742,14 @@ class RuntimeEnsure:
                         session_id,
                         sandbox_id,
                     )
+                delivery_changed = _is_delivery_changed_error(full_exc)
                 return _RuntimeEnsureResult(
                     status=_RUNTIME_ENSURE_ATTACH_FAILED,
                     error_text=error_text,
                     session=session,
                     sandbox_gone=gone,
-                    delivery_changed=_is_delivery_changed_error(full_exc),
+                    delivery_changed=delivery_changed,
+                    refusal=None if gone or delivery_changed else _attach_refusal(full_exc),
                 )
 
 

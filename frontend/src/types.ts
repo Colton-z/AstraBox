@@ -66,6 +66,10 @@ export type AdminAgentCategory = Schemas['AdminAgentCategory'];
 export type DeletedAgentCategory = Schemas['DeletedAgentCategory'];
 export type AgentTag = Schemas['AgentTag'];
 export type AgentFavorite = Schemas['AgentFavorite'];
+export type AgentVersionRecord = Schemas['AgentVersionRecord'];
+export type AgentVersionPage = Schemas['AgentVersionPage'];
+export type AgentVersionChange = Schemas['AgentVersionChange'];
+export type AgentVersionChanges = Schemas['AgentVersionChanges'];
 
 /**
  * A session's state as its read paths project it.
@@ -643,6 +647,7 @@ export interface AdminSessionMcpConnection {
 }
 
 export interface AdminSessionDetail extends AdminSessionSummary {
+  conversation_state: string;
   template_skills?: SkillDescriptor[];
   template_mcp_servers?: string[];
   template_mcp_config?: unknown;
@@ -673,6 +678,12 @@ export interface AdminTraceResponse {
   /** What the person said that the response answers; empty for one the runtime started. */
   user_preview?: string;
   assistant_preview?: string;
+  /**
+   * What the engine process reported when this response failed with it, and
+   * the sandbox it ran in (`SessionResponse.diagnostic`); null when none was
+   * recorded. Operator evidence that no conversation view carries.
+   */
+  diagnostic?: Record<string, unknown> | null;
 }
 
 /** One stored part of the selected response's output (`admin_service._summarize_part`). */

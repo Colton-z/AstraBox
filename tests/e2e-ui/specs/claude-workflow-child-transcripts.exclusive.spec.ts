@@ -48,7 +48,7 @@ test('mirrored Workflow Agents have stable history and navigation alongside ordi
   ];
   const main = workflows.map((workflow) => ({ type: 'user', uuid: randomUUID(),
     message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `launch-${workflow.task}`, content: workflow.name }] },
-    // WorkflowOutput from the pinned Claude Code 2.1.308 sdk-tools.d.ts.
+    // WorkflowOutput from the pinned Claude Code 2.1.330 sdk-tools.d.ts.
     toolUseResult: { status: 'async_launched', taskType: 'local_workflow', taskId: workflow.task,
       runId: workflow.run, workflowName: workflow.name },
   }));

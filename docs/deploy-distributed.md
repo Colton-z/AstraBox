@@ -207,3 +207,18 @@ same-session history and streaming through either replica, and cross-replica
 stop/approval actions. Verify shared workspace persistence on different sandbox
 nodes separately. These checks exercise shared-service connections that a
 configuration render or a health check cannot verify.
+
+## Upgrade the replicas
+
+Stop every replica of the older release before you start a replica of the new
+one, as for any [upgrade](deploy.md#access-and-upgrades). Replicas of two
+releases behind one ingress do not serve one console: the page a replica serves
+names hashed script and stylesheet files that only its own release builds, so a
+request for one of them that reaches a replica of the other release gets a 404
+and the page cannot start. A starting replica also brings the shared schema to
+its own release while the older replicas would still be serving on it.
+
+A console page that loads while no replica answers waits, and loads once the
+ingress answers again. A page that is already open moves to the new release the
+next time it checks the server, on focus or within a minute, after its reader's
+unsent message or unsaved edits are sent or saved.

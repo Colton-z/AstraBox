@@ -25,12 +25,12 @@ ARG SANDBOX_BASE_IMAGE=ghcr.io/agent-infra/sandbox:1.11.0
 # already holds the same verified bytes supplies them with
 # `--build-context hermes-source=DIR` instead of downloading again.
 FROM scratch AS hermes-source
-ADD --checksum=sha256:147a567a05402c2832ca12d7e0a33f48fc0e7f627018687cbae1f333dafff0c2 https://github.com/NousResearch/hermes-agent/archive/4d04303818b61bf3aa09278af48356315515965b.tar.gz /hermes-source.tar.gz
+ADD --checksum=sha256:3dffc702249874db2e6f60d93370a8d3c11e57e3ab5ee321447969e170a51aef https://github.com/NousResearch/hermes-agent/archive/caafe5389ae585ef77387a962aee05b1bcf17029.tar.gz /hermes-source.tar.gz
 
-FROM ${SANDBOX_BASE_IMAGE}
+FROM ${SANDBOX_BASE_IMAGE} AS hermes-runtime
 
 # The native install stamp binds the release to its checksum-pinned source.
-ARG HERMES_AGENT_VERSION=0.22.4
+ARG HERMES_AGENT_VERSION=0.23.3
 ARG HERMES_EXTRAS=all
 ARG HERMES_VENV=/opt/hermes/.venv
 # Optional memory-provider client(s) to pre-bake for fast first-use, as a
@@ -65,12 +65,12 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
     ln -s "${HERMES_VENV}" /opt/hermes/source/.venv; \
     "${hermes_python}" -c 'from pathlib import Path; from pm import stage_manager_runtime; from scripts.bundles.payload import seal_pm_runtime; root = Path("/opt/hermes/source"); import sys; python = Path(sys.executable).resolve(); stage_manager_runtime(python=python, destination=root / "pm-runtime", project=root / "pm"); seal_pm_runtime(root, python)'; \
     python3.12 scripts/write_install_stamp.py --output install-stamp.json \
-      --commit 4d04303818b61bf3aa09278af48356315515965b --base-version "${HERMES_AGENT_VERSION}" \
+      --commit caafe5389ae585ef77387a962aee05b1bcf17029 --base-version "${HERMES_AGENT_VERSION}" \
       --display-version "${HERMES_AGENT_VERSION}" --distance 0 \
       --source docker --distribution docker --update-mechanism external --runtime-dir /opt/hermes/source/tools; \
     "${hermes_python}" -c 'import json; from pathlib import Path; path = Path("install-stamp.json"); stamp = json.loads(path.read_text()); stamp["pmRuntime"] = "/opt/hermes/source/pm-runtime"; path.write_text(json.dumps(stamp) + "\n")'; \
     ln -sf "${HERMES_VENV}/bin/hermes" /usr/local/bin/hermes; \
-    "${HERMES_VENV}/bin/python" -c 'from hermes_cli.version_info import get_version_info; import sys; info = get_version_info(); assert info.base_version == sys.argv[1] and info.commit == "4d04303818b61bf3aa09278af48356315515965b"' "${HERMES_AGENT_VERSION}"; \
+    "${HERMES_VENV}/bin/python" -c 'from hermes_cli.version_info import get_version_info; import sys; info = get_version_info(); assert info.base_version == sys.argv[1] and info.commit == "caafe5389ae585ef77387a962aee05b1bcf17029"' "${HERMES_AGENT_VERSION}"; \
     unset HERMES_RUNTIME_DIR; \
     command -v hermes; \
     hermes --version; \
@@ -78,6 +78,15 @@ RUN --mount=type=bind,from=hermes-source,source=/hermes-source.tar.gz,target=/tm
     hermes backup --help; \
     hermes import --help; \
     "${HERMES_VENV}/bin/python" -c 'import gateway.session_controls'
+
+# The vendor's builder and its npm dependencies stay out of the final image.
+FROM hermes-runtime AS hermes-webapp
+RUN cd /opt/hermes/source && \
+    hermes webapp --build-only && \
+    test -f apps/desktop/dist-webapp/index.html
+
+FROM hermes-runtime
+COPY --from=hermes-webapp /opt/hermes/source/apps/desktop/dist-webapp /opt/hermes/source/apps/desktop/dist-webapp
 
 # Native PM metadata is non-secret and must be readable by sandbox accounts.
 RUN chmod 0644 /opt/hermes/source/tools/facts.json && \
@@ -174,3 +183,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends nginx-extras &&
     rm -rf /var/lib/apt/lists/* && \
     nginx -V 2>&1 | grep -q -- --with-http_secure_link_module && \
     python3 -c "import ast; ast.parse(open('/usr/local/bin/astrabox-workspace-viewer').read())"
+
+COPY --chmod=0444 containers/sandbox-hermes/hermes-webapp.nginx.conf /opt/astrabox/hermes/
+COPY --chmod=0444 containers/sandbox-hermes/hermes_webapp_link.py /opt/astrabox/hermes/

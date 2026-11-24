@@ -1,0 +1,48 @@
+--- a/components/execd/native/session-gate.c
++++ b/components/execd/native/session-gate.c
+@@ -99,0 +100,9 @@
++    /*
++     * AstraBox modification: lead a process group of its own. execd
++     * interrupts a run by signalling the workload's group, which then holds
++     * the shell and the commands it starts but not bubblewrap: a SIGINT
++     * would terminate bubblewrap and the whole session with it.
++     */
++    if (setpgid(0, 0) != 0)
++        fail_closed(control_fd, -1);
++
+--- a/components/execd/pkg/runtime/isolated_session.go
++++ b/components/execd/pkg/runtime/isolated_session.go
+@@ -619,0 +620,25 @@
++// AstraBox modification: signalWorkloadGroupIfRunning signals the workload's
++// process group, which the session gate makes the workload lead. It holds the
++// shell and the commands it starts, not bubblewrap, so an interrupt ends the
++// running command and the session stays alive.
++func (s *isolatedSession) signalWorkloadGroupIfRunning(signal syscall.Signal) error {
++	if s.cmd == nil || s.cmd.Process == nil {
++		return nil
++	}
++	if s.identity.PID <= 0 {
++		return errors.New("isolated session has no workload identity")
++	}
++	s.processSignalMu.Lock()
++	defer s.processSignalMu.Unlock()
++	if s.processExited {
++		return nil
++	}
++	select {
++	case <-s.processWaited:
++		s.processExited = true
++		return nil
++	default:
++	}
++	return signalSessionProcessGroup(s.identity.PID, signal)
++}
++
+--- a/components/execd/pkg/runtime/isolated_session_ctrl.go
++++ b/components/execd/pkg/runtime/isolated_session_ctrl.go
+@@ -754 +754 @@
+-			_ = s.signalProcessGroupIfRunning(syscall.SIGINT)
++			_ = s.signalWorkloadGroupIfRunning(syscall.SIGINT)
+@@ -767 +767 @@
+-					_ = s.signalProcessGroupIfRunning(syscall.SIGINT)
++					_ = s.signalWorkloadGroupIfRunning(syscall.SIGINT)

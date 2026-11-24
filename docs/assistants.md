@@ -17,11 +17,11 @@ and other systems can reach through the console, API, Deployments, or remote MCP
 | Who can use it | Accounts that pass the Agent's authorization rules | Its owner |
 | Typical work | Repeatable tasks, team use, and automation | One person's work that continues over time |
 | Workspace | Each conversation has its own workspace | The owner's conversations use the same workspace |
-| How work starts | Console, API, Deployment, or remote MCP | Console, API, or a Deployment its owner manages |
+| How work starts | AstraBox conversation page, API, Deployment, or remote MCP | The runtime's native page, or a supported API or Deployment |
 
-An Assistant does not merge its conversations. Each conversation has its own
-Session record and history, while all of those Sessions work in the Assistant's
-shared workspace.
+Native conversations have separate histories in the runtime's own store and
+share the Assistant's workspace. An API or Deployment that uses AstraBox's
+conversation service also has AstraBox Session records.
 
 ## Your Assistant
 
@@ -57,7 +57,11 @@ Assistant.
    [timezone](#timezone) starts as the browser's.
 4. Select **Create**.
 
-The signed-in user becomes the owner. The RuntimeProfile also determines the Agent
+The signed-in user becomes the owner; no administrator role is needed. The
+form offers every enabled RuntimeProfile whose Agent program supports
+Assistants, which an API client reads from
+`GET /api/v1/agent-configuration/runtime-profiles?session_kind=assistant_chat`.
+The RuntimeProfile also determines the Agent
 program, and the console keeps both fixed after creation. The name, description,
 icon, timezone, system prompt, and default permission mode remain editable.
 
@@ -172,7 +176,8 @@ Assistant's own fields. For Hermes:
   which the Assistant cannot change. The keys AstraBox sets itself are refused:
   `model`, `providers`, `custom_providers`, `mcp_servers`, `terminal`,
   `timezone` (set it as the Assistant's [timezone](#timezone)),
-  `plugins.enabled` and `plugins.disabled`. `skills` is refused too, because
+  `plugins.enabled`, `plugins.disabled`, `platforms`, `gateway`, and `webapp`.
+  `skills` is refused too, because
   Hermes does not read Skills settings from the managed scope.
 
 You can ask your Assistant to create or edit its own Skills using Hermes'
@@ -183,35 +188,68 @@ files and Hermes' sync records in the database for restoration into a new box.
 Skills supplied through the Assistant's `skills` configuration remain managed
 by those sources: update the source to change what the configuration supplies.
 
-## Assistants that work from a panel: dsh-superagent {#panel-runtimes}
+## Native Assistant pages {#panel-runtimes}
 
-Some Agent programs do not hold conversations with their owner.
+Select an Assistant in the console to open its runtime's page. These pages
+need HTTPS and OpenSandbox Secure Access. Set the lifecycle server's route
+mode to `wildcard` with a gateway address beginning with `*.`. The OpenSandbox
+1.2.1 ingress chart uses `gateway.gatewayRouteMode=header` to route these
+requests by their Host. The console issues a short-lived signed address for
+the owner, of the form
+`<sandbox>-<port>-<expiry>-<signature>.<gateway domain>`. Issue a wildcard
+certificate for the gateway domain with a DNS challenge.
+
+### Hermes
+
+By default, select **Open in a new tab** on the Assistant page to use the
+official Hermes Webapp. It uses the Assistant's resident Hermes Gateway and the same profile
+and SessionDB that AstraBox saves and restores when it replaces a box. Use
+Hermes' own controls for new conversations, history, and continuing a chat.
+AstraBox issues a fresh one-use Hermes sign-in link each time you open it.
+When the signed address expires, reopen the Webapp from the Assistant to
+get a new address and continue from history.
+
+Configure the HTTPS reverse proxy to set `X-Forwarded-Host` from the
+incoming Host and overwrite any client-supplied value. Forward this header
+with HTTP requests and WebSocket upgrades so Hermes can validate their origin.
+
+Set `ASTRABOX_HERMES_WEBAPP_EMBEDDED=true` to open the Webapp inside the console.
+The console and sandbox gateway must be on the same HTTPS site. For signed
+Hermes Webapp document requests on port 9121, configure the reverse proxy to
+replace `frame-ancestors 'none'` in the upstream Content-Security-Policy with
+`frame-ancestors` followed by the exact HTTPS console origin. Preserve the
+other directives, including the one-use sign-in page's script nonce.
+
+The runtime image needs the bundled Hermes Webapp. After updating a
+RuntimeProfile's image, hibernate and wake existing workspaces to use the
+new image with their saved Hermes state.
+
+### dsh-superagent
+
 [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)
-runs on DeepSeek Harness, takes requests from its Sources (a GitHub
-repository, or a ticket or to-do service your own Source plugin reads), turns
-each into a Ticket, and has one of its owner's Agents work it. People talk to it where
-they already work; the owner supervises it in the bundle's own panel. An Assistant on a
-RuntimeProfile with the `dsh_superagent` engine therefore has no
-conversations: opening it shows the panel, on its Superagent page, inside the
-console, and the Assistant keeps running between visits so it can answer
-its Sources.
+runs on DeepSeek Harness, takes requests from Sources, turns each into a
+Ticket, and has one of its owner's Agents work it. Its Web profile opens
+inside the console on the Superagent panel. Use the harness's conversation
+controls to start a chat, open its history, or continue a saved Session. The
+Assistant keeps running between visits so it can answer its Sources.
+
+New browser chats and Superagent Sessions configured to inherit the DSH
+default use the Assistant's model connection. In **DSH default model
+settings**, set a native `reasoningEffort` such as
+`{"reasoningEffort": "xhigh"}` to select an effort the model connection
+offers. Otherwise the default effort comes from the model connection, when
+it describes one. DSH can also keep explicit selections in existing
+Sessions or in Superagent's per-role settings.
 
 The deployment needs:
 
-- **OpenSandbox with Secure Access and wildcard routes** (`gatewayRouteMode:
-  wildcard` on the lifecycle server). The console opens the panel through a
-  short-lived signed address of the form
-  `<sandbox>-<port>-<expiry>-<signature>.<gateway domain>`; a header-routed
-  gateway cannot be opened by a browser and the Assistant shows why. The
-  address lives `ASTRABOX_SANDBOX_ENDPOINT_URL_TTL_SECONDS` (15 minutes by
-  default); the console fetches the next one before it expires, which reloads
-  the panel.
 - **The gateway domain on the console's site.** The harness keeps its login in
   a `SameSite=Strict` cookie, which a browser sends inside the console's frame
   only when both share a registrable domain and a scheme: for example a
   console at `https://astrabox.example.com` with a gateway at
-  `*.sbx.example.com`, both HTTPS. A wildcard certificate for the gateway
-  domain has to be issued with a DNS challenge.
+  `*.sbx.example.com`, both HTTPS. The console renews the signed address before
+  `ASTRABOX_SANDBOX_ENDPOINT_URL_TTL_SECONDS` (15 minutes by default), which
+  reloads the panel.
 - **A GitHub account for the agent, to work from GitHub.** Set the deployment secret
   `astrabox-dsh-superagent-github-token` (through the environment that is
   `ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN`) to a token of one bot account, and
@@ -267,7 +305,7 @@ its `report_outcome` tool ([Task outcomes](a2a.md#task-outcomes)):
 
 A question the Agent asks, or an approval it waits for, shows on the Ticket and
 is answered in the Agent's conversation. Stopping a Ticket cancels its
-conversation's work ([cancellation](a2a.md)). The Agents the Assistant can
+conversation's work ([cancellation](a2a.md#interaction-boundaries)). The Agents the Assistant can
 choose are the ones its owner can use when its runtime starts; an Agent added
 later is offered after the next start.
 
@@ -650,6 +688,11 @@ field, as it is an Agent's. Each AstraBox instance publishes the exact
 Assistant endpoints in the interactive API reference at `/docs` and the OpenAPI
 document at `/openapi.json`. See [API overview](api.md) for authentication and
 request conventions.
+
+From a terminal or a script, `astrabox assistant` reads an Assistant, changes its
+model and Agent-program configuration, sets the credentials its runtime asks
+for, and pauses or resumes its workspace through the same endpoints
+([CLI Command Reference](cli/commands.md#astrabox-assistant)).
 
 ## Related guides
 

@@ -56,6 +56,7 @@ import { SessionPage } from './session/SessionPage';
 import { SessionTitleInput } from './session/components/SessionTitleInput';
 import { AssistantRail } from './assistant/AssistantRail';
 import { AssistantMainRoute } from './assistant/AssistantMainRoute';
+import { AssistantPanelHost } from './assistant/AssistantPanelHost';
 import { UserMenu } from './components/UserMenu';
 import { cn } from '@/lib/utils';
 import { isUnread, useNotificationPermission, useReplyNotifications } from '@/lib/replyNotifications';
@@ -424,7 +425,7 @@ export default function App() {
                             className="gap-1.5"
                             trail={
                               <span className="text-10 tabular-nums text-muted-foreground in-data-active:text-astra-fg">
-                                {formatShortTime(s.updated_at || s.created_at, t)}
+                                {formatShortTime(s.last_user_activity_at || s.created_at, t)}
                               </span>
                             }
                           >
@@ -536,6 +537,7 @@ export default function App() {
         ) : undefined
       }
     >
+        <AssistantPanelHost>
           <Routes>
             {/* Agents is the user-facing entry: pick a configured Agent from
                 /api/v1/agents → start a Session.
@@ -562,6 +564,7 @@ export default function App() {
             <Route path="/assistants/:assistantId" element={<AssistantMainRoute onOpened={refreshOverview} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+        </AssistantPanelHost>
     </AppShell>
   );
 }

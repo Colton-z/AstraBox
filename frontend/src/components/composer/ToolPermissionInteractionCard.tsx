@@ -169,7 +169,7 @@ export function ToolPermissionInteractionCard({
           <Collapsible className="text-sm">
             <CollapsibleTrigger className="group flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
               {t('misc:composer.view_tool_input')}
-              <ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-panel-open:rotate-180" />
+              <ChevronDownIcon className="size-4 shrink-0 transition-transform group-data-open:rotate-180" />
             </CollapsibleTrigger>
             <CollapsibleContent>
               {/* The tool's arguments are what the agent sent verbatim, so they

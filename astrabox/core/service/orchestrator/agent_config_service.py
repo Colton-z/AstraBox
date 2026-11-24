@@ -7,13 +7,14 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from typing import Any
 
 from astrabox.persistence.repository.agent_repository import AgentRepository
 from astrabox.persistence.repository.runtime_profile_repository import RuntimeProfileRepository
 from astrabox.persistence.repository.session_repository import SessionRepository
 from astrabox.persistence.repository.agent_repository import AgentReferenceMissing
+from astrabox.persistence.repository.agent_version_repository import AgentVersionRepository
 from astrabox.persistence.repository.assistant_catalog_repository import (
     AssistantCatalogRepository,
 )
@@ -38,11 +39,13 @@ from astrabox.core.service.orchestrator.schema_validation import (
 )
 from astrabox.core.service.orchestrator.agent.agent_catalog import normalize_catalog_fields
 from astrabox.core.service.orchestrator.agent_schema import (
+    AGENT_EDITABLE_REQUEST_FIELDS,
     AGENT_PRIVATE_STORED_FIELDS,
     agent_artifacts_enabled,
     default_prepared_capacity,
     validate_agent_payload,
 )
+from astrabox.core.service.orchestrator.agent_version_changes import definition_changes
 from astrabox.core.service.orchestrator.author_boundary import (
     refuse_reserved_mcp_fields,
     validate_author_declarations,
@@ -53,6 +56,7 @@ from astrabox.core.service.orchestrator.runtime_profile_schema import (
     validate_runtime_profile_payload,
 )
 from astrabox.core.service.orchestrator.engine.capabilities import (
+    SessionKind,
     capabilities_for_engine_kind,
     engine_allowed_for_session_kind,
     unsupported_engine_configuration_inputs,
@@ -133,6 +137,22 @@ def _version_conflict() -> APIError:
     )
 
 
+def _version_not_found(version: int) -> APIError:
+    return APIError(
+        code="AGENT_VERSION_NOT_FOUND",
+        message=f"the Agent's history has no version {version}",
+        status_code=404,
+    )
+
+
+def _marked_restorable(changes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``changes``, each saying whether restoring a version writes its field."""
+    return [
+        {**change, "restorable": change["path"][0] in AGENT_EDITABLE_REQUEST_FIELDS}
+        for change in changes
+    ]
+
+
 def _reference_missing(error: AgentReferenceMissing) -> APIError:
     """The API error for an Agent write naming a record that does not exist."""
     if error.reference == "environment":
@@ -144,6 +164,13 @@ def _reference_missing(error: AgentReferenceMissing) -> APIError:
     if error.reference == "category":
         return invalid_request("an Agent category this Agent names was deleted; reload the categories")
     return invalid_request(f"the Agent names a {error.reference} that does not exist")
+
+
+@dataclass(frozen=True)
+class AgentConversationAdmission:
+    template: AgentView
+    definition_version: int
+    started_at: float
 
 
 class AgentConfigService:
@@ -172,6 +199,7 @@ class AgentConfigService:
         spawn_background_task: Callable[..., Any] | None = None,
     ) -> None:
         self._agent_repo = agent_repo
+        self._agent_versions = AgentVersionRepository()
         self._runtime_profile_repo = runtime_profile_repo
         self._sessions_repo = sessions_repo or SessionRepository()
         # The runtime-view resolver reads the Assistant catalog directly. An
@@ -209,6 +237,14 @@ class AgentConfigService:
             item, viewer_user_id, viewer_roles or ()
         ):
             return None
+        return await self.resolve_agent_definition(
+            item, require_enabled_runtime_profile=require_enabled_runtime_profile,
+        )
+
+    async def resolve_agent_definition(
+        self, item: dict[str, Any], *, require_enabled_runtime_profile: bool = True,
+    ) -> AgentView:
+        """Build the runtime view from an already loaded Agent definition."""
         return await self._build_agent_view(
             item, {}, require_enabled_runtime_profile=require_enabled_runtime_profile
         )
@@ -257,6 +293,49 @@ class AgentConfigService:
         # The engine withholds what a channel conversation may not use
         # (runtime.mcp_servers.binding_mcp_server_definitions); the view stays
         # the Agent's, which its runtime generation is computed from.
+        return replace(view, session_source_type=session.get("source_type"))
+
+    async def resolve_bound_session_harness(self, session: dict[str, Any]) -> AgentView | None:
+        """Resolve the runtime view a Session's bound sandbox was prepared from.
+
+        Reconnecting to that sandbox launches the engine over what its
+        preparation installed there, Plugin checkouts included, so an Agent
+        Session resolves the Agent version its capability plan records: the
+        editable fields that version stored, with access settings and the
+        bindings made through their own endpoints as they are now, the same
+        split restoring that version makes. A new sandbox is prepared from the
+        latest version instead (:meth:`resolve_session_harness`), as is every
+        Assistant Session, which keeps no Agent version.
+        """
+        if not isinstance(session, dict) or session.get("session_kind") != "agent_chat":
+            return await self.resolve_session_harness(session)
+        identity = session.get("runtime_identity")
+        plan = identity.get("capability_plan") if isinstance(identity, dict) else None
+        version = plan.get("agent_version") if isinstance(plan, dict) else None
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
+            raise APIError(
+                code="CONVERSATION_IDENTITY_REQUIRED",
+                message=(
+                    "the Session's capability plan names no Agent version, so the "
+                    "configuration its sandbox was prepared from is unknown"
+                ),
+                status_code=409,
+            )
+        agent_id = str(session.get("agent_id") or "").strip()
+        item = await self._agent_repo.get_agent(agent_id) if agent_id else None
+        if item is None:
+            return None
+        if int(item["version"]) != version:
+            stored = await self._agent_versions.get(agent_id, version)
+            if stored is None:
+                raise _version_not_found(version)
+            definition = stored["definition"]
+            item = {
+                **item,
+                **{field: definition.get(field) for field in AGENT_EDITABLE_REQUEST_FIELDS},
+                "version": version,
+            }
+        view = await self._build_agent_view(item, {})
         return replace(view, session_source_type=session.get("source_type"))
 
     async def _resolve_assistant_harness(
@@ -952,11 +1031,100 @@ class AgentConfigService:
             raise _version_conflict()
         return self.sanitize_agent_doc(written)
 
+    async def list_agent_versions(
+        self, user: UserContext, agent_id: str, *, before: int | None, limit: int
+    ) -> dict[str, Any]:
+        """One page of the Agent's versions, newest first, for a manager of it.
+
+        Each version names the authored fields that differ from the version
+        before it; the oldest version an Agent kept has none to compare with.
+        ``before`` continues after a page's last version.
+        """
+        agent = await self._must_manage_agent_access(user, agent_id)
+        rows = await self._agent_versions.list_for_agent(
+            str(agent["agent_id"]), before=before, limit=limit + 1, definitions=True
+        )
+        versions = []
+        for row, older in zip(rows[:limit], [*rows[1:], None]):
+            definition = row.pop("definition")
+            row["changed_fields"] = (
+                sorted({change["path"][0] for change in definition_changes(older["definition"], definition)})
+                if older is not None
+                else []
+            )
+            versions.append(row)
+        return {
+            "current_version": int(agent["version"]),
+            "versions": versions,
+            "has_more": len(rows) > limit,
+        }
+
+    async def get_agent_version(
+        self, user: UserContext, agent_id: str, version: int
+    ) -> dict[str, Any]:
+        """One version of the Agent with the definition it stored."""
+        agent = await self._must_manage_agent_access(user, agent_id)
+        stored = await self._agent_versions.get(str(agent["agent_id"]), version)
+        if stored is None:
+            raise _version_not_found(version)
+        return stored
+
+    async def get_agent_version_changes(
+        self, user: UserContext, agent_id: str, version: int, *, base: int | None
+    ) -> dict[str, Any]:
+        """What ``version`` changed from ``base``, or from the version before it.
+
+        ``base_version`` is ``None``, with no changes, for the oldest version
+        the Agent kept. Each change says whether restoring a version writes it.
+        """
+        target = await self.get_agent_version(user, agent_id, version)
+        if base is None:
+            earlier = await self._agent_versions.get_preceding(target["agent_id"], version)
+        else:
+            earlier = await self._agent_versions.get(target["agent_id"], base)
+            if earlier is None:
+                raise _version_not_found(base)
+        return {
+            "version": version,
+            "base_version": earlier["version"] if earlier is not None else None,
+            "changes": _marked_restorable(
+                definition_changes(earlier["definition"], target["definition"])
+                if earlier is not None
+                else []
+            ),
+        }
+
+    async def restore_agent_version(
+        self, user: UserContext, agent_id: str, version: int, *, expected_version: int
+    ) -> dict[str, Any]:
+        """Save the Agent with the editable fields ``version`` stored.
+
+        The write is an ordinary Agent update of every field the authoring
+        endpoint accepts, so it is validated against the existing RuntimeProfiles,
+        categories and limits, applies only while the Agent is at
+        ``expected_version``, and becomes a new version naming ``version``.
+        Access settings and the bindings made through their own endpoints
+        (vaults, catalog selections, connectors) stay as they are.
+        """
+        stored = await self.get_agent_version(user, agent_id, version)
+        definition = stored["definition"]
+        return await self.upsert_agent_config(
+            user,
+            agent_id,
+            {
+                **{field: definition.get(field) for field in AGENT_EDITABLE_REQUEST_FIELDS},
+                "version": expected_version,
+            },
+            restored_from_version=version,
+        )
+
     async def upsert_agent_config(
         self,
         user: UserContext,
         agent_id: str,
         payload: dict[str, Any],
+        *,
+        restored_from_version: int | None = None,
     ) -> dict[str, Any]:
         """Update one Agent by id with optimistic concurrency.
 
@@ -1080,6 +1248,7 @@ class AgentConfigService:
                 expected_version=stored_version,
                 changes=updates,
                 updated_by=me,
+                restored_from_version=restored_from_version,
             )
         except AgentReferenceMissing as exc:
             raise _reference_missing(exc) from None
@@ -1283,14 +1452,17 @@ class AgentConfigService:
         rendered["extensions"] = extensions_projection(capabilities.extensions)
         return rendered
 
-    async def list_agent_runtime_profile_options(self) -> list[dict[str, Any]]:
-        """Return the small, secret-free RuntimeProfile catalog Agent forms need.
+    async def list_runtime_profile_options(
+        self, session_kind: SessionKind
+    ) -> list[dict[str, Any]]:
+        """Return the small, secret-free RuntimeProfile catalog a product form needs.
 
-        Agent authors need to choose a runnable RuntimeProfile, but they must not
-        receive the administrator's complete RuntimeProfile documents (network
-        policy, provider settings, and write-only credential metadata).  Keep
-        this projection deliberately narrow and exclude disabled runtime_profiles
-        whose installed engine does not declare the Agent product.
+        Agent authors and Assistant owners need to choose a runnable
+        RuntimeProfile, but they must not receive the administrator's complete
+        RuntimeProfile documents (network policy, provider settings, and
+        write-only credential metadata).  Keep this projection deliberately
+        narrow and exclude disabled runtime_profiles and those whose installed
+        engine does not declare ``session_kind``.
         """
         configs = await self._runtime_profile_repo.list_all()
         options: list[dict[str, Any]] = []
@@ -1298,11 +1470,12 @@ class AgentConfigService:
             if not isinstance(config, dict) or config.get("enabled") is False:
                 continue
             engine_kind = str(config.get("engine_kind") or "").strip()
-            if not engine_allowed_for_session_kind(engine_kind, "agent_chat"):
+            if not engine_allowed_for_session_kind(engine_kind, session_kind):
                 continue
             name = str(config.get("name") or "").strip()
             if not name:
                 continue
+            capabilities = capabilities_for_engine_kind(engine_kind)
             options.append(
                 {
                     "name": name,
@@ -1310,7 +1483,10 @@ class AgentConfigService:
                     "engine_kind": engine_kind,
                     "enabled": True,
                     "engine_available": True,
-                    "supported_session_kinds": ["agent_chat"],
+                    "supported_session_kinds": sorted(capabilities.supported_session_kinds),
+                    # The modes the form may offer, in the program's own
+                    # vocabulary; empty means the program has none to choose.
+                    "permission_modes": list(capabilities.permission_modes),
                     # The model endpoint provider, so the form asks for what
                     # it needs: a ChatGPT plan one spends a linked account.
                     # None when the deployment's default serves the profile.
@@ -1321,16 +1497,11 @@ class AgentConfigService:
                     # chosen environment. Empty means the engine takes no bag
                     # and the form shows no group.
                     "engine_options_schema": [
-                        dict(field)
-                        for field in capabilities_for_engine_kind(
-                            engine_kind
-                        ).extensions.native_config
+                        dict(field) for field in capabilities.extensions.native_config
                     ],
                     # What else the engine accepts, so the form shows only
                     # the extension fields this RuntimeProfile's engine reads.
-                    "extensions": extensions_projection(
-                        capabilities_for_engine_kind(engine_kind).extensions
-                    ),
+                    "extensions": extensions_projection(capabilities.extensions),
                 }
             )
         return sorted(options, key=lambda item: (str(item["display_name"]).lower(), item["name"]))

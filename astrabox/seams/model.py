@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import ipaddress
 from typing import Any, Literal
@@ -29,6 +29,30 @@ ENTRY_POINT_GROUP = "astrabox.providers.model"
 
 ModelCredentialKind = Literal["api_key", "bearer"]
 ModelInputModality = Literal["text", "image"]
+
+
+@dataclass(frozen=True)
+class ModelProfile:
+    """What the model connection states about one model; ``None`` is unknown.
+
+    The platform judges none of it. An engine adapter writes each known fact
+    into its runtime's own model configuration and leaves an unknown one to
+    the runtime's default; whatever the runtime then refuses reaches the user
+    as the runtime's error.
+
+    ``reasoning_efforts`` lists the effort levels the route accepts, spelled
+    as the wire protocols spell them: OpenAI's ``reasoning_effort`` and
+    Anthropic's ``output_config.effort`` (``none``, ``minimal``, ``low``,
+    ``medium``, ``high``, ``xhigh``, ``max``). An empty tuple states that the
+    route offers no effort control. ``default_reasoning_effort`` is the level
+    the model uses when a request names none.
+    """
+
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    input_modalities: tuple[ModelInputModality, ...] | None = None
+    reasoning_efforts: tuple[str, ...] | None = None
+    default_reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +80,10 @@ class ResolvedModelAccess:
     authentication without naming any engine's environment variable; mapping
     it onto a CLI flag, profile key or environment variable belongs to the
     adapter.
+
+    ``profile`` is ``None`` until :func:`describe_model_access` asks the
+    endpoint provider about the model; every path that renders an engine's
+    runtime configuration takes the described value.
     """
 
     configuration: Mapping[str, Any]
@@ -64,6 +92,7 @@ class ResolvedModelAccess:
     credential: str | None
     credential_kind: ModelCredentialKind
     endpoint_provider: str
+    profile: ModelProfile | None = None
 
 
 @dataclass(frozen=True)
@@ -155,18 +184,17 @@ class ModelEndpointProvider(ABC):
         _ = (provider_access, settings)
         return []
 
-    async def model_input_modalities(
-        self, *, model_name: str
-    ) -> tuple[ModelInputModality, ...] | None:
-        """Return the selected route's declared input types, when known.
+    async def describe_model(self, *, model_name: str) -> ModelProfile:
+        """Return what this connection states about ``model_name``.
 
         The model connection owns this metadata; an engine must not infer it
-        from a gateway alias. ``None`` leaves the runtime's native defaults
-        intact. Query failures must raise rather than masquerade as a model
-        without image support.
+        from a gateway alias. A connection whose runtime already knows the
+        vendor's models, or that has no catalog, returns the all-unknown
+        default, which leaves every runtime default in place. A query failure
+        raises rather than masquerading as an unknown model.
         """
         _ = model_name
-        return None
+        return ModelProfile()
 
     def request_headers(
         self,
@@ -342,6 +370,29 @@ def registered_model_endpoint_names() -> list[str]:
     return sorted(_PROVIDERS)
 
 
+async def describe_model_access(access: ResolvedModelAccess) -> ResolvedModelAccess:
+    """Return ``access`` with its endpoint provider's profile of the model."""
+
+    model = str(access.model_name or "").strip()
+    profile = (
+        await model_endpoint_for_name(access.endpoint_provider).describe_model(model_name=model)
+        if model
+        else ModelProfile()
+    )
+    return replace(access, profile=profile)
+
+
+def described_profile(access: ResolvedModelAccess) -> ModelProfile:
+    """The profile :func:`describe_model_access` attached; raise when it never ran."""
+
+    if access.profile is None:
+        raise RuntimeError(
+            "model access reached an engine's runtime configuration without "
+            "describe_model_access"
+        )
+    return access.profile
+
+
 __all__ = [
     "ENTRY_POINT_GROUP",
     "ModelEndpoint",
@@ -350,8 +401,11 @@ __all__ = [
     "ModelRequestContext",
     "ModelCredentialKind",
     "ModelInputModality",
+    "ModelProfile",
     "ResolvedModelAccess",
     "default_model_endpoint_name",
+    "describe_model_access",
+    "described_profile",
     "register_model_endpoint",
     "model_endpoint_for_name",
     "registered_model_endpoint_names",

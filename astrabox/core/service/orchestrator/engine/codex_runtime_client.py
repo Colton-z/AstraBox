@@ -180,7 +180,7 @@ def usage_limited(error: dict[str, Any] | None) -> bool:
 
     `codexErrorInfo` is Codex's machine-readable reading of the failure
     (`CodexErrorInfo` in codex-rs/app-server-protocol/src/protocol/v2/shared.rs,
-    rust-v0.169.0). Codex reports `usageLimitExceeded` for a 429 whose body's
+    rust-v0.171.0). Codex reports `usageLimitExceeded` for a 429 whose body's
     error `type` is `usage_limit_reached`, `usage_not_included` or
     `insufficient_quota`, or whose `code` is a quota code. It does not know the
     code OpenAI's plan usage answers with,

@@ -529,6 +529,7 @@ which is off on a new installation.
 | `ASTRABOX_INSTALL_DIR` | Installation directory. Default: `~/astrabox`. |
 | `ASTRABOX_INSTALL_BUNDLE` | Path of an `astrabox-deploy-<version>.tar.gz` downloaded elsewhere, for a host that cannot reach GitHub. |
 | `ASTRABOX_IMAGE_PREFIX` | Repository prefix of a registry mirror holding the published images; the component name is appended. Default: `ghcr.io/colton-z/astrabox-`. |
+| `ASTRABOX_INSTALL_PULL` | `always` (default) pulls the release's images on every run. `missing` pulls only the images the host does not have yet, for a machine image that already contains them, such as the [AstraBox cloud image](cloud-images.md). |
 | `ASTRABOX_INSTALL_MODEL_PROVIDER` | `anthropic`, `deepseek`, `anthropic-compatible`, `openai-compatible` or `none`. |
 | `ASTRABOX_INSTALL_MODEL_API_KEY` | The model service's API key. |
 | `ASTRABOX_INSTALL_MODEL_NAME` | The model ID written as `ANTHROPIC_MODEL`, which a new installation creates its seeded Agents with. Default for DeepSeek: `deepseek-flash`. |
@@ -616,7 +617,9 @@ Every release publishes these images, tagged with its version. The installer
 writes that version to the settings file as `ASTRABOX_IMAGE_TAG`; a deployment
 that names no image of its own runs `<ASTRABOX_IMAGE_PREFIX><component>:<ASTRABOX_IMAGE_TAG>`
 for its server, every Agent program's sandbox, each sandbox's egress sidecar
-and the workspace helper.
+and the workspace helper. A Kubernetes deployment in gateway mode also runs the
+ingress gateway image
+([Configure a browser-facing Kubernetes Gateway](providers/opensandbox.md#configure-a-browser-facing-kubernetes-gateway)).
 
 | Image | Architectures |
 |---|---|
@@ -627,6 +630,7 @@ and the workspace helper.
 | `ghcr.io/colton-z/astrabox-sandbox-hermes` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-pi` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-egress` | amd64, arm64 |
+| `ghcr.io/colton-z/astrabox-ingress` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-workspace-mounter` | amd64 |
 
 The workspace helper is amd64 only: it installs the mergerfs release archive
@@ -1219,6 +1223,36 @@ prepared sandboxes and any replica can hand one to a conversation. A replica
 restarted on the same host resumes replenishing at once; when a replica stops
 for good, another takes over replenishment within about two and a half minutes,
 while conversations keep taking the sandboxes already prepared.
+
+### Time a conversation's startup {#time-a-conversations-startup}
+
+The platform and the Claude Code runner log one line for each startup phase
+of a new conversation, on success and on failure:
+
+```text
+conversation_startup session_id=<id> stage=<phase> outcome=ok|failed duration_ms=<ms> at_unix_ms=<ms>
+```
+
+The line carries only the Session id, the phase, its outcome and timings;
+`at_unix_ms` is when the phase ended. The platform's phases are:
+
+| Phase | What it times |
+|---|---|
+| `agent_start_to_session_insert`, `session_create_record`, `session_insert` | Admitting the Agent and recording the Session |
+| `runtime_generation_check`, `client_pool_record`, `client_pool_ensure` | Taking prepared capacity |
+| `runner_token_delivery`, `runner_connect` | Writing the runner's activation file and opening its connection |
+| `runner_configure_ack`, `runner_cold_prepare_ack`, `runner_cold_reconnect` | Starting the Claude Code process in a sandbox that holds none |
+| `runner_activate_ack`, `runner_attach_ack` | Binding a prepared or running process to the Session |
+| `runtime_client_initialize` | Reading the engine's manifest |
+| `sandbox_expiry_read`, `runtime_subject_ready` | Reading the sandbox lease and publishing a shared runtime's readiness |
+| `startup_progress_drain`, `session_ready_publish` | Writing the last startup progress and `READY` |
+| `runtime_observation` | Reading the engine's optional slash commands, Skills and versions after `READY` |
+| `reader_ensure_runtime`, `reader_local_lookup`, `reader_remote_attach` | A reader taking the runtime on the starting replica, or attaching from another |
+
+The runner, inside the sandbox, logs `native_prepare` (starting the Claude Code
+process), `native_resume`, `native_environment`, `native_permission` and
+`native_mcp_activate` with the same Session id. Phases can nest: compare a
+phase with the phases inside its call, not with the sum of every line.
 
 ## Check health and sandbox recovery
 

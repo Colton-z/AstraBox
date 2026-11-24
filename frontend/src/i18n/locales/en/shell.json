@@ -52,6 +52,8 @@
     "stopped": "{{name}} did not start",
     "stopped_hint": "Its runtime stopped before it was ready.",
     "open_failed": "Could not open {{name}}",
+    "open_in_tab": "Open {{name}} in a new tab",
+    "tab_blocked": "Allow pop-ups from this site, then open the Assistant again.",
     "route_unsupported": "This deployment cannot show {{name}}",
     "panel_unsupported": "{{name}} has no page to show",
     "renew_failed": "Could not renew the connection to {{name}}. The page stops responding when the current one expires.",
@@ -59,6 +61,8 @@
     "secret_required_one": "{{name}} needs {{count}} credential from you",
     "secret_required_other": "{{name}} needs {{count}} credentials from you",
     "secret_required_hint": "Set {{labels}} in its settings, then open it again.",
-    "open_settings": "Open settings"
+    "open_settings": "Open settings",
+    "action_required": "{{name}} needs you to complete a step first",
+    "check_failed": "Could not check what {{name}} needs before it starts"
   }
 }

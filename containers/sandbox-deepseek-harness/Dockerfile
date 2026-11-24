@@ -71,8 +71,23 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends socat; \
     rm -rf /var/lib/apt/lists/*
 
+# The harness requires Node.js 24.9 or newer (the `engines` field of its
+# package.json); the base defaults to Node 22 and installs Node 24 beside it
+# under /opt/nodejs/24. The CLI starts through `#!/usr/bin/env node`, so the
+# harness runs on whichever `node` its launcher's PATH finds first: this
+# image's PATH under supervisord, and /usr/local/bin alone under execd, which
+# starts the shared-tenancy stack and `dsh plugin`. Both resolve Node 24 here.
+# `npm ci --engine-strict` below refuses a Node the vendor's declaration
+# excludes, so a base that stops shipping a satisfying Node 24 fails the build.
+ENV PATH=/opt/nodejs/24/bin:${PATH}
+RUN set -eux; \
+    for tool in node npm npx; do \
+      ln -sf "/opt/nodejs/24/bin/${tool}" "/usr/local/bin/${tool}"; \
+    done; \
+    test "$(env -i PATH=/usr/local/bin:/usr/bin:/bin node --version)" = "$(node --version)"
+
 # Installed under a prefix AstraBox owns rather than the base image's global
-# node prefix: the CLI brings ~530 packages and must not be able to shadow a
+# node prefix: the CLI brings ~670 packages and must not be able to shadow a
 # base-image tool the sandbox's own services resolve from PATH. Resolving this
 # graph exceeds npm's default V8 heap in a clean image, so the build grants npm
 # a bounded larger heap without carrying that setting into the runtime.
@@ -81,7 +96,7 @@ COPY --chmod=u=rwX,go=rX containers/sandbox-deepseek-harness/package.json \
      ${DSH_PREFIX}/
 RUN set -eux; \
     NODE_OPTIONS=--max-old-space-size=8192 \
-      npm ci --prefix "${DSH_PREFIX}" --omit=dev --no-audit --no-fund; \
+      npm ci --prefix "${DSH_PREFIX}" --omit=dev --engine-strict --no-audit --no-fund; \
     expected_version="$(node -p \
       "require('${DSH_PREFIX}/package.json').dependencies['@deepseek-ai/dsh']")"; \
     installed_version="$(node -p \

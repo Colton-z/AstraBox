@@ -71,6 +71,7 @@ _SUMMARY_FIELDS = (
     "expires_at",
     "created_at",
     "updated_at",
+    "last_user_activity_at",
     "last_output_at",
     "read_at",
     "runtime_unavailable",
@@ -190,13 +191,13 @@ class SessionReads:
         self, user: UserContext, session_id: str, *, before: str | None, limit: int
     ) -> dict[str, Any]:
         await self._owned(user, session_id)
-        return await self._history_blocks(session_id, before=before, limit=limit, shared=False)
+        return await self.history_blocks_for(session_id, before=before, limit=limit, shared=False)
 
     async def history_block_details(
         self, user: UserContext, session_id: str, block_id: str, *, cursor: str
     ) -> dict[str, Any]:
         await self._owned(user, session_id)
-        return await self._block_details(session_id, block_id, cursor=cursor, shared=False)
+        return await self.history_block_details_for(session_id, block_id, cursor=cursor, shared=False)
 
     async def process_summary(
         self, user: UserContext, session_id: str, response_id: str, *, retry_failed: bool
@@ -219,7 +220,7 @@ class SessionReads:
             await self._first_page(result, session_id, output_seq=page["output_seq"], shared=shared)
         return result
 
-    async def _history_blocks(
+    async def history_blocks_for(
         self, session_id: str, *, before: str | None, limit: int, shared: bool
     ) -> dict[str, Any]:
         try:
@@ -242,7 +243,7 @@ class SessionReads:
             await self._first_page(result, session_id, output_seq=page.through_seq, shared=shared)
         return result
 
-    async def _block_details(
+    async def history_block_details_for(
         self, session_id: str, block_id: str, *, cursor: str, shared: bool
     ) -> dict[str, Any]:
         """The parts one folded header stands for, as one message."""
@@ -289,6 +290,9 @@ class SessionReads:
 
     async def child_runs(self, user: UserContext, session_id: str) -> dict[str, Any]:
         await self._owned(user, session_id)
+        return await self.child_runs_for(session_id)
+
+    async def child_runs_for(self, session_id: str) -> dict[str, Any]:
         try:
             runs = await child_runs.list_child_runs(self._reads, session_id)
         except ChildRunProjectionError as exc:
@@ -297,6 +301,9 @@ class SessionReads:
 
     async def child_run_messages(self, user: UserContext, session_id: str, child_run_id: str) -> dict[str, Any]:
         await self._owned(user, session_id)
+        return await self.child_run_messages_for(session_id, child_run_id)
+
+    async def child_run_messages_for(self, session_id: str, child_run_id: str) -> dict[str, Any]:
         try:
             messages = await child_runs.child_run_messages(self._reads, session_id, child_run_id)
         except ChildRunProjectionError as exc:
@@ -356,10 +363,10 @@ class SessionReads:
         return await self._messages(session_id, before=before, limit=limit, shared=True)
 
     async def shared_history_blocks(self, session_id: str, *, before: str | None, limit: int) -> dict[str, Any]:
-        return await self._history_blocks(session_id, before=before, limit=limit, shared=True)
+        return await self.history_blocks_for(session_id, before=before, limit=limit, shared=True)
 
     async def shared_history_block_details(self, session_id: str, block_id: str, *, cursor: str) -> dict[str, Any]:
-        return await self._block_details(session_id, block_id, cursor=cursor, shared=True)
+        return await self.history_block_details_for(session_id, block_id, cursor=cursor, shared=True)
 
 
 def _projection_error(exc: ChildRunProjectionError) -> APIError:

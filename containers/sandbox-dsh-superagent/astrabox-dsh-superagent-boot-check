@@ -27,9 +27,18 @@ nginx -t -c /opt/astrabox/superagent/panel-hop.conf
 # able to read every plugin; root would read past a directory nobody else can enter.
 probe_home="$(mktemp -d /tmp/astrabox-superagent.XXXXXX)"
 chown nobody "$probe_home"
+cat >"$probe_home/model.patch.json" <<'JSON'
+[
+  {"id":"llm-pi-ai","config":{"providers":{"astrabox-gateway":{
+    "api":"openai-completions","baseURL":"http://gateway.invalid/v1",
+    "apiKeyEnv":"DEEPSEEK_API_KEY","models":[{"id":"build-probe"}]
+  }}}},
+  {"id":"agent-default-model","config":{"provider":"astrabox-gateway","model":"build-probe"}}
+]
+JSON
 runuser -u nobody -- env DSH_HOME="$probe_home/.dsh" HOME="$probe_home" \
-  ASTRABOX_DSH_GATEWAY_BASE_URL=http://gateway.invalid/v1 ASTRABOX_DSH_MODEL=build-probe \
   /opt/dsh/node_modules/.bin/dsh --profile web "${SUPERAGENT_PATCH_ARGS[@]}" \
+  --patch "$probe_home/model.patch.json" \
   --no-open --host 127.0.0.1 --port 44781 >"$probe_home/boot.log" 2>&1 &
 harness=$!
 trap 'kill "$harness" 2>/dev/null || true; wait "$harness" 2>/dev/null || true; rm -rf "$probe_home"' EXIT

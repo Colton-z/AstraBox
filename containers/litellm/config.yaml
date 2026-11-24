@@ -98,6 +98,12 @@ model_list:
   # DSH's native Messages protocol as well as the other clients' OpenAI
   # protocols. A generic OpenAI provider converts Messages to Responses and
   # can reorder assistant text between tool calls and their results.
+  #
+  # LiteLLM's model map gives these models' windows and output caps but no
+  # effort levels, so `model_info` declares the levels DeepSeek accepts
+  # (https://api-docs.deepseek.com/guides/thinking_mode): the declared list is
+  # what `/model_group/info` reports to the platform, and the per-level flags
+  # are what LiteLLM checks before forwarding a Messages request's effort.
   - model_name: "deepseek-flash"
     litellm_params:
       model: "deepseek/deepseek-flash"
@@ -105,7 +111,10 @@ model_list:
       api_key: os.environ/DEEPSEEK_API_KEY
       extra_headers:
         anthropic-beta: "files-api-2025-04-14,mid-conversation-tool-changes-2026-07-01"
-
+    model_info:
+      supported_reasoning_efforts: ["low", "high", "max"]
+      supports_low_reasoning_effort: true
+      supports_max_reasoning_effort: true
   - model_name: "anthropic/deepseek-flash"
     litellm_params:
       model: "anthropic/deepseek-flash"
@@ -119,7 +128,10 @@ model_list:
       api_key: os.environ/DEEPSEEK_API_KEY
       extra_headers:
         anthropic-beta: "files-api-2025-04-14,mid-conversation-tool-changes-2026-07-01"
-
+    model_info:
+      supported_reasoning_efforts: ["low", "high", "max"]
+      supports_low_reasoning_effort: true
+      supports_max_reasoning_effort: true
   - model_name: "anthropic/deepseek-v4-pro"
     litellm_params:
       model: "anthropic/deepseek-v4-pro"
@@ -150,7 +162,8 @@ litellm_settings:
   # LANGFUSE_SECRET_KEY are both set in this gateway's environment
   # (LANGFUSE_HOST is optional). Without them the gateway sends nothing; a
   # partial setting stops it at startup. LiteLLM's `langfuse` callback is not
-  # used: it needs the Langfuse Python SDK v2, which Langfuse v4 rejects.
+  # used: it needs the Langfuse Python SDK, which the gateway image does not
+  # install.
   #
   # langfuse_session_hook copies a Session-scoped virtual key's AstraBox
   # identity into the request metadata the Langfuse logger reads. Prepared

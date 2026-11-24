@@ -29,7 +29,7 @@ function expectCompleteCommandMetadata(
   const detailNames = (session.slash_command_details as unknown[]).map(commandName).filter(Boolean);
   const legacyNames = (session.slash_commands as unknown[]).map(commandName).filter(Boolean);
   expect(detailNames.length, 'slash_command_details must not be empty').toBeGreaterThan(0);
-  expect(new Set(detailNames).size, 'READY command names must be deduplicated').toBe(detailNames.length);
+  expect(new Set(detailNames).size, 'command names must be deduplicated').toBe(detailNames.length);
   expect(
     sorted(legacyNames),
     'slash_commands and slash_command_details must expose the same names',
@@ -41,7 +41,7 @@ function expectCompleteCommandMetadata(
 // the scene and names it in the report tail — see fixtures/sessionCleanup.ts.
 const sessions = trackSessions();
 
-test('new agent_chat is READY with slash commands visible in the composer', async ({ request, page }) => {
+test('new agent_chat shows its slash commands in the composer', async ({ request, page }) => {
   await test.step('deployed title timeout admits a slow response and honors a shorter override', async () => {
     const output = execFileSync('docker', [
       'exec', '-i', requireServiceContainer(SERVER_CONTAINER_HANDLE), 'python', '-',
@@ -64,16 +64,14 @@ test('new agent_chat is READY with slash commands visible in the composer', asyn
   sessions.push(sessionId);
 
   try {
-    await api.waitForSessionReady(sessionId);
-    const ready = await api.getSession(sessionId);
+    const ready = await api.waitForCommandMetadata(sessionId);
     const initialTitles = new Set(
       [ready.title, agent.name]
         .map((value) => String(value || '').trim())
         .filter(Boolean),
     );
-    expect(ready.state, 'command metadata and READY must be committed together').toBe('READY');
     const readyNames = expectCompleteCommandMetadata(ready);
-    expect(readyNames, 'the built-in compact command must be present at READY').toContain('compact');
+    expect(readyNames, 'the built-in compact command must be present').toContain('compact');
 
     await openSessionView(page, sessionId);
     const composer = page.getByTestId('composer-prompt');

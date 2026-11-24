@@ -296,6 +296,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("ENVIRONMENT_MISSING", 500, "state", False, "platform"),
     ("ENVIRONMENT_MISMATCH", 409, "state", False, "client"),
     ("ENVIRONMENT_NOT_FOUND", 404, "request", False, "client"),
+    # The Agent's history holds no version by that number: it predates the
+    # history, or was never reached. The caller reads the version list again.
+    ("AGENT_VERSION_NOT_FOUND", 404, "request", False, "client"),
     ("ENVIRONMENT_ACCESS_DENIED", 403, "authorization", False, "client"),
     ("ENVIRONMENT_ENTRY_POLICY_UNAVAILABLE", 503, "authorization", True, "platform"),
     ("ENVIRONMENT_VERSION_CONFLICT", 409, "state", True, "client"),
@@ -536,6 +539,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("BACKGROUND_TASK_CONTROL_UNAVAILABLE", 409, "state", False, "session"),
     # The conversation's Agent was deleted; its history stays readable.
     ("AGENT_DELETED", 409, "state", False, "session"),
+    # The Agent changed between admitting a new conversation and recording it;
+    # starting it again admits the current version.
+    ("AGENT_CHANGED", 409, "state", True, "session"),
     ("SESSION_READ_ONLY", 409, "state", False, "session"),
     # An engine with a permission-mode vocabulary but no product default needs
     # the caller to choose one explicitly.
@@ -832,6 +838,10 @@ for _code, _status, _category, _retryable, _owner in (
     # past both reaches this. Resolving it anyway would run the deployment's
     # default model in its place; whoever manages the Agent sets its model.
     ("AGENT_MODEL_REQUIRED", 409, "configuration.agent", False, "template"),
+    # The engine refused the model an Agent's options describe, such as a
+    # reasoning effort the model does not declare. Whoever manages the Agent
+    # changes its model or engine options; the same start fails the same way.
+    ("AGENT_MODEL_SELECTION_REFUSED", 409, "configuration.agent", False, "template"),
     # A deployment configured a storage medium that cannot hold an exclusive
     # write claim for a workspace that needs one. Nobody's request is wrong, so
     # no 4xx: an operator changes the provider or the medium. Raised where the

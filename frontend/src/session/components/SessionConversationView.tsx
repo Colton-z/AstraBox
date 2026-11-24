@@ -2,14 +2,14 @@ import { useTranslation } from 'react-i18next';
 import type { UIMessage as SDKUIMessage } from 'ai';
 import { EmptyState } from '@/components/shell';
 import { AstraMark } from '../../components/AstraConsole';
-import { VirtualizedMessageList } from './VirtualizedMessageList';
+import { MessageList } from './MessageList';
 import { AssistantWelcome } from '../../assistant/AssistantWelcome';
 
 // The scrollable message list and empty state for the main pane.
 export function SessionConversationView({
   sessionId, messages, isWorking, pendingToolCallId,
   writingMessageId, hasPendingInteraction, pendingConversationScrollKey,
-  firstItemIndex, hasMore, loadingMore, loadMoreError, onLoadOlder, assistantId,
+  firstItemIndex, hasMore, loadingMore, loadMoreError, onLoadOlder, assistantId, startingLabel,
 }: {
   sessionId: string;
   messages: SDKUIMessage[];
@@ -23,6 +23,8 @@ export function SessionConversationView({
   loadingMore: boolean;
   loadMoreError: string | null;
   onLoadOlder: () => Promise<void>;
+  /** What the session is doing to get a runtime, while it has none to answer with. */
+  startingLabel?: string;
   /** Set for an Assistant's conversation, whose empty state says what it can use. */
   assistantId?: string | null;
 }) {
@@ -42,12 +44,13 @@ export function SessionConversationView({
     );
   }
   return (
-    <VirtualizedMessageList
+    <MessageList
       messages={messages}
       sessionId={sessionId}
       pendingToolCallId={pendingToolCallId}
       writingMessageId={writingMessageId}
-      shouldAutoFollow
+      responseExpected={isWorking}
+      startingLabel={startingLabel}
       firstItemIndex={firstItemIndex}
       hasMore={hasMore}
       loadingMore={loadingMore}

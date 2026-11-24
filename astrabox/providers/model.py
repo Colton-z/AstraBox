@@ -48,12 +48,25 @@ from astrabox.seams.model import (
     ModelEndpoint,
     ModelEndpointConfigurationError,
     ModelEndpointProvider,
-    ModelInputModality,
+    ModelProfile,
     ModelRequestContext,
     register_model_endpoint,
 )
 
 logger = get_logger(__name__)
+
+
+def _token_count(entry: dict[str, Any], key: str, model_name: str) -> int | None:
+    """A positive token limit LiteLLM reports for a model group, or ``None``."""
+
+    value = entry.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0 or value != int(value):
+        raise ModelEndpointConfigurationError(
+            f"LiteLLM returned an invalid {key} for {model_name!r}: {value!r}"
+        )
+    return int(value)
 
 #: Env vars the ``litellm`` provider reads (provider-owned config, like the
 #: docker provider's ``ASTRABOX_AGENT_IMAGE``).
@@ -280,14 +293,13 @@ class LiteLLMModelEndpointProvider(ModelEndpointProvider):
         }
         return sorted(models)
 
-    async def model_input_modalities(
-        self, *, model_name: str
-    ) -> tuple[ModelInputModality, ...] | None:
-        """Read vision support for a route from LiteLLM's model-group API.
+    async def describe_model(self, *, model_name: str) -> ModelProfile:
+        """Read one route's model facts from LiteLLM's model-group API.
 
-        LiteLLM resolves upstream models and administrator overrides behind
-        aliases. Only its declared boolean grants or denies image input;
-        absent metadata leaves the runtime's own default in place.
+        LiteLLM resolves upstream models and administrator ``model_info``
+        declarations behind aliases. A route it does not list, such as one a
+        wildcard serves, is unknown; LiteLLM reports an undeclared vision
+        capability as ``false`` and that answer is taken as given.
         """
         import httpx
 
@@ -310,19 +322,25 @@ class LiteLLMModelEndpointProvider(ModelEndpointProvider):
             if isinstance(entry, dict) and entry.get("model_group") == model_name
         ]
         if not entries:
-            return None
+            return ModelProfile()
         if len(entries) != 1:
             raise ModelEndpointConfigurationError(
                 f"LiteLLM returned ambiguous capabilities for {model_name!r}"
             )
-        vision = entries[0].get("supports_vision")
-        if vision is None:
-            return None
-        if not isinstance(vision, bool):
+        entry = entries[0]
+        efforts = entry.get("supported_reasoning_efforts")
+        if efforts is not None and not (
+            isinstance(efforts, list) and all(isinstance(item, str) for item in efforts)
+        ):
             raise ModelEndpointConfigurationError(
-                f"LiteLLM returned invalid vision support for {model_name!r}"
+                f"LiteLLM returned invalid reasoning efforts for {model_name!r}"
             )
-        return ("text", "image") if vision else ("text",)
+        return ModelProfile(
+            context_window=_token_count(entry, "max_input_tokens", model_name),
+            max_output_tokens=_token_count(entry, "max_output_tokens", model_name),
+            input_modalities=("text", "image") if entry.get("supports_vision") is True else ("text",),
+            reasoning_efforts=tuple(efforts) if efforts is not None else None,
+        )
 
     def request_headers(
         self,

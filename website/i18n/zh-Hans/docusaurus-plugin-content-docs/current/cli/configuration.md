@@ -39,7 +39,7 @@ agents:
 
 **三个部分**：
 - **version** - 配置文件版本；当前只接受 `1`
-- **environments** - 可选的 RuntimeProfile 声明列表
+- **runtime_profiles** - 可选的 RuntimeProfile 声明列表
 - **agents** - 可选的 Agent 声明列表
 
 ---
@@ -86,7 +86,7 @@ version: 1
 
 这个值是 `astrabox.yaml` 的文档版本，不是 AstraBox 发布版本，也不是 Agent 的并发控制版本。
 
-#### `environments`（可选）
+#### `runtime_profiles`（可选）
 
 **RuntimeProfile 声明列表**
 
@@ -155,7 +155,7 @@ API 允许部署中存在多个同名 Agent。一个声明因此无法确定目�
 
 #### 未知的顶层字段
 
-文档顶层只接受 `version`、`environments` 和 `agents`。字段拼写错误或出现多余字段时，CLI 会在发送任何请求前失败。
+文档顶层只接受 `version`、`runtime_profiles` 和 `agents`。字段拼写错误或出现多余字段时，CLI 会在发送任何请求前失败。`assistants` 字段失败时，错误信息会指出配置 Assistant 的命令 `astrabox assistant`（见[命令详解](./commands.md#astrabox-assistant)）。
 
 ```yaml
 version: 1
@@ -957,7 +957,7 @@ astrabox apply -f astrabox.yaml
 
 # 3. 读取已经保存的资源
 astrabox get agents <agent-name> --output json
-astrabox get runtime_profiles <environment-name> --output json
+astrabox get runtime_profiles <runtime-profile-name> --output json
 ```
 
 - `unchanged` 表示文件声明的内容已经一致。
@@ -968,7 +968,7 @@ astrabox get runtime_profiles <environment-name> --output json
 
 ### ❓ 字段名不兼容
 
-文档顶层只接受 `version`、`environments` 和 `agents`。资源只接受目标部署声明的字段。
+文档顶层只接受 `version`、`runtime_profiles` 和 `agents`。资源只接受目标部署声明的字段。
 
 不要为被拒绝的字段改名或添加兼容字段。请导出当前格式，或直接查看字段：
 
@@ -987,7 +987,7 @@ astrabox schema agent --output json
 | 字段 | 必填 | 说明 |
 | :--- | :--- | :--- |
 | `version` | ✅ | 必须为 `1`。 |
-| `environments` | ❌ | RuntimeProfile 声明列表。 |
+| `runtime_profiles` | ❌ | RuntimeProfile 声明列表。 |
 | `agents` | ❌ | Agent 声明列表。 |
 
 ### RuntimeProfile 字段

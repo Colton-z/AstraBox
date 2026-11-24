@@ -5,7 +5,7 @@ profile's Remote API (:mod:`.deepseek_harness_link`). This client reads three
 of the harness's own channels and reports them as runtime events:
 
 * the conversation's durable Session log (``session/follow`` and
-  ``session/page``), whose events carry contiguous ``seq`` numbers in a log
+  ``session/events``), whose events carry contiguous ``seq`` numbers in a log
   that only appends;
 * the process-local assistant-stream frames of a model attempt, whose durable
   ``assistant/message`` or ``assistant/attempt`` settlement repeats the same
@@ -126,7 +126,7 @@ from astrabox.core.service.orchestrator.engine.runtime import (
     RuntimeStatus,
     StatusChanged,
 )
-from astrabox.seams.model import ModelEndpointProvider
+from astrabox.seams.model import ModelProfile
 
 logger = get_logger(__name__)
 
@@ -151,9 +151,9 @@ DSH_MODEL_PROVIDER = "deepseek-official"
 #: gateways at ``@deepseek-ai/dsh-llm-pi-ai``: its web profile mounts it with
 #: no routes, and a ``llm-pi-ai`` user-settings section declares them live
 #: (what the harness's own Models page writes). The declared route sends
-#: standard Chat Completions to the platform gateway with the adapter's
-#: defaults for a model it does not describe: a 262,144-token context window
-#: and a 32,768-token output cap.
+#: standard Chat Completions to the platform gateway. A model the entry does
+#: not describe takes the vendor's provider defaults: a 1,000,000-token
+#: context window and a 128,000-token output cap.
 DSH_GATEWAY_PROVIDER = "astrabox-gateway"
 DSH_GATEWAY_SETTINGS_NS = "llm-pi-ai"
 DSH_GATEWAY_API = "openai-completions"
@@ -277,24 +277,54 @@ async def create_harness_session(
     return native
 
 
+#: The harness's thinking levels above ``off``; a gateway entry maps each one
+#: the route accepts to its wire spelling (``ThinkingLevel`` in dsh-llm).
+DSH_THINKING_LEVELS = ("minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def gateway_model_entry(model: str, profile: ModelProfile) -> dict[str, Any]:
+    """The harness's gateway entry for ``model``, from what is known about it.
+
+    An unknown fact is left out, so the harness applies its route default. A
+    level the route accepts goes on the wire under its own name, and the
+    harness's ``off`` is the wire's ``none``. A route that accepts no level
+    above ``off`` gets no ``reasoningEfforts``: the harness refuses a map
+    without one and treats the model as non-reasoning without it.
+    """
+
+    entry: dict[str, Any] = {"id": model}
+    if profile.context_window is not None:
+        entry["contextWindow"] = profile.context_window
+    if profile.max_output_tokens is not None:
+        entry["maxTokens"] = profile.max_output_tokens
+    if profile.input_modalities is not None:
+        entry["input"] = list(profile.input_modalities)
+    efforts = profile.reasoning_efforts or ()
+    levels = {level: level for level in DSH_THINKING_LEVELS if level in efforts}
+    if levels:
+        entry["reasoningEfforts"] = {**({"off": "none"} if "none" in efforts else {}), **levels}
+    return entry
+
+
 async def resolve_model_route(
     link: Any,
     model: str,
     *,
     gateway_base_url: str,
     gateway_key_env: str,
-    model_endpoint_provider: ModelEndpointProvider | None,
+    profile: ModelProfile,
 ) -> str:
     """Name the harness LLM route that serves ``model`` through the gateway.
 
     A model the DeepSeek route advertises in the harness's own catalog
-    (``session/modelCatalog``) runs on that route. Any other model runs on
-    a generic route this call declares for the platform gateway: the same
-    base URL and credential variable the DeepSeek route reads, and the
-    model as its only entry. The section is replaced whole, so re-asserting
-    a changed model leaves no stale entry. The harness validates the
-    section when it is written and answers ``settings/rejected`` for one
-    it cannot serve.
+    (``session/modelCatalog``) runs on that route, as the harness describes
+    it. Any other model runs on a generic route this call declares for the
+    platform gateway: the same base URL and credential variable the DeepSeek
+    route reads, and the model as its only entry, described from the model
+    connection's ``profile``. The section is replaced whole, so re-asserting a
+    changed model leaves no stale entry. The harness validates the section
+    when it is written and answers ``settings/rejected`` for one it cannot
+    serve.
     """
 
     catalog = await link.call("session/modelCatalog", {"args": {}})
@@ -323,11 +353,6 @@ async def resolve_model_route(
             ),
             status_code=500,
         )
-    model_entry: dict[str, Any] = {"id": model}
-    if model_endpoint_provider is not None:
-        modalities = await model_endpoint_provider.model_input_modalities(model_name=model)
-        if modalities is not None:
-            model_entry["input"] = list(modalities)
     await link.call(
         "settings/replace",
         {
@@ -340,7 +365,7 @@ async def resolve_model_route(
                             "api": DSH_GATEWAY_API,
                             "baseURL": gateway_base_url,
                             "apiKeyEnv": gateway_key_env,
-                            "models": [model_entry],
+                            "models": [gateway_model_entry(model, profile)],
                         }
                     }
                 },
@@ -767,7 +792,6 @@ class DeepSeekHarnessRuntimeClient:
         *,
         link: DeepSeekHarnessLink,
         native_session_id: str,
-        model_endpoint_provider: ModelEndpointProvider | None = None,
     ) -> None:
         native = str(native_session_id or "").strip()
         if not native:
@@ -775,7 +799,6 @@ class DeepSeekHarnessRuntimeClient:
         self._link = link
         self._session_id = native
         self._address = {"kind": "session", "sessionId": native}
-        self._model_endpoint_provider = model_endpoint_provider
         self._snapshot: dict[str, Any] | None = None
         self._reading = False
         self._live = _Live()
@@ -1308,29 +1331,46 @@ class DeepSeekHarnessRuntimeClient:
         *,
         gateway_base_url: str,
         gateway_key_env: str,
+        profile: ModelProfile,
         prepared_route: str | None = None,
+        selection: dict[str, Any] | None = None,
     ) -> None:
         """Install the platform's model choice on this conversation.
 
         ``session/create`` takes no model, so a conversation runs the image's
         default until this selects one; it is asserted on every activation so
         a model changed on the Agent reaches conversations that already exist.
-        The reply is the vendor's normalized selection and is checked, because
-        a normalization that landed on another model would otherwise look like
-        success. ``prepared_route`` is the route a prepared box resolved for
-        this model against the same catalog and gateway settings.
+        ``selection`` carries the Agent's further native fields, such as
+        ``reasoningEffort``, which the harness checks against the efforts the
+        model declares and refuses with its own message. The reply is the
+        vendor's normalized selection and is checked, because a normalization
+        that landed on another model would otherwise look like success.
+        ``prepared_route`` is the route a prepared box resolved for this model
+        and ``profile`` against the same catalog and gateway settings.
         """
         route = prepared_route or await resolve_model_route(
             self._link,
             model,
             gateway_base_url=gateway_base_url,
             gateway_key_env=gateway_key_env,
-            model_endpoint_provider=self._model_endpoint_provider,
+            profile=profile,
         )
-        value = await self._link.call(
-            "session/selectModel",
-            {"args": {"request": {"sessionId": self._session_id, "provider": route, "model": model}}},
-        )
+        try:
+            value = await self._link.call(
+                "session/selectModel",
+                {"args": {"request": {
+                    **(selection or {}),
+                    "sessionId": self._session_id, "provider": route, "model": model,
+                }}},
+            )
+        except DshApiError as exc:
+            if exc.code != "session/model-unavailable":
+                raise
+            raise APIError(
+                code="AGENT_MODEL_SELECTION_REFUSED",
+                message=f"deepseek_harness refused the Agent's model selection: {exc.api_message}",
+                status_code=409,
+            ) from exc
         selected = (value or {}).get("selected") if isinstance(value, dict) else None
         if not isinstance(selected, dict):
             raise APIError(

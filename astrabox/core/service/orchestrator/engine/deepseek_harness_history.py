@@ -1,6 +1,6 @@
 """Read the supplier's durable Session log backwards from one fixed cut.
 
-``session/page`` returns contiguous pages of a Session log ending at an
+``session/events`` returns contiguous pages of a Session log ending at an
 inclusive ``throughSeq`` (the cut a ``session/follow`` snapshot reports), each
 page reaching further back through ``beforeSeq``
 (``@deepseek-ai/dsh-api-session-controller`` ``SessionPageRequest``). Every
@@ -35,31 +35,31 @@ async def _pages_backward(
         }
         if before_seq is not None:
             payload["beforeSeq"] = before_seq
-        value = await call("session/page", {"args": {"request": payload}})
+        value = await call("session/events", {"args": {"request": payload}})
         if not isinstance(value, dict) or not isinstance(value.get("records"), list):
             raise DeepSeekHarnessProtocolError(
-                "deepseek_harness session/page returned no events list"
+                "deepseek_harness session/events returned no events list"
             )
         if not isinstance(value.get("hasMore"), bool):
             raise DeepSeekHarnessProtocolError(
-                "deepseek_harness session/page returned no hasMore flag"
+                "deepseek_harness session/events returned no hasMore flag"
             )
         page: list[dict[str, Any]] = []
         for raw_entry in value["records"]:
             if not isinstance(raw_entry, dict) or not isinstance(raw_entry.get("event"), dict):
                 raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness session/page returned a malformed entry"
+                    "deepseek_harness session/events returned a malformed entry"
                 )
             event = dict(raw_entry["event"])
             seq = event.get("seq")
             if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
                 raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness session/page event lacks a non-negative seq"
+                    "deepseek_harness session/events event lacks a non-negative seq"
                 )
             previous = seen.get(seq)
             if previous is not None and previous != event:
                 raise DeepSeekHarnessProtocolError(
-                    "deepseek_harness session/page reused an event seq"
+                    "deepseek_harness session/events reused an event seq"
                 )
             seen[seq] = event
             page.append(event)
@@ -69,12 +69,12 @@ async def _pages_backward(
             return
         if not page:
             raise DeepSeekHarnessProtocolError(
-                "deepseek_harness session/page cannot advance an empty page"
+                "deepseek_harness session/events cannot advance an empty page"
             )
         next_before = page[0]["seq"]
         if before_seq is not None and next_before >= before_seq:
             raise DeepSeekHarnessProtocolError(
-                "deepseek_harness session/page pagination did not advance"
+                "deepseek_harness session/events pagination did not advance"
             )
         before_seq = next_before
 
@@ -101,7 +101,7 @@ async def read_history_events(
     suffix = [events[seq] for seq in sorted(events) if seq > after_seq]
     if [event["seq"] for event in suffix] != list(range(after_seq + 1, through_seq + 1)):
         raise DeepSeekHarnessProtocolError(
-            "deepseek_harness session/page history is not a contiguous event suffix"
+            "deepseek_harness session/events history is not a contiguous event suffix"
         )
     return suffix
 

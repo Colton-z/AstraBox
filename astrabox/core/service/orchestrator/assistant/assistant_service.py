@@ -816,8 +816,7 @@ class AssistantService:
     async def open_main_conversation(self, user: UserContext, assistant_id: str) -> dict[str, Any]:
         """The Assistant's main conversation, started when it has none.
 
-        Opening an Assistant always lands here, and what it does on its own
-        (scheduled runs, proactive messages) returns here. A main conversation
+        Scheduled runs and proactive messages return here. A main conversation
         that was ended or deleted is replaced: ending it is how its owner
         starts afresh. The create is keyed by the conversation it replaces, so
         two concurrent opens start one.
@@ -1000,6 +999,12 @@ class AssistantService:
             backend=provider.name, sandbox_id=sandbox_id, port=surface.panel.port
         )
         base = urlsplit(endpoint.endpoint)
+        if surface.panel.requires_secure_access and (not endpoint.signed or base.scheme != "https"):
+            raise APIError(
+                code="ASSISTANT_PANEL_ROUTE_UNSUPPORTED",
+                message="this Assistant requires an HTTPS sandbox gateway with OpenSandbox Secure Access",
+                status_code=409,
+            )
         if base.path not in ("", "/") or base.query:
             # A panel is a whole web application that addresses its own routes
             # from the root; under a path prefix every one of them misses.
@@ -1025,6 +1030,34 @@ class AssistantService:
             "url": f"{base.scheme}://{base.netloc}{path}",
             "expires_at": endpoint.expires_at.isoformat() if endpoint.expires_at else None,
         }
+
+    async def user_action(
+        self, user: UserContext, assistant_id: str, *, action_id: str | None = None
+    ) -> dict[str, Any]:
+        """What the owner must do before the Assistant can run, read without starting it.
+
+        The deployment's runtime preparation provider answers for the
+        Assistant and its owner, with no conversation (``session_id`` None),
+        as it does for an Agent before its first conversation. ``action_id``
+        performs an operation the current answer offers, such as issuing a
+        new consent link after the last one expired.
+        """
+
+        from astrabox.core.service.orchestrator.user_actions import user_action_state
+        from astrabox.seams.runtime_preparation import (
+            PreparationSubject,
+            SessionUserActionContext,
+        )
+
+        await self._must_use_assistant(user, assistant_id)
+        return await user_action_state(
+            SessionUserActionContext(
+                session_id=None,
+                principal_id=user.user_id,
+                subject=PreparationSubject(kind="assistant", id=assistant_id),
+            ),
+            action_id=action_id,
+        )
 
     async def set_owner_secret(
         self, user: UserContext, assistant_id: str, key: str, value: Any
@@ -2531,6 +2564,7 @@ def _runtime_surface(engine_kind: str, records: dict[str, Any]) -> dict[str, Any
     return {
         "conversations": surface.conversations,
         "panel": surface.panel is not None,
+        "panel_opens_in_new_tab": bool(surface.panel and surface.panel.opens_in_new_tab),
         "owner_secrets": [
             {
                 "key": secret.key,

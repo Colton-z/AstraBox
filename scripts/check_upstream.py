@@ -380,6 +380,50 @@ ALLOWED_DRIFT.setdefault("ui/tabs.tsx", []).append(
     )
 )
 
+# The console's collapsibles run on UI SDK, whose React adapter ships the
+# primitive whole: `ui/collapsible.tsx` is the one file every folded block,
+# tool card and trace row (the vendored elements included) imports it through,
+# so it re-exports UI SDK's parts under the registry's names in place of the
+# registry's Base UI wrappers. UI SDK's panel also accepts a render function as
+# its children, which `TaskContent` cannot pass through the element it wraps
+# them in.
+_UI_SDK_WHY = "the console's collapsibles run on UI SDK, not the registry's Base UI primitive"
+ALLOWED_DRIFT["ui/collapsible.tsx"] = [
+    (
+        'import { Collapsible as CollapsiblePrimitive } from "@base-ui/react/collapsible"\n'
+        "function Collapsible({ ...props }: CollapsiblePrimitive.Root.Props) {\n"
+        '  return <CollapsiblePrimitive.Root data-slot="collapsible" {...props} />\n'
+        "}\n"
+        "function CollapsibleTrigger({ ...props }: CollapsiblePrimitive.Trigger.Props) {\n"
+        "  return (\n"
+        '    <CollapsiblePrimitive.Trigger data-slot="collapsible-trigger" {...props} />\n'
+        "  )\n"
+        "}\n"
+        "function CollapsibleContent({ ...props }: CollapsiblePrimitive.Panel.Props) {\n"
+        "  return (\n"
+        '    <CollapsiblePrimitive.Panel data-slot="collapsible-content" {...props} />\n'
+        "  )\n"
+        "}",
+        "import {\n  Collapsible as CollapsibleRoot,\n  CollapsiblePanel,\n  CollapsibleTrigger,\n"
+        '} from "@ui-sdk/react/collapsible"\n'
+        "const Collapsible = CollapsibleRoot\nconst CollapsibleContent = CollapsiblePanel",
+        _UI_SDK_WHY,
+    ),
+]
+ALLOWED_DRIFT["ai-elements/task.tsx"] = [
+    (
+        'import type { ComponentProps } from "react";',
+        'import type { ComponentProps, ReactNode } from "react";',
+        _UI_SDK_WHY,
+    ),
+    (
+        "export type TaskContentProps = ComponentProps<typeof CollapsibleContent>;",
+        "export type TaskContentProps = Omit<ComponentProps<typeof CollapsibleContent>, 'children'> "
+        "& { children?: ReactNode };",
+        "UI SDK's panel takes a render function as children; TaskContent wraps them in an element",
+    ),
+]
+
 
 def targets() -> list[Vendored]:
     found = [Vendored(p, p.stem) for p in sorted(UI_DIR.glob("*.tsx"))]

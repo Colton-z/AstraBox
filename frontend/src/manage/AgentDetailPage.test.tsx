@@ -10,9 +10,9 @@
  * real `updateAgent` request path.
  */
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { SWRConfig } from 'swr';
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import i18n from '@/i18n';
 import {
@@ -26,10 +26,16 @@ import {
   listAgentRuntimeProfileModels,
   listAgentRuntimeProfiles,
   listAgentTags,
+  listAgentVersions,
   listAgents,
   listConnectors,
 } from '@/api';
-import type { AgentConfig, AgentPreparedRuntimeStatus, FormSchema } from '@/types';
+import type {
+  AgentConfig,
+  AgentPreparedRuntimeStatus,
+  AgentVersionRecord,
+  FormSchema,
+} from '@/types';
 
 import AgentDetailPage from './AgentDetailPage';
 
@@ -46,6 +52,7 @@ vi.mock('@/api', async (importOriginal) => ({
   listAgentRuntimeProfileModels: vi.fn(),
   listAgentRuntimeProfiles: vi.fn(),
   listAgentTags: vi.fn(),
+  listAgentVersions: vi.fn(),
   listAgents: vi.fn(),
   listConnectors: vi.fn(),
 }));
@@ -136,6 +143,11 @@ beforeEach(() => {
   vi.mocked(listAgentRuntimeProfileModels).mockReset().mockResolvedValue(['claude-opus-4-8']);
   vi.mocked(listAgentCategories).mockReset().mockResolvedValue([]);
   vi.mocked(listAgentTags).mockReset().mockResolvedValue([]);
+  vi.mocked(listAgentVersions).mockReset().mockResolvedValue({
+    current_version: RECORD.version!,
+    versions: [],
+    has_more: false,
+  });
   vi.mocked(getExtensionProvider).mockReset().mockResolvedValue(null);
   vi.mocked(getAgentPreparedRuntime).mockReset().mockResolvedValue({
     enabled: false,
@@ -151,10 +163,21 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function show() {
+/** Moves the mounted page to another Agent, as a link in the console would. */
+function OpenAgent({ agentId }: { agentId: string }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate(`/manage/agents/${agentId}`)}>
+      {`open ${agentId}`}
+    </button>
+  );
+}
+
+function show(agentId = 'agent-1', next?: string) {
   return render(
     <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
-      <MemoryRouter initialEntries={['/manage/agents/agent-1']}>
+      <MemoryRouter initialEntries={[`/manage/agents/${agentId}`]}>
+        {next && <OpenAgent agentId={next} />}
         <Routes>
           <Route path="/manage/agents/:agentId" element={<AgentDetailPage />} />
         </Routes>
@@ -206,4 +229,122 @@ it('keeps a refused save beside its Save and marks the field the refusal names',
   fireEvent.change(capacity, { target: { value: '1000' } });
   expect(within(runtime).queryByText(reason)).toBeNull();
   expect(capacity.getAttribute('aria-invalid')).toBeNull();
+});
+
+/**
+ * One prepared-capacity card, beside the version history, on a warm Agent.
+ *
+ * Both cards are keyed by the Agent so that each starts afresh when the page
+ * moves to another Agent. Keyed by the bare Agent ID they were two siblings
+ * with one key, and every render of the page after it loaded left the previous
+ * status card in the page and mounted another that started reading again.
+ */
+describe('prepared capacity beside the version history', () => {
+  const WARM: AgentConfig = { ...RECORD, prepared_capacity: 2 };
+  const OTHER: AgentConfig = {
+    ...RECORD,
+    agent_id: 'agent-2',
+    name: 'drafting',
+    prepared_capacity: 3,
+    version: 5,
+  };
+  const status = (target: number, prepared: number): AgentPreparedRuntimeStatus => ({
+    environment_name: 'astrabox',
+    prewarm_enabled: true,
+    configured_target: target,
+    enabled: true,
+    target,
+    ready: prepared > 0,
+    prepared_count: prepared,
+    state: 'prepared',
+  });
+  const edit = (agentId: string, version: number, field: string): AgentVersionRecord => ({
+    agent_id: agentId,
+    version,
+    operation: 'update',
+    changed_fields: [field],
+    author_user_id: 'owner',
+    created_at: '2026-11-18T08:00:00+00:00',
+  });
+  const HISTORY: Record<string, AgentVersionRecord[]> = {
+    'agent-1': [edit('agent-1', 3, 'prepared_capacity')],
+    'agent-2': [edit('agent-2', 5, 'system')],
+  };
+
+  let errors: MockInstance<typeof console.error>;
+  beforeEach(() => {
+    errors = vi.spyOn(console, 'error');
+    vi.mocked(listAgents).mockResolvedValue([WARM, OTHER]);
+    vi.mocked(getAgentPreparedRuntime).mockImplementation(async (agentId) =>
+      agentId === 'agent-2' ? status(3, 1) : status(2, 2));
+    vi.mocked(listAgentVersions).mockImplementation(async (agentId) => ({
+      current_version: HISTORY[agentId][0].version,
+      versions: HISTORY[agentId],
+      has_more: false,
+    }));
+  });
+  afterEach(() => {
+    errors.mockRestore();
+  });
+
+  const statusCards = () => document.querySelectorAll('[data-testid="agent-prewarm-status"]');
+  /** The one status card, asserted to be the only one on the page. */
+  const onlyStatusCard = () => {
+    expect(statusCards()).toHaveLength(1);
+    return statusCards()[0] as HTMLElement;
+  };
+  /** The version history card, asserted to be the only one on the page. */
+  const history = () => {
+    expect(screen.getAllByRole('heading', { name: 'Version history' })).toHaveLength(1);
+    return card('Version history');
+  };
+  const sameKeyWarnings = () =>
+    errors.mock.calls.filter((call) => String(call[0]).includes('same key'));
+
+  it('shows one live status card on load, after it refreshes and after the page renders again', async () => {
+    show();
+    expect(await screen.findByText('Available: 2 of 2')).toBeTruthy();
+    expect(within(onlyStatusCard()).getByTestId('prewarm-state').textContent)
+      .toBe('New conversations start warm while prepared capacity remains.');
+    // The version history reads beside it, its changed fields named as their cards name them.
+    expect(await within(history()).findByText('Prepared capacity')).toBeTruthy();
+    expect(within(history()).getByText('Edited')).toBeTruthy();
+
+    // The card refreshes its own observation.
+    vi.mocked(getAgentPreparedRuntime).mockResolvedValue(status(2, 1));
+    fireEvent.click(within(onlyStatusCard()).getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('Available: 1 of 2')).toBeTruthy();
+    expect(onlyStatusCard().textContent).toContain('Available: 1 of 2');
+
+    // An edit renders the whole page again; the card it holds is the one that was there.
+    const capacity = screen.getByRole('spinbutton', { name: 'Prepared capacity' }) as HTMLInputElement;
+    await waitFor(() => expect(capacity.value).toBe('2'));
+    fireEvent.change(capacity, { target: { value: '4' } });
+    expect(await within(onlyStatusCard()).findByText(/^Save or revert your changes before repreparing/)).toBeTruthy();
+    expect(onlyStatusCard().textContent).toContain('Available: 1 of 2');
+    fireEvent.click(within(card('Runtime and availability')).getByRole('button', { name: 'Revert' }));
+    await waitFor(() => expect(capacity.value).toBe('2'));
+    expect(onlyStatusCard().textContent).toContain('Available: 1 of 2');
+
+    // The history still reads, and the settings hold one capacity field.
+    expect(within(history()).getByText('Edited')).toBeTruthy();
+    expect(screen.getAllByRole('spinbutton', { name: 'Prepared capacity' })).toHaveLength(1);
+    expect(sameKeyWarnings()).toEqual([]);
+  });
+
+  it('follows the Agent the page moves to', async () => {
+    show('agent-1', 'agent-2');
+    expect(await screen.findByText('Available: 2 of 2')).toBeTruthy();
+    expect(await within(history()).findByText('Prepared capacity')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'open agent-2' }));
+    expect(await screen.findByText('Available: 1 of 3')).toBeTruthy();
+    expect(onlyStatusCard().textContent).not.toContain('2 of 2');
+    expect(getAgentPreparedRuntime).toHaveBeenLastCalledWith('agent-2');
+    // The history is the second Agent's, and the first Agent's is gone.
+    expect(await within(history()).findByText('System prompt')).toBeTruthy();
+    expect(within(history()).queryByText('Prepared capacity')).toBeNull();
+    expect(vi.mocked(listAgentVersions).mock.calls.at(-1)?.[0]).toBe('agent-2');
+    expect(sameKeyWarnings()).toEqual([]);
+  });
 });

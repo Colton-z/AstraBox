@@ -41,16 +41,6 @@ def template_mcp_servers(mcp_servers: Any) -> dict[str, Any]:
     }
 
 
-def artifact_tools_enabled(source_type: str | None) -> bool:
-    """Whether a Session of this provenance may hold the ``artifacts`` tools.
-
-    Messaging-channel participants are not the execution account, so their
-    Sessions never receive personal artifact tools. The Agent's own switch is
-    the other half of the binding decision; see :func:`binds_artifact_tools`.
-    """
-    return source_type != "channel"
-
-
 def a2a_task_tools_enabled(source_type: str | None) -> bool:
     """Whether a Session of this provenance holds the ``a2a`` task outcome tool.
 
@@ -60,34 +50,27 @@ def a2a_task_tools_enabled(source_type: str | None) -> bool:
     return source_type == A2A_SOURCE_TYPE
 
 
-def prepared_runtime_serves(source_type: str | None) -> bool:
-    """Whether a prepared native process can serve a Session of this provenance.
+def prepared_runtime_serves(template: Any) -> bool:
+    """Whether a prepared native process holds the platform servers a Session is given.
 
-    A prepared process froze its platform MCP servers before any Session
-    existed: the servers of a Session with no provenance. A channel Session is
-    given fewer (no artifact tools) and an A2A Session one more (the ``a2a``
-    server), so each starts a runtime of its own.
+    A prepared process froze its platform MCP servers at spawn, before any
+    Session existed: the servers its Agent gives a Session with no
+    provenance. The Agent's runtime generation already keeps a process
+    prepared from another configuration from being claimed, so a Session may
+    take one exactly when its own servers are the same. An A2A conversation is
+    also given the ``a2a`` server and starts a runtime of its own.
     """
-    return artifact_tools_enabled(source_type) and not a2a_task_tools_enabled(source_type)
 
+    def servers(source_type: str | None) -> dict[str, Any]:
+        return binding_mcp_server_definitions(
+            getattr(template, "mcp_servers", None),
+            session_source_type=source_type,
+            agent_id=getattr(template, "agent_id", None),
+            assistant_id=getattr(template, "assistant_id", None),
+            artifacts_enabled=getattr(template, "artifacts_enabled", True),
+        )
 
-def personal_connections_enabled(source_type: str | None, *, agent_id: str | None) -> bool:
-    """Whether a Session's connector servers act for a person.
-
-    An Assistant's connectors are its owner's, in every one of its Sessions.
-    An Agent's act as the person who starts the conversation, and a channel,
-    schedule or webhook conversation has no such person.
-    """
-    return not agent_id or source_type != "channel"
-
-
-def binds_artifact_tools(source_type: str | None, *, agent_artifacts_enabled: bool) -> bool:
-    """Whether a runtime binding receives the built-in ``artifacts`` server.
-
-    Both halves must allow it: the Session's provenance and the Agent's
-    ``artifacts_enabled`` switch. An Assistant has no switch and passes True.
-    """
-    return agent_artifacts_enabled and artifact_tools_enabled(source_type)
+    return servers(getattr(template, "session_source_type", None)) == servers(None)
 
 
 def binding_mcp_server_definitions(
@@ -100,18 +83,19 @@ def binding_mcp_server_definitions(
 ) -> dict[str, Any]:
     """The servers one Session's engine is given.
 
-    An Agent's connectors are unavailable to external channel participants;
-    where connectors are offered, the platform's connections tools come with
-    them. The ``artifacts`` server is added or removed by
-    :func:`binds_artifact_tools`, and a removal also drops authored aliases of
-    it, so no name can reach those tools on a binding that has none. An Agent
-    conversation an A2A context created also gets the ``a2a`` server
-    (:func:`a2a_task_tools_enabled`), which no authored definition reaches. All of
-    this is decided here, at the engine, rather than in the resolved view:
-    the Agent's runtime generation and its box's egress are the same for
-    every Session of the Agent, so a channel conversation neither retires the
-    Agent's prepared runtime nor gives a box it creates a narrower egress than
-    the Agent's other Sessions need.
+    The Agent's configuration decides them. A messaging-channel conversation
+    runs as its deployment's execution account and is given the same servers
+    as that account's other conversations of the Agent; every call is still
+    authorized against the Session's account and the Agent when it arrives.
+    Where connectors are offered, the platform's connections tools come with
+    them. The ``artifacts`` server follows the Agent's ``artifacts_enabled``
+    switch (an Assistant has none and passes True), and a removal also drops
+    authored aliases of it, so no name can reach those tools on a binding that
+    has none. An Agent conversation an A2A context created also gets the
+    ``a2a`` server (:func:`a2a_task_tools_enabled`), which no authored
+    definition reaches. All of this is decided here, at the engine, rather
+    than in the resolved view: the Agent's runtime generation and its box's
+    egress are the same for every Session of the Agent.
     """
     servers = template_mcp_servers(mcp_config)
     if assistant_id:
@@ -123,9 +107,6 @@ def binding_mcp_server_definitions(
             )
         servers = {**servers, AGENTS_PLATFORM_SERVER: {"platform_server": AGENTS_PLATFORM_SERVER}}
     elif not agent_id:
-        servers = {name: config for name, config in servers.items()
-                   if platform_mcp_server_id(name, config) != AGENTS_PLATFORM_SERVER}
-    if session_source_type == "channel":
         servers = {name: config for name, config in servers.items()
                    if platform_mcp_server_id(name, config) != AGENTS_PLATFORM_SERVER}
     # The task outcome tool is the platform's alone: no author definition reaches it.
@@ -142,10 +123,7 @@ def binding_mcp_server_definitions(
                 status_code=409,
             )
         servers = {**servers, A2A_PLATFORM_SERVER: {"platform_server": A2A_PLATFORM_SERVER}}
-    if not personal_connections_enabled(session_source_type, agent_id=agent_id):
-        servers = {name: config for name, config in servers.items()
-                   if platform_mcp_server_id(name, config) != CONNECTOR_PLATFORM_SERVER}
-    elif any(platform_mcp_server_id(name, config) == CONNECTOR_PLATFORM_SERVER for name, config in servers.items()):
+    if any(platform_mcp_server_id(name, config) == CONNECTOR_PLATFORM_SERVER for name, config in servers.items()):
         # The engine is told which offered apps the person has connected and
         # can ask them to connect one; it decides when.
         if CONNECTIONS_PLATFORM_SERVER in servers:
@@ -158,7 +136,7 @@ def binding_mcp_server_definitions(
                 status_code=409,
             )
         servers = {**servers, CONNECTIONS_PLATFORM_SERVER: {"platform_server": CONNECTIONS_PLATFORM_SERVER}}
-    if not binds_artifact_tools(session_source_type, agent_artifacts_enabled=artifacts_enabled):
+    if not artifacts_enabled:
         return {name: config for name, config in servers.items()
                 if name != ARTIFACTS_PLATFORM_SERVER and platform_mcp_server_id(name, config) != ARTIFACTS_PLATFORM_SERVER}
     declared = servers.get(ARTIFACTS_PLATFORM_SERVER)
@@ -381,12 +359,11 @@ def runtime_mcp_servers_for_binding(
 
     base = str(proxy_base_url or "").strip().rstrip("/")
     bid = str(deployment_id or "").strip()
-    bound = binds_artifact_tools(session_source_type, agent_artifacts_enabled=artifacts_enabled)
     servers = (binding_mcp_server_definitions(
                    mcp_config, session_source_type=session_source_type,
                    agent_id=agent_id, assistant_id=assistant_id, artifacts_enabled=artifacts_enabled,
                )
-               if (base and bid) or not bound
+               if (base and bid) or not artifacts_enabled
                else template_mcp_servers(mcp_config))
     result: dict[str, dict[str, Any]] = {}
 

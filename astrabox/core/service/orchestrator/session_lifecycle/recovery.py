@@ -29,10 +29,10 @@ from astrabox.core.service.orchestrator.sandbox_names import keep_name_updates
 from astrabox.core.service.orchestrator.session_lifecycle.ownership import RecoveryOwnership
 from astrabox.core.service.orchestrator.session_lifecycle.startup import (
     SessionStartup,
-    runtime_initialization_metadata,
+    runtime_engine_capabilities,
 )
 from astrabox.seams.persistence_coordination import RuntimeLockCheck
-from astrabox.seams.runtime_preparation import runtime_preparation_plan
+from astrabox.core.service.orchestrator.runtime.preparation import bound_runtime_preparation_plan
 from astrabox.seams.sandbox import SANDBOX_LIFECYCLE_PROBE_OK
 from astrabox.seams.sandbox_disposal import SandboxDestruction
 
@@ -159,10 +159,18 @@ class SessionRecovery:
             and session.get("state") != SessionState.TERMINATED.value
             and not session.get("runtime_unavailable")
         ):
+            # The box holds what the Agent version its plan records installed.
+            bound = await self._agent_config.resolve_bound_session_harness(session)
+            if bound is None:
+                raise APIError(
+                    code="TEMPLATE_NOT_ALLOWED",
+                    message="agent configuration not found",
+                    status_code=403,
+                )
             await self._reattach(
                 session,
                 ownership,
-                template=template,
+                template=bound,
                 sandbox_id=previous_sandbox_id,
                 engine_session_key=engine_session_key,
                 observed_runtime=observed_runtime,
@@ -202,7 +210,8 @@ class SessionRecovery:
         observed_runtime: Any,
     ) -> None:
         session_id = ownership.session_id
-        if runtime_preparation_plan(template).session_mcp_servers:
+        identity = session.get("runtime_identity") if isinstance(session.get("runtime_identity"), dict) else None
+        if bound_runtime_preparation_plan(template, identity).session_mcp_servers:
             if session.get("runtime_status") in ("working", "background"):
                 raise _GiveBack("session_busy", "Wait for the current response before reconnecting Session MCP servers")
             # Explicit recovery must cross the bound-material activation
@@ -213,7 +222,6 @@ class SessionRecovery:
                 await self._runtime_manager.evict_runtime_if_current(session_id, observed_runtime)
         session_kind = require_session_kind(session.get("session_kind"))
         permission_mode = str(session.get("permission_mode") or "").strip() or None
-        identity = session.get("runtime_identity") if isinstance(session.get("runtime_identity"), dict) else None
         plan = self._runtime_manager.plan_runtime_attach(
             agent_id=str(session.get("agent_id") or ""),
             session_id=session_id,
@@ -263,7 +271,7 @@ class SessionRecovery:
         key = engine_session_key or getattr(runtime, "engine_session_key", None)
         if key:
             updates["engine_session_key"] = key
-        updates.update(await runtime_initialization_metadata(session_id, runtime))
+        updates.update(runtime_engine_capabilities(session_id, runtime))
         await ownership.update(updates, notify="reader")
 
     async def _reset(

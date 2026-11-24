@@ -34,6 +34,11 @@ class RecoveryOwnership:
     sandbox_generation: str | None = None
     assignment_id: str | None = None
     allocations: list[Any] = field(default_factory=list, compare=False)
+    #: The startup allocation this attempt's own fenced write last left on the
+    #: row: at most one, as the row names one.
+    #: ``RemoteAgentRuntimeManager._record_startup_allocation`` keeps it and
+    #: reads it so the same allocation is not persisted again.
+    recorded_allocations: list[Any] = field(default_factory=list, compare=False)
 
     @contextmanager
     def bind(self) -> Iterator[None]:

@@ -48,10 +48,9 @@ function PartRow({ part, index }: { part: AdminTracePart; index: number }) {
           trigger advertises an `aria-controls` for a panel that is not on the
           page, which is a lie only a screen reader hears (§10). */}
       <CollapsibleTrigger className="console-row--click ring-inward group flex w-full items-center gap-3 px-3 py-1.5 text-left">
-        {/* The open state is the trigger's own `data-panel-open` — Base UI puts
-            it on the element that names the panel, and the chevron reads it off
-            the group it sits in. */}
-        <ChevronRight className="console-row-chevron size-3.5 shrink-0 transition-transform group-data-panel-open:rotate-90" />
+        {/* The open state is the trigger's own `data-open`; the chevron reads
+            it off the group it sits in. */}
+        <ChevronRight className="console-row-chevron size-3.5 shrink-0 transition-transform group-data-open:rotate-90" />
         <span className="w-10 shrink-0 tabular-nums text-11 text-muted-foreground">
           {part.seq ?? index}
         </span>
@@ -82,6 +81,9 @@ export function ResponseParts({ sessionId, trace }: { sessionId: string; trace: 
   const [truncated, setTruncated] = useState(trace.truncated_part_count);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  // Recorded with the response rather than in its output, so it comes with the
+  // trace and stays readable when this response's parts fail to load.
+  const diagnostic = responses.find((response) => response.response_id === responseId)?.diagnostic;
 
   // The trigger shows what the menu offered, not the id behind it: `items` is
   // where `<SelectValue>` reads the selected response's label from, and
@@ -155,6 +157,15 @@ export function ResponseParts({ sessionId, trace }: { sessionId: string; trace: 
             ))}
           </SelectContent>
         </Select>
+      )}
+
+      {diagnostic && (
+        <div className="space-y-1">
+          <p className="t-copy-sm text-muted-foreground">{t('manage:sessions.process_diagnostic')}</p>
+          <pre tabIndex={0} className="console-scroll console-val max-h-72 select-text overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 px-2.5 py-2 text-11 leading-5 text-foreground">
+            {JSON.stringify(diagnostic, null, 2)}
+          </pre>
+        </div>
       )}
 
       {error ? (

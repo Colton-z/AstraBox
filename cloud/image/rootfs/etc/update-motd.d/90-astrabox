@@ -1,0 +1,16 @@
+#!/bin/sh
+# Shows where AstraBox is served, or why it is not yet, at each SSH login.
+state=/var/lib/astrabox-cloud
+if [ -f "$state/first-boot.done" ]; then
+  console="$(sed -n 's/^console=//p' "$state/state" 2>/dev/null)"
+  certificate="$(sed -n 's/^certificate=//p' "$state/state" 2>/dev/null)"
+  printf '\nAstraBox console: %s (%s certificate)\n' "$console" "$certificate"
+  printf 'Sign-in details:  sudo astrabox-cloud info\n\n'
+elif [ -f "$state/first-boot.failed" ]; then
+  printf '\nAstraBox setup failed: %s\n' "$(cat "$state/first-boot.failed")"
+  printf 'Log: sudo tail -n 80 /var/log/astrabox-first-boot.log\n'
+  printf 'Retry after fixing the cause: sudo systemctl restart astrabox-first-boot\n\n'
+else
+  printf '\nAstraBox is being set up (a few minutes on first boot).\n'
+  printf 'Follow it: sudo tail -f /var/log/astrabox-first-boot.log\n\n'
+fi

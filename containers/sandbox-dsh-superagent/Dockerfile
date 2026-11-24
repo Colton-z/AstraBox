@@ -42,8 +42,10 @@ RUN set -eux; \
 
 COPY --chmod=0444 containers/sandbox-dsh-superagent/resolve-bundle.py /tmp/resolve-bundle.py
 # The patch over the pinned commit: GitHub becomes optional (an installation
-# whose GitHub Source names no repository or CLI runs its other Sources), and the Source
-# plugin interface is exported as `dsh-superagent/sources` for plugins in their own package.
+# whose GitHub Source names no repository or CLI runs its other Sources), the Source
+# plugin interface is exported as `dsh-superagent/sources` for plugins in their own package,
+# and the Executor joins, stops and reads a worker through the subagent and Session-query
+# methods of the harness this image runs.
 COPY --chmod=0444 containers/sandbox-dsh-superagent/upstream-changes.patch /tmp/upstream-changes.patch
 
 # Build the bundle with the pnpm the harness image pins, then make its host-side imports

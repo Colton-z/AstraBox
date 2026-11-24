@@ -37,6 +37,7 @@ from typing import Any, Awaitable, Callable, Literal, Mapping
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.config.release_images import release_image
+from astrabox.config.settings import get_settings
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.assistant_state_barrier import (
     await_command_channel,
@@ -57,6 +58,7 @@ from astrabox.core.service.orchestrator.engine.base import (
 from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
     EngineAssistantDeclaration,
+    EnginePanelDeclaration,
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
 )
@@ -101,7 +103,7 @@ from astrabox.core.service.orchestrator.runtime.sandbox_client import (
     extract_sandbox_id,
     get_underlying_sandbox,
 )
-from astrabox.seams.model import ResolvedModelAccess
+from astrabox.seams.model import ModelProfile, ResolvedModelAccess, described_profile
 from astrabox.core.service.orchestrator.runtime.mcp_servers import (
     runtime_mcp_servers_for_binding,
     binding_mcp_server_definitions,
@@ -214,6 +216,7 @@ _HERMES_PROTECTED_CONFIG_KEYS = (
     "plugins.disabled",
     "platforms",
     "gateway",
+    "webapp",
 )
 
 #: Beside the profile env file: the digest of the process configuration the
@@ -309,8 +312,47 @@ class HermesEngineAdapter(EngineAdapter):
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=release_image(HERMES_RUNTIME_IMAGE_COMPONENT),
             extensions=HERMES_EXTENSIONS,
-            assistant=EngineAssistantDeclaration(),
+            assistant=EngineAssistantDeclaration(
+                panel=EnginePanelDeclaration(
+                    port=HERMES_WEBAPP_PROXY_PORT,
+                    opens_in_new_tab=not get_settings().hermes_webapp_embedded,
+                    requires_secure_access=True,
+                ),
+            ),
         )
+
+    async def panel_launch_path(self, sandbox: Any, *, runtime_identity: dict[str, Any]) -> str:
+        """Ask the resident gateway for a one-use Webapp link as its Linux owner."""
+        identity = normalize_runtime_identity(runtime_identity)
+        if identity is None:
+            raise APIError(
+                code="HERMES_PROFILE_INVALID",
+                message="the Hermes Webapp requires a provisioned runtime identity",
+                status_code=500,
+            )
+        result = await sandbox.commands.run(shlex.join([
+            "runuser", "-u", identity["linux_user"], "--", "env",
+            f"HOME={identity['home_dir']}", f"HERMES_HOME={identity['config_dir']}",
+            "/opt/hermes/.venv/bin/python", "/opt/astrabox/hermes/hermes_webapp_link.py",
+        ]), timeout=15)
+        if result.exit_code == 75:
+            raise APIError(
+                code="ASSISTANT_WORKSPACE_NOT_READY",
+                message="the Hermes gateway has not made its Webapp available",
+                status_code=409,
+                data={"state": "STARTING"},
+            )
+        launch = re.fullmatch(
+            r"http://127\.0\.0\.1:9120(/webapp/launch#ticket=[A-Za-z0-9_-]{43})",
+            result.output.strip(),
+        )
+        if result.exit_code != 0 or launch is None:
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message="the Hermes gateway did not issue a Webapp launch link",
+                status_code=502,
+            )
+        return launch.group(1)
 
     def sandbox_request(
         self,
@@ -961,8 +1003,13 @@ async def _prepare_hermes_extensions(
     managed = dict(getattr(template, "engine_options", None) or {}).get("config")
     if managed and getattr(template, "assistant_id", None):
         managed = assistant_managed_config(managed)
-    if managed:
-        env[_HERMES_MANAGED_CONFIG_ENV] = json.dumps(managed, ensure_ascii=False, sort_keys=True)
+    env[_HERMES_MANAGED_CONFIG_ENV] = json.dumps(
+        {**(managed or {}), "webapp": {
+            "enabled": True, "host": "127.0.0.1", "port": 9120, "public_url": "",
+        }},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     return env
 
 
@@ -1034,6 +1081,8 @@ def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) 
 #: in containers/sandbox-hermes); this is the one the sandbox's endpoint face
 #: knows about.
 HERMES_BACKEND_PORT = 9118
+#: The browser proxy, separate from the platform's private gateway bridge.
+HERMES_WEBAPP_PROXY_PORT = 9121
 #: The bridge's readiness path: 200 while the gateway behind it is ready. The
 #: bridge names it in its own constant (``HEALTH_PATH``); the two must match.
 HERMES_BRIDGE_HEALTH_PATH = "/healthz"
@@ -1415,6 +1464,15 @@ def _hermes_credential_request(model_access: ResolvedModelAccess) -> ModelCreden
     )
 
 
+def _hermes_model_facts(model_name: str, profile: ModelProfile) -> dict[str, Any]:
+    facts: dict[str, Any] = {}
+    if profile.context_window is not None:
+        facts["context_length"] = profile.context_window
+    if profile.input_modalities is not None:
+        facts["supports_vision"] = "image" in profile.input_modalities
+    return {"models": {model_name: facts}} if facts else {}
+
+
 def _build_hermes_config_overwrite(
     deployment_settings: Any,
     *,
@@ -1433,6 +1491,11 @@ def _build_hermes_config_overwrite(
     switch in its configuration guide). Hermes titles a session with two model
     calls on every conversation's first turn, and nothing in the platform reads
     that title: conversation titles are the platform's own.
+
+    The custom provider describes the model with what the model connection
+    states about it, under the provider's per-model ``models.<id>`` keys
+    Hermes reads (``context_length``, ``supports_vision``); an unknown fact is
+    left to Hermes' own resolution.
 
     Hermes' model catalog fetch (``model_catalog.enabled``) stays off: its
     hosts are outside the box's egress policy, and models use the custom
@@ -1474,6 +1537,7 @@ def _build_hermes_config_overwrite(
                 "key_env": _HERMES_MODEL_API_KEY_ENV,
                 "model": model_name,
                 "api_mode": _HERMES_DEFAULT_API_MODE,
+                **_hermes_model_facts(model_name, described_profile(model_access)),
             }
         ],
         "auxiliary": {"title_generation": {"enabled": False}},
@@ -1523,10 +1587,11 @@ def _build_hermes_config_defaults() -> dict[str, Any]:
         "terminal": {"backend": "local"},
         "approvals": {"mode": "off", "cron_mode": "approve"},
         "security": {"tirith_enabled": False},
-        # Hermes tells the agent a job created from this kind of session is
-        # "local-only" and never reported back (tools/cronjob_job_args.py),
-        # which is untrue here: AstraBox reports each run into the
-        # conversation that created the job (engine/hermes_cron.py).
+        # Hermes tells the agent a job created from a local chat reports to
+        # that chat only as a history note, "not as a live message"
+        # (tools/cronjob_tools.py), or that it is "local-only"
+        # (cron/job_args.py). Neither holds here: AstraBox reports each run
+        # into the conversation that created the job (engine/hermes_cron.py).
         "agent": {"system_prompt": _HERMES_CRON_DELIVERY_NOTE},
     }
 

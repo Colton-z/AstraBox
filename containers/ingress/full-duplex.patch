@@ -1,0 +1,14 @@
+--- a/components/ingress/pkg/proxy/proxy.go
++++ b/components/ingress/pkg/proxy/proxy.go
+@@ -91,0 +92,11 @@
++	// AstraBox modification: proxy the request body and the response together.
++	// The upstream Transport reads r.Body once more after copying it, to see
++	// its end, and a sandbox can answer before that read. In the HTTP/1
++	// server's default half-duplex mode, the first response write discards and
++	// closes r.Body, so that read fails and the Transport closes the upstream
++	// connection mid-response: a streamed answer is cut and the sandbox sees
++	// its client disconnect. HTTP/2 is always full duplex and reports
++	// ErrNotSupported.
++	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil && !errors.Is(err, http.ErrNotSupported) {
++		Logger.With(slogger.Field{Key: "error", Value: err.Error()}).Errorf("ingress: enable full duplex")
++	}

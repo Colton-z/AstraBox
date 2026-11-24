@@ -119,5 +119,6 @@ exec runuser -u "$ASTRABOX_DSH_PROFILE_LINUX_USER" -- env \
     # writes it at startup, and a restore after that would discard its writes.
     python3 $(printf '%q' "$STATE") gate restore --profile-env $(printf '%q' "$profile_env")
     exec python3 /opt/dsh/web.py serve /opt/dsh/node_modules/.bin/dsh --profile web \
-      $(printf '%q ' "${SUPERAGENT_PATCH_ARGS[@]}")--no-open --host 127.0.0.1 --port 44781
+      $(printf '%q ' "${SUPERAGENT_PATCH_ARGS[@]}")--patch $(printf '%q' "$DSH_HOME/astrabox-model.patch.json") \
+      --no-open --host 127.0.0.1 --port 44781
   "

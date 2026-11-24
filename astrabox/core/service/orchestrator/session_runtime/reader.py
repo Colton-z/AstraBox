@@ -232,12 +232,16 @@ class SessionReader:
         *,
         lease: ReaderLease,
         client: RuntimeClient,
+        sandbox_id: str,
         repo: SessionRuntimeRepository,
         feed: SessionFeed,
         hooks: ReaderHooks,
     ) -> None:
         self._lease = lease
         self._client = client
+        #: The box ``client`` runs in, recorded with each response diagnostic:
+        #: the session's box can be replaced before anyone reads it.
+        self._sandbox_id = sandbox_id
         self._repo = repo
         self._feed = feed
         self._hooks = hooks
@@ -384,8 +388,14 @@ class SessionReader:
         elif isinstance(event, ResponseStarted):
             batch.facts.append(ResponseStart(event.response_id, event.origin, tuple(event.input_ids)))
         elif isinstance(event, ResponseEnded):
+            diagnostic = (
+                {**event.diagnostic, "sandbox_id": self._sandbox_id} if event.diagnostic is not None else None
+            )
             batch.facts.append(
-                ResponseEnd(event.response_id, event.outcome, event.native_reason, event.usage, event.error)
+                ResponseEnd(
+                    event.response_id, event.outcome, event.native_reason, event.usage, event.error,
+                    diagnostic=diagnostic,
+                )
             )
         elif isinstance(event, InteractionOpened):
             batch.facts.append(InteractionOpen(event.response_id, event.interaction_id, event.contract))

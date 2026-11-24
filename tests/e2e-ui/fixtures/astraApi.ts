@@ -832,6 +832,29 @@ export class AstraApi {
   }
 
   /**
+   * Wait until the READY session carries the engine's command metadata.
+   *
+   * `READY` does not wait for the engine's optional init snapshot; the
+   * connection serving the session records it afterwards
+   * (`record_runtime_observation` in `session_lifecycle/startup.py`).
+   */
+  async waitForCommandMetadata(
+    sessionId: string,
+    timeoutMs = parseTimeoutEnv('ASTRABOX_E2E_READY_TIMEOUT_MS', 180_000),
+  ): Promise<SessionRecord> {
+    const deadline = Date.now() + timeoutMs;
+    let last = await this.waitForSessionReady(sessionId, timeoutMs);
+    while (Date.now() < deadline) {
+      if (Array.isArray(last.slash_command_details) && last.slash_command_details.length > 0) {
+        return last;
+      }
+      await new Promise((r) => setTimeout(r, 500));
+      last = await this.getSession(sessionId);
+    }
+    throw new Error(`session ${sessionId} carried no command metadata after ${timeoutMs}ms (state=${last.state})`);
+  }
+
+  /**
    * Send a message and return its receipt, without reading the stream.
    *
    * `sendTurn` reads the response to its end, so a response that pauses on a

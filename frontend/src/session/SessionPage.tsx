@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSessionUserAction } from './hooks/useSessionUserAction';
 import { SessionUserAction } from './components/SessionUserAction';
 import { useTranslation } from 'react-i18next';
@@ -202,6 +202,24 @@ function SessionPageReady({
     isTerminated,
   });
 
+  // The receipt of a send and the session's next state arrive on different
+  // reads. For the moment between them nothing says the message is on its
+  // way, so the send is remembered until the session reports what it did.
+  const [justSent, setJustSent] = useState(false);
+  useEffect(() => {
+    if (isSending) {
+      setJustSent(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setJustSent(false), 1500);
+    return () => window.clearTimeout(timer);
+  }, [isSending]);
+  useEffect(() => {
+    if (isWorking || lifecycleState === 'creating') setJustSent(false);
+  }, [isWorking, lifecycleState]);
+
+  const onItsWay = isSending || justSent || chat.heldInputIds.size > 0;
+
   // ── Header and send capability ───────────────────────────────
   const {
     transparentlyRecoverable, canSendNow, canQueueMessage,
@@ -211,19 +229,29 @@ function SessionPageReady({
     lifecycleState,
     isTerminated,
     hasPendingInteraction,
-    isSending,
+    // A message the session has accepted and not yet handed to a runtime is
+    // still on its way; between its acceptance and the session starting, the
+    // header would otherwise fall back to Ready for a moment.
+    isSending: onItsWay && lifecycleState !== 'creating',
     isWorking,
     isStopping,
     t,
   });
   // Runtime startup/recovery and prerequisite-related refusals ask the gate
-  // again. Ordinary response activity does not invalidate this status read.
+  // again, except a start that binds a new box with a serving runtime, which
+  // checked the prerequisites itself (see useSessionUserAction). Ordinary response
+  // activity does not invalidate this status read.
   const userActionInvalidation = useMemo(() => JSON.stringify([
     session.state === 'CREATING', session.runtime_unavailable === true, session.sandbox_id ?? null,
     ...[...chat.unsent].filter(([, entry]) => entry.userAction).map(([id]) => id),
     ...messages.filter((message) => inputFailure(message)?.user_action).map((message) => message.id),
   ]), [session.state, session.runtime_unavailable, session.sandbox_id, chat.unsent, messages]);
-  const prerequisite = useSessionUserAction(sessionId, session.user_id ?? '', userActionInvalidation, !isTerminated);
+  const prerequisite = useSessionUserAction(sessionId, session.user_id ?? '', userActionInvalidation, !isTerminated, {
+    starting: session.state === 'CREATING',
+    serving: !isTerminated && session.state !== 'RECOVERY_REQUIRED'
+      && session.runtime_unavailable !== true && Boolean(session.sandbox_id),
+    sandboxId: session.sandbox_id ?? null,
+  });
   const composerCanSend = prerequisite.ready && canSend;
 
   // ── Composer input (draft, slash commands, history, keydown) ─
@@ -368,6 +396,7 @@ function SessionPageReady({
           sessionId={sessionId}
           messages={messages}
           isWorking={isWorking || isSending}
+          startingLabel={lifecycleState === 'creating' ? headerStatusLabel : undefined}
           pendingToolCallId={pendingToolCallId}
           writingMessageId={chat.writingMessageId}
           hasPendingInteraction={hasPendingInteraction}
@@ -439,7 +468,7 @@ function SessionPageReady({
             canSend={composerCanSend}
             isTerminated={isTerminated}
             isStreaming={isWorking}
-            isSubmitted={isSending}
+            isSubmitted={onItsWay}
             hasPendingInteraction={hasPendingInteraction}
             permissionMode={permissionMode}
             permissionModes={session.engine_capabilities?.permission_modes ?? []}

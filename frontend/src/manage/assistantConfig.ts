@@ -5,7 +5,7 @@
 // materialize, so only the mutable subset is editable there. These helpers mirror
 // sessionConfig.ts so the two operational surfaces speak the same pill/format grammar.
 import i18n from '@/i18n';
-import { listAdminRuntimeProfiles } from '@/api';
+import { listAssistantRuntimeProfiles } from '@/api';
 import type { RuntimeProfileConfig } from '@/types';
 
 import type { AssistantRecord } from '@/assistant/types';
@@ -96,10 +96,10 @@ export function assistantMaterializing(state?: string): boolean {
 }
 
 // ── Runtime surface ──────────────────────────────────────────────────────────
-// The runtime declares how its owner works with it (`runtime`). One that hosts
-// no conversations and serves its own page opens on that page instead.
+// A native page is the console entry point even when the runtime also accepts
+// conversations from platform integrations.
 export function assistantOpensPanel(a: AssistantRecord): boolean {
-  return a.runtime?.panel === true && a.runtime.conversations === false;
+  return a.runtime?.panel === true;
 }
 
 /**
@@ -163,17 +163,11 @@ export function buildAssistantDraft(): AssistantDraft {
 /**
  * The environment presets an assistant may name.
  *
- * Eligibility comes from the installed adapter's declaration. A third-party
- * resident engine becomes selectable without teaching this page its name.
+ * The server decides eligibility from the installed adapter's declaration, so
+ * a third-party resident engine becomes selectable without teaching this page
+ * its name. The list is the caller's, not the administrator's catalogue: an
+ * owner without the admin role creates and edits an Assistant from it.
  */
 export async function loadAssistantRuntimeProfiles(): Promise<RuntimeProfileConfig[]> {
-  const envs = await listAdminRuntimeProfiles();
-  return envs
-    .filter(
-      (e) =>
-        e.enabled !== false &&
-        e.engine_available !== false &&
-        e.supported_session_kinds?.includes('assistant_chat') === true &&
-        Boolean(String(e.name || '').trim()),
-    );
+  return listAssistantRuntimeProfiles();
 }

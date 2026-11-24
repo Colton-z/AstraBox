@@ -42,7 +42,7 @@ export function ConsoleEmptyState({
   className?: string;
 }) {
   return (
-    <Empty className={cn('relative overflow-hidden', className)}>
+    <Empty className={cn('clip-content relative', className)}>
       <div className="bg-starfield pointer-events-none absolute inset-0 opacity-50" aria-hidden />
       {/* `relative` on the content, not only on the frame: the star-field is
           positioned, and a positioned element paints over its static siblings
