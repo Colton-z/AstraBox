@@ -76,6 +76,7 @@ test('the management record reads the same conversation one page at a time', asy
   expect(technicalRequests).toEqual([]);
 
   await chat.getByTestId('assistant-turn-process-trigger').last().click();
+  await chat.getByRole('button', { name: /^Tool calls\b/ }).click();
   const bash = chat.getByRole('button', { name: /^Bash / }).last();
   await bash.click();
   const result = chat.getByRole('heading', { name: 'Result', exact: true });
