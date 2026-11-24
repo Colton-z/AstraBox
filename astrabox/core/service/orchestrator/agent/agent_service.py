@@ -792,9 +792,6 @@ class AgentService:
                             runtime_manager=self._runtime_manager,
                             agent_repo=self._agent_repo,
                         )
-                await self._agent_repo.record_prepared_runtime(
-                    target, version=version, prewarm_revision=revision, generation=generation
-                )
             except BaseException as exc:
                 if isinstance(exc, asyncio.CancelledError):
                     raise
@@ -805,6 +802,12 @@ class AgentService:
                     error=f"{type(exc).__name__}: {str(exc).strip()}",
                 )
                 raise
+            # Outside the preparation's error report: a failure to record the
+            # success propagates as itself, and is neither reported as a failed
+            # preparation nor followed by a second write to the same record.
+            await self._agent_repo.record_prepared_runtime(
+                target, version=version, prewarm_revision=revision, generation=generation
+            )
 
     async def wake_agent(self, user: UserContext, agent_id: str) -> dict[str, Any]:
         agent = await self._must_view(user, agent_id)
