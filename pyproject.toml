@@ -35,7 +35,7 @@ dependencies = [
   # config + validation
   "pydantic==2.13.5",
   "pydantic-settings==2.15.0",
-  "pyyaml==6.0.3",
+  "pyyaml==6.0.4",
   # agent loop (KEYSTONE, Anthropic official MIT package)
   "claude-agent-sdk==0.2.187",
   # default sandbox driver -> /var/run/docker.sock
