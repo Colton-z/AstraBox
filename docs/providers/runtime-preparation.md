@@ -447,7 +447,12 @@ state cannot restore an action. Executable conversations return
 
 The console re-reads prerequisites when startup or runtime recovery changes
 the Session binding, when the page regains focus or visibility, and when the
-browser comes back online. Return reads use the console's shared throttling
+browser comes back online. A start the page watched bind the Session to a new
+box with a running runtime is the exception: binding a new box takes a
+startup, which reads `read_user_actions` before it takes the box, so the
+console takes the prerequisites as met for that binding and enables sending
+without another read. A start that stopped on a user action, and a recovery
+that reattached the same box, are read again. Return reads use the console's shared throttling
 and in-flight deduplication; there is no prerequisite polling timer. A stale
 operation refused with `409 INVALID_REQUEST` triggers a status read, without
 replaying the operation. These reads initiate no consent or registration.

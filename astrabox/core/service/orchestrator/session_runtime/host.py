@@ -124,6 +124,9 @@ class ConnectedRuntime:
     engine_kind: str
     #: The adapter's host-side refresh before each input (rotated MCP credentials).
     refresh: Callable[..., Awaitable[None]] | None = None
+    #: Reads of the connected runtime that no input waits for. The host runs
+    #: it beside the reader and cancels it when the connection ends.
+    observe: Callable[[], Awaitable[None]] | None = None
 
 
 class RuntimeConnector(Protocol):
@@ -263,9 +266,18 @@ class ReaderHost:
                     feed=self._feed,
                     hooks=self._hooks(session_id, connected),
                 )
+                observing = (
+                    asyncio.create_task(connected.observe(), name=f"runtime-observe-{session_id}")
+                    if connected.observe is not None
+                    else None
+                )
                 try:
                     ended = await reader.run()
                 finally:
+                    # Cancelled before the client closes, so a read cut off by
+                    # the close is not recorded as the runtime's answer.
+                    if observing is not None:
+                        observing.cancel()
                     with contextlib.suppress(Exception):
                         await connected.client.close()
                 if ended in ("lease_lost", "protocol_error"):

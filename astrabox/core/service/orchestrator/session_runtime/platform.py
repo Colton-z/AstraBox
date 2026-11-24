@@ -26,7 +26,10 @@ from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.engine.runtime import (
     RUNTIME_PROTOCOL_INCOMPATIBLE, ResponseEnded, RuntimeClient, RuntimeInput,
 )
-from astrabox.core.service.orchestrator.session_lifecycle.startup import runtime_initialization_metadata
+from astrabox.core.service.orchestrator.session_lifecycle.startup import (
+    record_runtime_observation,
+    runtime_engine_capabilities,
+)
 from astrabox.core.service.orchestrator.session_runtime.host import (
     ConnectedRuntime,
     RuntimeAttachRefused,
@@ -125,7 +128,9 @@ class PlatformRuntimeConnector:
         and to wake a parked box, and again to publish the attach. In between
         the conversation may be archived, ended or parked, or its box replaced;
         an attach that does not match the conversation by then is evicted, and
-        the reader does not receive it.
+        the reader does not receive it. The engine's optional init snapshot is
+        read by the connection's ``observe``, beside the reader, so neither the
+        lock nor the first input waits for it.
         """
         coordination = get_persistence().coordination
         async with coordination.runtime_lock(session_id):
@@ -144,7 +149,7 @@ class PlatformRuntimeConnector:
         client = runtime.engine_client
         if not isinstance(client, RuntimeClient):
             raise TypeError(f"the {runtime.engine_kind} adapter does not serve the runtime contract")
-        async with coordination.runtime_lock(session_id) as check_lock:
+        async with coordination.runtime_lock(session_id):
             current = await self._sessions.get_session(session_id)
             attached = str(runtime.sandbox_id or "")
             if current is None or not _attach_is_current(current, attached):
@@ -152,12 +157,14 @@ class PlatformRuntimeConnector:
                 if current is None or conversation_ended(current):
                     raise RuntimeEnded(session_id, failure=recorded_failure(current))
                 raise RuntimeNotReady(session_id)
-            initialization = await runtime_initialization_metadata(session_id, runtime)
-            await check_lock()
-            await self._sessions.update_session(
-                session_id, {"runtime_versions": initialization["runtime_versions"]},
-                touch_updated_at=False,
+            runtime_engine_capabilities(session_id, runtime)
+        generation = current.get("sandbox_generation")
+
+        async def observe() -> None:
+            await record_runtime_observation(
+                self._sessions, session_id, runtime, sandbox_generation=generation,
             )
+
         return ConnectedRuntime(
             client=client,
             sandbox_id=attached or str(current.get("sandbox_id") or ""),
@@ -165,6 +172,7 @@ class PlatformRuntimeConnector:
             runtime_identity=dict(runtime.runtime_identity or {}),
             engine_kind=str(runtime.engine_kind),
             refresh=runtime.prepare_engine_input,
+            observe=observe,
         )
 
     async def _attachable(self, session_id: str) -> dict[str, Any]:

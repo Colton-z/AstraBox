@@ -4,6 +4,12 @@ import { readUserAction } from '../session/userAction';
 import type { SessionUserActionState } from '../types';
 import { useKeepCurrent } from './useKeepCurrent';
 
+const MET: { state: SessionUserActionState; busy: boolean; error: string | null } = {
+  state: { applicable: true, ready: true, user_action: null, actions: [] },
+  busy: false,
+  error: null,
+};
+
 /**
  * What a person must do before something of theirs can run, kept current.
  *
@@ -13,6 +19,10 @@ import { useKeepCurrent } from './useKeepCurrent';
  * answer read for another owner, or before `invalidation` changed, is never
  * shown. An operation refused because the current answer does not offer it
  * (409 INVALID_REQUEST) is followed by a read of the current requirement.
+ * `established` says the caller already knows the requirement is met for this
+ * owner and invalidation: the gate reports it ready without reading, until a
+ * read for the same owner and invalidation (a return to the tab, a refresh)
+ * answers.
  */
 export function useUserActionGate(
   owner: string,
@@ -20,6 +30,7 @@ export function useUserActionGate(
   enabled: boolean,
   read: () => Promise<SessionUserActionState>,
   perform: (actionId: string) => Promise<SessionUserActionState>,
+  established = false,
 ) {
   const current = useRef<string | null>(enabled ? owner : null);
   current.current = enabled ? owner : null;
@@ -70,18 +81,19 @@ export function useUserActionGate(
 
   useEffect(() => {
     operation.current = null;
-    void load();
+    if (!established) void load();
     return () => { generation.current += 1; };
-  }, [load]);
+  }, [load, established]);
   useKeepCurrent(() => load());
 
   const owned = enabled && view.owner === owner && view.invalidation === invalidation;
+  const shown = owned ? view : enabled && established ? MET : null;
   return {
-    applicable: enabled && (!owned || view.state?.applicable !== false),
-    state: owned ? view.state : null,
-    busy: enabled && (!owned || view.busy),
-    error: owned ? view.error : null,
-    ready: owned && !view.busy && !view.error && view.state?.ready === true,
+    applicable: enabled && (!shown || shown.state?.applicable !== false),
+    state: shown ? shown.state : null,
+    busy: enabled && (!shown || shown.busy),
+    error: shown ? shown.error : null,
+    ready: !!shown && !shown.busy && !shown.error && shown.state?.ready === true,
     refresh: () => { void load(); },
     perform: (actionId: string) => { void load(actionId); },
   };

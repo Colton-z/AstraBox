@@ -276,14 +276,13 @@ function normalizedText(value: unknown): string {
 }
 
 function expectExtensionCommandMetadata(session: SessionRecord): CommandDetail[] {
-  expect(session.state, 'READY must already carry extension command metadata').toBe('READY');
   expect(Array.isArray(session.slash_command_details)).toBe(true);
   expect(Array.isArray(session.slash_commands)).toBe(true);
   const details = (session.slash_command_details as Array<Record<string, unknown>>)
     .map((item) => ({ name: commandName(item), description: normalizedText(item.description) }));
   const names = details.map((item) => item.name);
-  expect(names.length, 'READY command metadata must not be empty').toBeGreaterThan(0);
-  expect(new Set(names).size, 'READY command names must be unique').toBe(names.length);
+  expect(names.length, 'command metadata must not be empty').toBeGreaterThan(0);
+  expect(new Set(names).size, 'command names must be unique').toBe(names.length);
   expect((session.slash_commands as unknown[]).map(commandName).sort()).toEqual([...names].sort());
   for (const detail of details) {
     expect(detail.name, 'command metadata must name every entry').not.toBe('');
@@ -525,7 +524,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
 
       const firstId = await startConversationFromCard(page, agentName);
       sessions.add(firstId);
-      const firstReady = await api.waitForSessionReady(firstId, READY_TIMEOUT_MS);
+      const firstReady = await api.waitForCommandMetadata(firstId, READY_TIMEOUT_MS);
       const initialCommands = expectExtensionCommandMetadata(firstReady);
       const firstDetail = await api.adminSessionDetail(firstId);
       const first = placement(firstDetail, true);
@@ -623,7 +622,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       await useRealSkillAndPlugin(api, firstId, `P144_SHARED_EXTENSIONS_${runId}`);
       await expectToolCards(page, firstId);
       expectPluginDescription(
-        expectExtensionCommandMetadata(await api.waitForSessionReady(firstId, READY_TIMEOUT_MS)),
+        expectExtensionCommandMetadata(await api.waitForCommandMetadata(firstId, READY_TIMEOUT_MS)),
         descriptionFragments,
       );
       await expectExtensionCommandMenu(page, descriptionFragments);
@@ -701,7 +700,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
 
       const firstId = await startConversationFromCard(page, agentName);
       sessions.add(firstId);
-      const firstReady = await api.waitForSessionReady(firstId, READY_TIMEOUT_MS);
+      const firstReady = await api.waitForCommandMetadata(firstId, READY_TIMEOUT_MS);
       const initialCommands = expectExtensionCommandMetadata(firstReady);
       const firstDetail = await api.adminSessionDetail(firstId);
       const first = placement(firstDetail, false);
@@ -716,7 +715,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       await useRealSkillAndPlugin(api, firstId, `P144_CONVERSATION_V1_${runId}`);
       await expectToolCards(page, firstId);
       expectPluginDescription(
-        expectExtensionCommandMetadata(await api.waitForSessionReady(firstId, READY_TIMEOUT_MS)),
+        expectExtensionCommandMetadata(await api.waitForCommandMetadata(firstId, READY_TIMEOUT_MS)),
         descriptionFragments,
       );
       await expectExtensionCommandMenu(page, descriptionFragments);
@@ -746,7 +745,7 @@ test.describe.serial('OpenSandbox Agent prepared runtimes', () => {
       const otherId = otherCreated.session_id;
       sessions.add(otherId);
       test.info().annotations.push({ type: 'interleaved_session', description: otherId });
-      const otherReady = await api.waitForSessionReady(otherId, READY_TIMEOUT_MS);
+      const otherReady = await api.waitForCommandMetadata(otherId, READY_TIMEOUT_MS);
       expect(otherReady.agent_id).toBe(otherAgentId);
       expectExtensionCommandMetadata(otherReady);
       const other = placement(await api.adminSessionDetail(otherId), false);

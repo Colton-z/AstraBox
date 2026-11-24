@@ -29,7 +29,7 @@ from astrabox.core.service.orchestrator.sandbox_names import keep_name_updates
 from astrabox.core.service.orchestrator.session_lifecycle.ownership import RecoveryOwnership
 from astrabox.core.service.orchestrator.session_lifecycle.startup import (
     SessionStartup,
-    runtime_initialization_metadata,
+    runtime_engine_capabilities,
 )
 from astrabox.seams.persistence_coordination import RuntimeLockCheck
 from astrabox.core.service.orchestrator.runtime.preparation import bound_runtime_preparation_plan
@@ -271,7 +271,7 @@ class SessionRecovery:
         key = engine_session_key or getattr(runtime, "engine_session_key", None)
         if key:
             updates["engine_session_key"] = key
-        updates.update(await runtime_initialization_metadata(session_id, runtime))
+        updates.update(runtime_engine_capabilities(session_id, runtime))
         await ownership.update(updates, notify="reader")
 
     async def _reset(
