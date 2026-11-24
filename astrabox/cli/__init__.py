@@ -36,7 +36,16 @@ _EXIT_INTERRUPTED = 130
 
 def _build_parser() -> argparse.ArgumentParser:
     """Build the top-level ``astrabox`` argument parser with its subcommands."""
-    from astrabox.cli import mcp_server, model_accounts, resources, run, scaffold, serve, stack
+    from astrabox.cli import (
+        assistants,
+        mcp_server,
+        model_accounts,
+        resources,
+        run,
+        scaffold,
+        serve,
+        stack,
+    )
 
     parser = argparse.ArgumentParser(
         prog="astrabox",
@@ -59,6 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run.register(subparsers)
     mcp_server.register(subparsers)
     model_accounts.register(subparsers)
+    assistants.register(subparsers)
     return parser
 
 

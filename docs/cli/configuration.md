@@ -160,7 +160,7 @@ A deployment may contain several Agents with the same name. When that makes one 
 
 #### Unknown top-level keys
 
-The root is closed to these three keys: `version`, `environments`, and `agents`. A misspelled or extra top-level key fails before any request is sent.
+The root is closed to these three keys: `version`, `environments`, and `agents`. A misspelled or extra top-level key fails before any request is sent. An `assistants` key fails with a message that names `astrabox assistant`, the command that configures an Assistant ([Command Reference](./commands.md#astrabox-assistant)).
 
 ```yaml
 version: 1

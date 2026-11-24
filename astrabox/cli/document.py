@@ -28,6 +28,12 @@ DOCUMENT_VERSION = 1
 #: document that silently declares nothing.
 _TOP_LEVEL_KEYS = frozenset({"version", "runtime_profiles", "agents"})
 
+#: Top-level keys for resources another command configures, and that command.
+#: An Assistant belongs to one owner rather than to the deployment, has no name
+#: a document could key it by, and holds write-only credentials, so its
+#: settings are changed by ``astrabox assistant`` instead of declared here.
+_CONFIGURED_BY_COMMAND = {"assistants": "astrabox assistant"}
+
 #: Resource kinds in apply order. RuntimeProfiles come first because an Agent's
 #: ``runtime_profile_name`` is validated against an existing environment.
 KIND_RUNTIME_PROFILE = "runtime_profile"
@@ -106,8 +112,13 @@ def parse_document(raw: Any, *, path: Path | None = None) -> Document:
 
     unknown = sorted(set(raw) - _TOP_LEVEL_KEYS)
     if unknown:
+        elsewhere = "".join(
+            f"; configure {key} with `{_CONFIGURED_BY_COMMAND[key]}`"
+            for key in unknown
+            if key in _CONFIGURED_BY_COMMAND
+        )
         raise CliError(
-            f"{where} has unknown top-level keys: {', '.join(unknown)}",
+            f"{where} has unknown top-level keys: {', '.join(unknown)}{elsewhere}",
             exit_code=EXIT_USAGE,
             details={"known_keys": sorted(_TOP_LEVEL_KEYS)},
         )

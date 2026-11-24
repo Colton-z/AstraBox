@@ -270,6 +270,9 @@ Assistant 不需要占用计算资源时，可以在详情页选择**暂停工�
 完成。系统提示词对应 Assistant 的 `system` 字段，与 Agent 相同。每个 AstraBox 实例都在 `/docs` 提供当前版本的交互式 API 参考，并在
 `/openapi.json` 提供 OpenAPI 文档。鉴权和请求约定见 [API 概览](api.md)。
 
+在终端或脚本中，`astrabox assistant` 通过同样的接口读取 Assistant、修改其模型和 Agent
+程序配置、设置其运行时要求的凭据，以及暂停或恢复其工作区（见 [CLI 命令详解](cli/commands.md#astrabox-assistant)）。
+
 ## 相关指南
 
 - [RuntimeProfile](runtime-profiles.md)

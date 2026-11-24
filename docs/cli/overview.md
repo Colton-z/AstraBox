@@ -27,6 +27,7 @@ The `astrabox` CLI provides commands to manage a deployment and its **Agents**:
 | `astrabox run` | Send a task to an Agent and stream its reply. |
 | `astrabox status` | View the deployment's health, readiness, and endpoint. |
 | `astrabox model-account` | Link a ChatGPT account or add an Anthropic API key to pay for your model requests, list your accounts, or share a ChatGPT account with your team. |
+| `astrabox assistant` | Read and change one of your Assistants' model and Agent-program configuration, set the credentials its runtime asks for, and pause or resume its workspace. |
 
 ### Deployment and Integration Commands
 

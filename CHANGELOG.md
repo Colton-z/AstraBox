@@ -19,6 +19,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **Engines learn the model's limits from the model connection**: context window, output cap, image input and reasoning efforts, read from the gateway. [Guide](https://www.astrabox.ai/docs/models#model-description)
 - **Reasoning effort for DeepSeek Harness and Pi Agents.** [Guide](https://www.astrabox.ai/docs/authoring-agents#reasoning-effort)
 - **The administrator's Session page shows the conversation** as its owner sees it, with tool work and child conversations, beside the event log.
+- **`astrabox assistant`** changes one of your Assistants' model and Agent-program configuration, such as dsh-superagent's reasoning effort, sets the credentials its runtime asks for without showing them, and pauses or resumes its workspace. [Guide](https://www.astrabox.ai/docs/cli/commands#astrabox-assistant)
 - `ASTRABOX_INSTALL_PULL=missing` makes the installer pull only the images the host does not have.
 
 ### Fixed and improved
@@ -63,6 +64,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - **引擎从模型连接获知模型参数**：上下文窗口、输出上限、图片输入与推理强度，由网关提供。[指南](https://www.astrabox.ai/docs/models#model-description)
 - **DeepSeek Harness 与 Pi Agent 可设置推理强度。** [指南](https://www.astrabox.ai/docs/authoring-agents#reasoning-effort)
 - **管理员的 Session 页面显示对话本身**，与所有者看到的一致，包括工具调用和子对话，事件日志仍在旁边。
+- **`astrabox assistant`** 可修改你的某个 Assistant 的模型和 Agent 程序配置（如 dsh-superagent 的推理强度），设置其运行时要求的凭据且不显示其值，并暂停或恢复其工作区。[指南](https://www.astrabox.ai/docs/cli/commands#astrabox-assistant)
 - 安装脚本新增 `ASTRABOX_INSTALL_PULL=missing`，只拉取主机上还没有的镜像。
 
 ### 修复与改进

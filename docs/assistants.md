@@ -689,6 +689,11 @@ Assistant endpoints in the interactive API reference at `/docs` and the OpenAPI
 document at `/openapi.json`. See [API overview](api.md) for authentication and
 request conventions.
 
+From a terminal or a script, `astrabox assistant` reads an Assistant, changes its
+model and Agent-program configuration, sets the credentials its runtime asks
+for, and pauses or resumes its workspace through the same endpoints
+([CLI Command Reference](cli/commands.md#astrabox-assistant)).
+
 ## Related guides
 
 - [RuntimeProfiles](runtime-profiles.md)

@@ -22,6 +22,7 @@ title: CLI 命令详解
 | `run` | **运行 Agent**：发送任务并流式输出回复。 | 从终端或脚本使用 Agent。 |
 | `status` | **查看状态**：检查部署的健康状态和就绪状态。 | 监控本地或远程部署。 |
 | `destroy` | **清理资源**：删除文件声明的 Agent。 | 在明确确认后移除 Agent。 |
+| `assistant` | **配置 Assistant**：读取和修改你的某个 Assistant 的模型与 Agent 程序配置，设置其运行时要求的凭据，暂停或恢复其工作区。 | 在脚本中切换 Assistant 的模型或推理强度，并保留其历史。 |
 | `up` | **本地启动**：启动官方维护的 Compose 部署。 | 从源码目录运行 AstraBox。 |
 | `down` | **本地停止**：停止官方维护的 Compose 部署。 | 停止服务或删除数据卷。 |
 | `logs` | **查看本地日志**：读取或持续输出 Compose 服务日志。 | 排查本地部署问题。 |
@@ -826,6 +827,100 @@ astrabox destroy -f astrabox.yaml --yes --output json
 3. **名称有歧义时会失败**：部署中有多个同名 Agent 时，命令返回冲突，不会自行选择。
 4. **不支持删除 RuntimeProfile**：RuntimeProfile 会保留在部署中。
 5. **保留可恢复的声明**：如果以后可能重新创建 Agent，请把经过检查的配置文件保存到版本控制中。
+
+---
+
+## `astrabox assistant`
+
+`astrabox assistant` 读取和修改你的某个 [Assistant](../assistants.md)：它的模型、Agent 程序配置、运行时要求你提供的凭据，以及它的工作区。每个命令发送的请求与 Assistant 管理页执行同一操作时发送的相同，因此控制台显示的就是命令所做的修改。只有 Assistant 的所有者可以使用这些命令。
+
+`astrabox.yaml` 不声明 Assistant：Assistant 属于它的所有者，并持有只写的凭据。`diff`、`apply` 和 `destroy` 遇到 `assistants` 字段会失败，并指出本命令。
+
+### 用法
+
+```bash
+astrabox assistant show <assistant> [options]
+astrabox assistant set <assistant> [--model <model> | --inherit-model] [--engine-option <key>=<json>]... [options]
+astrabox assistant secret list <assistant> [options]
+astrabox assistant secret set <assistant> <key> [--from-file <path>] [options]
+astrabox assistant hibernate <assistant> [options]
+astrabox assistant wake <assistant> [options]
+```
+
+### 参数说明
+
+| 选项 | 说明 | 默认值 |
+| :--- | :--- | :--- |
+| `<assistant>` | Assistant 的 ID 或显示名称。`astrabox get assistants` 列出你的 Assistant。你的多个 Assistant 共用同一显示名称时，命令以退出码 5 结束并列出它们的 ID。 | 必填 |
+| `--model` | Assistant 使用的模型，取其 RuntimeProfile 的模型连接提供的模型名称（仅 `set`）。保存为 `model_config_override.model_name`。 | 不变 |
+| `--inherit-model` | 移除 Assistant 自己的模型，改用 [Assistant 默认配置](../assistants.md#defaults)指定的模型（仅 `set`）。 | 不变 |
+| `--engine-option` | `KEY=JSON`：用该 JSON 值替换 `engine_options` 中 Agent 程序的配置块 `KEY`，其他配置块保持不变；`null` 移除该配置块（仅 `set`）。可重复。键和字段都是该程序自己的，即管理页 **技能、插件与配置** 卡片中显示的那些。 | 不变 |
+| `<key>` | 凭据的键，与 `secret list` 显示的一致（仅 `secret set`）。 | 必填 |
+| `--from-file` | 从该文件读取凭据（仅 `secret set`）。 | 终端或标准输入 |
+| `--endpoint` | 部署的基础 URL。 | `ASTRABOX_ENDPOINT`，然后是 `http://127.0.0.1:$ASTRABOX_SERVER_HOST_PORT` |
+| `--token` | Bearer Token。 | `ASTRABOX_TOKEN`，然后是 OAuth 客户端凭证 |
+| `--output`, `-o` | 输出格式：`table` 或 `json`。 | `table` |
+
+### 修改模型和推理强度
+
+`set` 只发送你指定的字段。部署在保存前会按 Assistant 的 Agent 程序检查每个值。dsh-superagent Assistant 的推理强度写在其 `default_model` 配置块的原生字段 `reasoningEffort` 中：
+
+```bash
+astrabox assistant set <assistant> --model <model-name> \
+  --engine-option 'default_model={"reasoningEffort": "xhigh"}'
+astrabox assistant show <assistant>
+```
+
+保存修改后，`READY` 状态的工作区会在当前沙箱中刷新，文件和运行时的历史都保留；dsh-superagent 运行时会在沙箱内重启其 harness，以读取变更后的模型或配置。未运行的工作区在下次启动时读取变更。Hermes 的情况见[修改何时生效](../assistants.md#修改何时生效)。
+
+### 设置凭据
+
+`secret list` 显示 Assistant 运行时声明的凭据（例如 dsh-superagent 的 `github_token`）以及每项是否已设置。`secret set` 从不回显输入的提示符读取值；标准输入不是终端时从标准输入读取；或者从 `--from-file` 读取，去掉首尾空白后保存。值不会出现在命令行或任何输出中：部署把它保存在密钥存储中，只报告 `configured`、最近设置时间（`updated_at`）、部署是否提供共享值（`deployment_default`），以及运行时启动是否需要它（`required`）。再次设置会替换原值，`READY` 状态的工作区会用新值重新准备。
+
+模型连接本身的凭据不是 Assistant 的设置。它属于 Assistant 的 RuntimeProfile，由管理员配置；如果模型连接使用你自己的模型账号，则通过 `astrabox model-account` 管理。
+
+### 暂停和恢复工作区
+
+`hibernate` 对应管理页的 **暂停工作区**：部署把 Agent 程序的原生状态保存到数据库，然后释放沙箱。如果两步无法都得到确认，命令以退出码 1 结束并输出部署的应答，请再次运行。`wake` 对应 **恢复工作区**：部署把保存的状态恢复到新沙箱。部署接受请求后 `wake` 即返回；用 `show` 查看 `workspace_state`，直到它变为 `READY`。应答中 `retryable: true` 表示先前的沙箱尚未确认销毁，请再次运行 `wake`。恢复的内容见[暂停与恢复工作区](../assistants.md#暂停与恢复工作区)。
+
+| `workspace_state` | 含义 |
+| :--- | :--- |
+| `NOT_MATERIALIZED` | Assistant 还没有工作区。 |
+| `MATERIALIZING` | 正在为工作区准备沙箱。 |
+| `READY` | 工作区运行在 `current_sandbox_id` 中。 |
+| `HIBERNATING` | 带有 `current_sandbox_id` 时，正在保存状态，之后释放该沙箱；没有时，工作区已暂停。 |
+| `RECOVERY_REQUIRED` | 工作区需要处理：部署尚未确认 `current_sandbox_id` 已销毁，或工作区已被销毁。`wake` 会先销毁该沙箱，再构建新的沙箱。 |
+
+启动失败时，`show` 会报告 `workspace_action`（只有所有者能完成的操作，例如设置凭据）或 `workspace_error`。
+
+### 使用示例
+
+```bash
+# 示例 1：查看 Assistant 的配置和工作区状态
+astrabox assistant show "Model evaluation"
+
+# 示例 2：切换模型和推理强度
+astrabox assistant set asst_0123 --model deepseek-v4-pro \
+  --engine-option 'default_model={"reasoningEffort": "high"}'
+
+# 示例 3：恢复使用 Assistant 默认配置的模型和 DSH 自身的默认推理强度
+astrabox assistant set asst_0123 --inherit-model --engine-option default_model=null
+
+# 示例 4：列出运行时要求的凭据
+astrabox assistant secret list asst_0123
+
+# 示例 5：从密码管理器设置 GitHub 代理账号令牌
+op read "op://Private/GitHub bot/token" | astrabox assistant secret set asst_0123 github_token
+
+# 示例 6：暂停工作区、恢复它并查看状态
+astrabox assistant hibernate asst_0123
+astrabox assistant wake asst_0123
+astrabox assistant show asst_0123 --output json
+```
+
+### 输出
+
+`show` 和 `set` 为 Assistant 的 ID、名称、Agent 程序、RuntimeProfile、`model_config_override`、每个 `engine_options` 配置块，以及（仅 `show`）工作区状态和沙箱各输出一行 `FIELD`/`VALUE`；嵌套值以 JSON 输出。`--output json` 输出完整记录。`secret list` 和 `secret set` 输出 `KEY`、`CONFIGURED`、`DEPLOYMENT_DEFAULT`、`REQUIRED`、`UPDATED_AT` 和 `LABEL`。`hibernate` 和 `wake` 输出部署的应答。
 
 ---
 

@@ -155,7 +155,7 @@ API 允许部署中存在多个同名 Agent。一个声明因此无法确定目�
 
 #### 未知的顶层字段
 
-文档顶层只接受 `version`、`environments` 和 `agents`。字段拼写错误或出现多余字段时，CLI 会在发送任何请求前失败。
+文档顶层只接受 `version`、`environments` 和 `agents`。字段拼写错误或出现多余字段时，CLI 会在发送任何请求前失败。`assistants` 字段失败时，错误信息会指出配置 Assistant 的命令 `astrabox assistant`（见[命令详解](./commands.md#astrabox-assistant)）。
 
 ```yaml
 version: 1
