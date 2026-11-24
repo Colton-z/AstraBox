@@ -210,10 +210,10 @@ async def _sandbox_side(database: str, monkeypatch: pytest.MonkeyPatch) -> None:
         startup_module, "build_sandbox_callback_url_from_record", lambda **_kwargs: "http://box.test/callback"
     )
 
-    async def metadata(_session_id: str, _runtime: Any) -> dict[str, Any]:
+    def capabilities(_session_id: str, _runtime: Any) -> dict[str, Any]:
         return {"engine_capabilities": _MANIFEST}
 
-    monkeypatch.setattr(startup_module, "runtime_initialization_metadata", metadata)
+    monkeypatch.setattr(startup_module, "runtime_engine_capabilities", capabilities)
 
 
 @pytest.fixture

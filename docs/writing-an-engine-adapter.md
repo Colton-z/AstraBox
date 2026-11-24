@@ -184,8 +184,14 @@ nonempty string; an unknown one has `version: null` and a nonempty reason.
 Every component names its observation source. Deployment labels and host
 package versions are not observations of an in-box runtime.
 
-Startup, recovery and reader connection save this observation with its sandbox
-id and read time. The admin Session list and detail read that saved snapshot;
+The connection that serves the Session (its reader, or the startup of an
+Assistant workspace's own Session) saves this observation, with the slash
+commands and Skills from the same `get_server_info()` answer, under its sandbox
+id and read time. `READY` and input delivery do not wait for this read: a slow
+or failed answer only delays or leaves out the snapshot, and the write is
+skipped once the Session has moved to another box or sandbox generation. The
+saved commands reach an open page through its session stream.
+The admin Session list and detail read that saved snapshot;
 they neither query nor wake compute. The snapshot describes the last connected
 instance, not continuous health or a version audit log. Its generation and
 `matches_bound_sandbox` distinguish it from another instance; absent information
