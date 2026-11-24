@@ -259,6 +259,7 @@ class ReaderHost:
                 reader = SessionReader(
                     lease=lease,
                     client=connected.client,
+                    sandbox_id=connected.sandbox_id,
                     repo=self._repo,
                     feed=self._feed,
                     hooks=self._hooks(session_id, connected),

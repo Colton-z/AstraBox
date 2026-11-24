@@ -161,6 +161,9 @@ class ResponseEnd:
     native_reason: str | None = None
     usage: dict[str, Any] | None = None
     error: dict[str, Any] | None = None
+    #: Operator evidence about the engine process the response failed with
+    #: (``SessionResponse.diagnostic``).
+    diagnostic: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -884,6 +887,19 @@ class SessionRuntimeRepository:
         )
         return list(reversed(newest)), int(total or 0)
 
+    async def response_diagnostics(self, session_id: str, response_ids: Sequence[str]) -> dict[str, dict[str, Any]]:
+        """The recorded diagnostic of each of ``response_ids`` that has one, by response id."""
+        if not response_ids:
+            return {}
+        rows = await fetch_all(
+            select(_RESPONSES.c.response_id, _RESPONSES.c.diagnostic).where(
+                _RESPONSES.c.session_id == session_id,
+                _RESPONSES.c.response_id.in_(list(response_ids)),
+                _RESPONSES.c.diagnostic.is_not(None),
+            )
+        )
+        return {str(row["response_id"]): dict(row["diagnostic"]) for row in rows}
+
     async def _index_recorded_messages(
         self, session_id: str, *, connection: AsyncConnection | None = None,
     ) -> None:
@@ -1453,6 +1469,7 @@ async def _apply(conn: AsyncConnection, session_id: str, fact: Fact) -> None:
                 native_reason=fact.native_reason,
                 usage=fact.usage,
                 error=fact.error,
+                diagnostic=fact.diagnostic,
                 ended_at=func.now(),
             )
         )

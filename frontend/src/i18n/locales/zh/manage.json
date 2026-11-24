@@ -566,6 +566,7 @@
     "parts_load_failed": "没能加载这次回复的片段",
     "parts_section": "回复明细",
     "parts_truncated": "只显示最近的片段；更早的 {{count}} 个未包含。",
+    "process_diagnostic": "进程诊断",
     "kill": "终止",
     "kill_confirm": "结束 Session {{id}}？这会停止当前 Agent 进程。",
     "kill_confirm_btn": "结束 Session",

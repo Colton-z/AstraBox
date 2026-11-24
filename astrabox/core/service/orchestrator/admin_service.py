@@ -744,8 +744,15 @@ class AdminService:
         }
 
     @staticmethod
-    def _response_summaries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Each response on the page with what it answered, newest first."""
+    def _response_summaries(
+        messages: list[dict[str, Any]], diagnostics: dict[str, dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Each response on the page with what it answered, newest first.
+
+        ``diagnostic`` is the evidence recorded about the engine process a
+        failed response ended with (``SessionResponse.diagnostic``), else
+        ``None``.
+        """
         summaries: list[dict[str, Any]] = []
         user_preview = ""
         for message in messages:
@@ -763,6 +770,7 @@ class AdminService:
                 "ended_at": metadata.get("ended_at"),
                 "user_preview": user_preview if metadata.get("origin") != "engine" else "",
                 "assistant_preview": message["content_preview"],
+                "diagnostic": diagnostics.get(str(message["response_id"])),
             })
         return list(reversed(summaries))
 
@@ -789,7 +797,11 @@ class AdminService:
         safe_part_limit = max(1, min(int(part_limit), 1000))
         history = await self._session_runtime.history_for(session_id, limit=safe_message_limit)
         messages = [self._summarize_message(item) for item in history["messages"]]
-        responses = self._response_summaries(messages)
+        diagnostics = await self._facts.response_diagnostics(
+            session_id,
+            [str(item["response_id"]) for item in messages if item["role"] != "user" and item["response_id"]],
+        )
+        responses = self._response_summaries(messages, diagnostics)
         current = [
             str(row["response_id"])
             for row in (await self._facts.activity(session_id))["open_responses"]
