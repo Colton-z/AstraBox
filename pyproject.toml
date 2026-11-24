@@ -57,7 +57,7 @@ dependencies = [
   "a2a-sdk[http-server]==1.2.2",
   # persistence: PostgreSQL through SQLAlchemy, schema migrated by Alembic
   "sqlalchemy==2.1.4",
-  "asyncpg==0.31.0",
+  "asyncpg==0.32.0",
   "alembic==1.20.0",
   # Embedded durable schedule/run engine. DBOS owns cron dispatch, distributed
   # idempotency, recovery, retries, and the workflow ledger; AstraBox keeps the
