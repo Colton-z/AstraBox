@@ -7,9 +7,11 @@ from typing import Any
 
 import pytest
 
+from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.core.service.orchestrator.session_lifecycle.ownership import RecoveryOwnership
 from astrabox.persistence.provider import get_persistence
 from astrabox.persistence.repository.session_repository import SessionRepository
+from astrabox.seams.sandbox import SandboxAllocation
 
 pytestmark = pytest.mark.usefixtures("database")
 
@@ -39,6 +41,65 @@ async def test_only_the_first_attempt_under_an_assignment_skips_the_provider_loo
         assert await attempt("startup-1").claim_first_provider_attempt() is False
         assert await attempt("startup-2").claim_first_provider_attempt() is True
 
+
+
+class _CountingSessions(SessionRepository):
+    """The real store, counting the startup-allocation writes it is asked for."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.allocation_writes = 0
+
+    async def record_startup_allocation(self, *args: Any, **kwargs: Any) -> bool:
+        self.allocation_writes += 1
+        return await super().record_startup_allocation(*args, **kwargs)
+
+
+async def test_a_startup_persists_the_allocation_it_names_at_each_hand_off_once() -> None:
+    # A conversation-pool hit names its box when the pool hands it over, again
+    # once provisioning holds it, and again when the prepared runtime is
+    # activated. The first write is the box's durable address; repeating it
+    # would re-check the claim and re-read the row to write nothing. A
+    # successor startup does not inherit that receipt: it checks its own claim
+    # and writes.
+    sessions = _CountingSessions()
+    await _session(
+        sessions, "s", state="CREATING", sandbox_generation="generation-1",
+        runtime_recovery_owner="startup-1",
+    )
+    manager = RemoteAgentRuntimeManager(sessions_repo=sessions)
+    box = SandboxAllocation(sandbox_id="pool-box", sandbox_backend="open_sandbox", scope="sandbox")
+
+    async with get_persistence().coordination.startup_lock("s") as check_lock:
+        claim_checks = 0
+
+        async def counted_check() -> None:
+            nonlocal claim_checks
+            claim_checks += 1
+            await check_lock()
+
+        def attempt(owner: str) -> RecoveryOwnership:
+            return RecoveryOwnership(
+                sessions, "s", owner, counted_check, sandbox_generation="generation-1",
+                assignment_id=owner,
+            )
+
+        with attempt("startup-1").bind():
+            for _ in range(3):
+                await manager.record_startup_allocation("s", box)
+
+        assert (sessions.allocation_writes, claim_checks) == (1, 1)
+        current = await sessions.get_session("s")
+        assert current is not None and current["startup_allocation"] == box.as_record()
+
+        assert await sessions.compare_and_update_session(
+            "s", expected={"runtime_recovery_owner": "startup-1"},
+            updates={"runtime_recovery_owner": "startup-2"},
+        )
+        with attempt("startup-2").bind():
+            await manager.record_startup_allocation("s", box)
+
+        assert (sessions.allocation_writes, claim_checks) == (2, 2)
 
 
 def _receipt(assignment: str) -> dict[str, Any]:

@@ -2102,15 +2102,30 @@ class RemoteAgentRuntimeManager:
         raised: continuing would turn a process restart into an unaddressable
         resource. A whole sandbox and isolated sessions deliberately share this
         path, while their different release authority remains in ``scope``.
+
+        A startup names one resource again at each later hand-off point. When
+        this attempt's own fenced write already left exactly ``allocation`` on
+        the row, and this manager has not released or adopted it since, that
+        write is the durable address and the call returns without checking the
+        claim or writing again. The attempt's next fenced write still refuses
+        a superseded claim and retains everything it allocated.
         """
 
         target_session = str(session_id or "").strip()
         if not target_session:
             raise ValueError("recording a startup allocation requires session_id")
         ownership = current_recovery(target_session)
+        if (
+            ownership is not None
+            and replaces is None
+            and allocation in ownership.recorded_allocations
+            and allocation in self._pending_startup_allocations.get(target_session, ())
+        ):
+            return
         if ownership is not None:
             if allocation not in ownership.allocations:
                 ownership.allocations.append(allocation)
+            ownership.recorded_allocations.clear()
         self._remember_pending_allocation(target_session, allocation)
         self._sandbox_backend_cache[allocation.sandbox_id] = (
             allocation.sandbox_backend
@@ -2149,6 +2164,8 @@ class RemoteAgentRuntimeManager:
                 )
             if replaces is not None and replaces != allocation:
                 self._forget_pending_allocation(target_session, replaces)
+            if ownership is not None:
+                ownership.recorded_allocations.append(allocation)
         except BaseException as exc:
             if ownership is not None:
                 record = {
