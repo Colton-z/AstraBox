@@ -50,6 +50,7 @@ from astrabox.persistence.repository.session_repository import (
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso
+from astrabox.observability.startup import startup_stage
 from astrabox.core.service.orchestrator.runtime.config_resolver import (
     required_network_host,
     resolve_network_policy,
@@ -2602,7 +2603,8 @@ async def provision_engine_sandbox(
             reconcile_runtime_generation,
         )
 
-        await reconcile_runtime_generation(template, runtime_manager=manager)
+        with startup_stage(session_id, "runtime_generation_check"):
+            await reconcile_runtime_generation(template, runtime_manager=manager)
 
     backend_adapter = sandbox_for_name(persisted_backend)
 

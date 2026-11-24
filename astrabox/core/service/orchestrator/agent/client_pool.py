@@ -26,6 +26,7 @@ import asyncio
 import re
 import uuid
 from collections.abc import Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -33,6 +34,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.config.settings import get_settings
+from astrabox.observability.startup import startup_stage
 from astrabox.core.service.orchestrator.runtime.preparation import (
     assert_prepared_resources_current, synchronize_prepared_resources,
 )
@@ -537,13 +539,24 @@ async def _record_agent_client_pool(
         )
 
 
+def _startup_step(session_id: str | None, stage: str) -> AbstractContextManager[None]:
+    """Time ``stage`` as a stage of the Session startup waiting on it, if any."""
+
+    return startup_stage(session_id, stage) if session_id else nullcontext()
+
+
 async def ensure_agent_client_pool(
     template: Any,
     *,
     runtime_manager: Any,
     agent_repo: Any | None = None,
+    session_id: str | None = None,
 ) -> AgentClientPoolPlan | None:
-    """Record, then start or join, the supplier pool for the current Agent generation."""
+    """Record, then start or join, the supplier pool for the current Agent generation.
+
+    ``session_id`` names the Session whose startup waits on this pool; the
+    record and the supplier start are then logged as two of its startup stages.
+    """
 
     plan = await build_agent_client_pool_plan(
         template,
@@ -552,13 +565,15 @@ async def ensure_agent_client_pool(
     )
     if plan is None:
         return None
-    await _record_agent_client_pool(template, plan, agent_repo=agent_repo)
+    with _startup_step(session_id, "client_pool_record"):
+        await _record_agent_client_pool(template, plan, agent_repo=agent_repo)
     provider = sandbox_for_name(plan.backend_name)
-    await provider.ensure_client_pool(
-        plan.spec,
-        creator=plan.creator,
-        preparer=plan.preparer,
-    )
+    with _startup_step(session_id, "client_pool_ensure"):
+        await provider.ensure_client_pool(
+            plan.spec,
+            creator=plan.creator,
+            preparer=plan.preparer,
+        )
     return plan
 
 
@@ -578,6 +593,7 @@ async def acquire_agent_client_pool(
     plan = await ensure_agent_client_pool(
         template,
         runtime_manager=runtime_manager,
+        session_id=session_id,
     )
     if plan is None:
         return None

@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncConnection
 
+from astrabox.persistence.sql import transaction
+from astrabox.persistence.sql.models.agents import AgentRuntime
 from tests._agent_ledger import (
     create_agent,
     put_slots,
@@ -119,6 +123,52 @@ async def test_a_client_pool_is_recorded_only_for_the_current_epoch_and_keeps_th
 
     stored = await repo.get_agent("agent-1")
     assert stored is not None and stored["_client_pool_name"] == "pool-b"
+    assert await repo.list_retiring_client_pools("agent-1") == [
+        {"name": "pool-a", "backend": "open_sandbox"}
+    ]
+
+
+async def test_naming_the_recorded_client_pool_again_does_not_wait_for_the_runtime_record_lock() -> None:
+    # Another writer holds the Agent's runtime record, as a lease renewal or a
+    # slot claim does. A conversation start whose pool is already recorded
+    # writes nothing and must not queue behind it; one that displaces the pool
+    # still waits, so the displaced pool is kept for retirement.
+    repo = await create_agent("agent-1")
+    await set_runtime(
+        "agent-1", client_pool_epoch="epoch-1", client_pool_name="pool-a",
+        client_pool_backend="open_sandbox",
+    )
+    held, release = asyncio.Event(), asyncio.Event()
+
+    async def hold(conn: AsyncConnection) -> None:
+        runtimes = AgentRuntime.__table__
+        await conn.execute(
+            select(runtimes.c.agent_id).where(runtimes.c.agent_id == "agent-1").with_for_update()
+        )
+        held.set()
+        await release.wait()
+
+    holder = asyncio.create_task(transaction(hold))
+    try:
+        await asyncio.wait_for(held.wait(), timeout=10)
+        assert await asyncio.wait_for(
+            repo.record_client_pool(
+                "agent-1", client_pool_epoch="epoch-1", name="pool-a", backend="open_sandbox",
+            ),
+            timeout=5,
+        ) == "recorded"
+        displacing = asyncio.create_task(
+            repo.record_client_pool(
+                "agent-1", client_pool_epoch="epoch-1", name="pool-b", backend="open_sandbox",
+            )
+        )
+        await asyncio.sleep(0.5)
+        assert not displacing.done()
+    finally:
+        release.set()
+        await holder
+
+    assert await displacing == "recorded"
     assert await repo.list_retiring_client_pools("agent-1") == [
         {"name": "pool-a", "backend": "open_sandbox"}
     ]

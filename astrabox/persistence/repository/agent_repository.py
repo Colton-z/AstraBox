@@ -1905,26 +1905,31 @@ class AgentRepository:
     ) -> Literal["recorded", "superseded", "missing"]:
         """Record a client pool as the live Agent's before anything starts it.
 
-        The pool it displaces is kept for retirement in the same transaction.
+        A pool the live Agent already names under ``client_pool_epoch`` is
+        answered from a plain read: nothing is written, so the answer takes no
+        lock on the runtime record and does not wait for its writers. Every
+        other request is decided under that record's row lock, and the pool it
+        displaces is kept for retirement in the same transaction.
         ``"superseded"`` when the Agent's pool epoch is not
         ``client_pool_epoch``; ``"missing"`` when the Agent is not live.
         """
 
+        recorded_pool = select(
+            _RUNTIMES.c.client_pool_epoch,
+            _RUNTIMES.c.client_pool_name,
+            _RUNTIMES.c.client_pool_backend,
+        ).where(
+            _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
+            _RUNTIMES.c.agent_id.in_(_live(agent_id)),
+        )
+        named = await fetch_one(recorded_pool)
+        if named is not None and (
+            named["client_pool_epoch"], named["client_pool_name"], named["client_pool_backend"]
+        ) == (client_pool_epoch, name, backend):
+            return "recorded"
+
         async def record(conn: AsyncConnection) -> Literal["recorded", "superseded", "missing"]:
-            row = (
-                await conn.execute(
-                    select(
-                        _RUNTIMES.c.client_pool_epoch,
-                        _RUNTIMES.c.client_pool_name,
-                        _RUNTIMES.c.client_pool_backend,
-                    )
-                    .where(
-                        _runtime_owner(_RUNTIMES, agent_id, self.environment_name),
-                        _RUNTIMES.c.agent_id.in_(_live(agent_id)),
-                    )
-                    .with_for_update()
-                )
-            ).first()
+            row = (await conn.execute(recorded_pool.with_for_update())).first()
             if row is None:
                 return "missing"
             current = row._mapping
