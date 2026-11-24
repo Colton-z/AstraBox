@@ -7,49 +7,89 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-11-24
+
 ## English
 
 ### Added
 
-- Build an AstraBox cloud image for AWS, DigitalOcean, Alibaba Cloud, Tencent Cloud, Huawei Cloud or any cloud with an Ubuntu 24.04 machine (`cloud/`). The image holds one release and every container image it runs. A machine started from it installs AstraBox on its first boot with its own secrets, with team login on and the console behind HTTPS at its public IP address, without reaching GitHub or a container registry. Optional model and domain settings come from cloud-init user data. An Alibaba Cloud Compute Nest service template deploys it with these settings as parameters. See Run AstraBox from a cloud image.
-- `ASTRABOX_INSTALL_PULL=missing` makes the installer pull only the images the host does not have yet. The default, `always`, keeps pulling every image on each run.
-- **Agent version history and restore.** AstraBox keeps every version of an Agent's configuration with who changed it and when; a manager can compare any two versions field by field and restore one, in the console or through the API. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **Cloud image.** Build an AstraBox machine image for AWS, DigitalOcean, Alibaba Cloud, Tencent Cloud, Huawei Cloud or any Ubuntu 24.04 cloud (`cloud/`); a machine started from it installs AstraBox on first boot without reaching GitHub or a registry. [Guide](https://www.astrabox.ai/docs/cloud-images)
+- **Agent version history and restore.** Every version of an Agent's configuration is kept with who changed it and when; a manager can compare two versions and restore one. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **Hermes Assistants open in the native Hermes Webapp**, signed in with a one-use link; `ASTRABOX_HERMES_WEBAPP_EMBEDDED` shows it inside the console behind an HTTPS gateway. [Guide](https://www.astrabox.ai/docs/assistants#panel-runtimes)
+- **Engines learn the model's limits from the model connection**: context window, output cap, image input and reasoning efforts, read from the gateway. [Guide](https://www.astrabox.ai/docs/models#model-description)
+- **Reasoning effort for DeepSeek Harness and Pi Agents.** [Guide](https://www.astrabox.ai/docs/authoring-agents#reasoning-effort)
+- **The administrator's Session page shows the conversation** as its owner sees it, with tool work and child conversations, beside the event log.
+- `ASTRABOX_INSTALL_PULL=missing` makes the installer pull only the images the host does not have.
 
-### Fixed
+### Fixed and improved
 
-- A conversation's place in the list is now its owner's last action on it, exposed as the Session's `last_user_activity_at`: sending a message, answering, stopping a response or a sub-agent, running or stopping a terminal command, changing its files, renaming it, changing its permission mode, sharing it, recovering it, ending it or terminating its sandbox. Previously the list followed the row's update time, which a reply ending and the runtime starting, recovering or failing also move, so a conversation the owner was not using could rise above the one they were working in, while renaming did not move it. Replies still mark a conversation unread, and the time beside each row is the time it is ordered by. Existing conversations take the order from the messages, answers, stops, terminal commands and share changes they recorded when the schema is upgraded.
-- **A conversation reconnects with the Agent version its sandbox was prepared from.** After an Agent's Plugins changed, reconnecting an existing Claude Code conversation failed with `PACKAGE_INVALID` and left its message waiting. A new sandbox still uses the current version. [Guide](https://www.astrabox.ai/docs/authoring-agents#version-history)
-- **A message fails with the reason when its sandbox cannot be reconnected.** A reconnect refused with an error that is not retryable left the message waiting while the server retried; the message now fails with that error and the conversation reads as needing recovery. [Guide](https://www.astrabox.ai/docs/sessions#send-a-message)
-
-- A console page whose scripts or stylesheet fail to load reloads itself until they arrive, at most five times in a row, and waits while the server is unreachable; a missing `/assets/` file is a 404 instead of the console page. [Upgrading replicas](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+- The session list is ordered by the owner's last action on each conversation (`last_user_activity_at`), not by the row's update time.
+- A conversation reconnects with the Agent version its sandbox was prepared from; after a Plugins change, reconnecting failed with `PACKAGE_INVALID`.
+- A message fails with the reason when its sandbox cannot be reconnected, instead of waiting while the server retries.
+- Channel conversations get the Agent's tools and its prepared capacity, and a message to an archived conversation starts a new one.
+- A member can create a personal Assistant; the form asked for an administrator's role.
+- A panel Assistant whose start needs its owner's action shows the action's link and asks before starting again.
+- A conversation becomes ready and takes its first message without waiting for the engine's optional slash commands, Skills and versions, which reach the composer when the engine reports them; the console no longer re-checks the owner's prerequisites at that point.
+- Starting a conversation reads and resolves its Agent once, and starting from prepared capacity no longer waits on the Agent's runtime record lock or records the same allocation at every hand-off. Startup logs time each phase. [Phases](https://www.astrabox.ai/docs/deploy#time-a-conversations-startup)
+- When a Claude Code process exits, the failed response keeps its exit code, Claude Code's terminal reason and a redacted stderr tail for administrators on the Session page; the conversation shows only the exit code.
+- Retiring an Agent's OpenSandbox prepared pool no longer leaves an idle sandbox running for its whole lease when destroying it fails or the retiring process exits; the ownerless sweep destroys it ten minutes after its last renewal.
+- A database error while recording a successful Agent preparation is reported as that error, not as a failed preparation written a second time.
+- Prepared Claude Code conversations resolve Plugin MCP policy before the engine starts, so each conversation sees only its owner's materials.
+- Pi conversations that share a sandbox reach their own Pi runtime.
+- The DeepSeek Harness web profile applies the Assistant's model to both entry points and keeps its router out of ordinary new chats.
+- The console is sent Brotli- or gzip-compressed, and an Assistant page stays loaded while you use another page.
+- A console page whose scripts fail to load reloads itself, at most five times; a missing `/assets/` file is a 404. [Upgrading replicas](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+- The conversation view holds one status line from send to the first reply text and keeps the reader's place when older messages load.
+- Claude Code 2.1.330 with claude-agent-sdk 0.2.187, Codex 0.171.0, Pi 1.6.0 with pi-subagents 0.90.0, Hermes Agent 0.23.3, DeepSeek Harness 0.2.2-rc.5, LiteLLM 1.110.2; dependency updates.
 
 ### Upgrading
 
-- PostgreSQL applies the schema change on startup. External persistence providers need the Session's `last_user_activity_at`, set when a Session is created, accepts an input, receives an answer or is acted on by its owner, and the owner's session list ordered by it.
-- Schema revision `0028` adds `agent_versions` and records each existing Agent's current configuration as the start of its history.
-- Schema revision `0029` records that version on each existing Agent conversation as the one its sandbox was prepared from.
+- Every sandbox runtime image changes.
+- Schema revisions `0028` (Agent versions), `0029` (the version each conversation's sandbox was prepared from), `0030` (session list order) and `0031` (a failed response's process diagnostic) apply on startup.
+- External persistence providers keep the Session's `last_user_activity_at` and order the owner's session list by it.
+- External model endpoint providers can answer the new `describe_model`; an unknown field stays empty.
+- `SEAMS_API_VERSION` is 12. A provider that pins `seams_api_version = 11` is refused at startup; a sandbox provider that overrides `unclaimed_sandbox_refusal` accepts its new `client_pools` and `grace_seconds` arguments before updating the pin.
 
 ## 中文
 
 ### 新增
 
-- 新增 AstraBox 云镜像构建（`cloud/`），支持 AWS、DigitalOcean、阿里云、腾讯云、华为云，以及任何能启动 Ubuntu 24.04 机器的云。镜像包含一个版本及其运行所需的全部容器镜像。由该镜像启动的机器在首次开机时用自己生成的密钥安装 AstraBox，开启团队登录，并通过公网 IP 以 HTTPS 提供控制台，全程不需要访问 GitHub 或镜像仓库。模型服务和域名可通过 cloud-init user data 预先设置。另附阿里云计算巢服务模板，部署时可直接填写这些参数。详见“从云镜像运行 AstraBox”。
-- 安装脚本新增 `ASTRABOX_INSTALL_PULL=missing`，只拉取主机上还没有的镜像；默认值 `always` 仍在每次运行时拉取全部镜像。
-- **Agent 版本历史与恢复。** AstraBox 保存 Agent 配置的每个版本及其修改人和时间；管理者可以在控制台或通过 API 逐字段比较任意两个版本，并恢复到其中一个。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **云镜像。** 可为 AWS、DigitalOcean、阿里云、腾讯云、华为云或任何 Ubuntu 24.04 云构建 AstraBox 机器镜像（`cloud/`）；由它启动的机器首次开机即安装 AstraBox，不访问 GitHub 或镜像仓库。[指南](https://www.astrabox.ai/docs/cloud-images)
+- **Agent 版本历史与恢复。** 保存 Agent 配置的每个版本及修改人和时间；管理者可以比较两个版本并恢复其中一个。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
+- **Hermes Assistant 在原生 Hermes Webapp 中打开**，用一次性链接登录；`ASTRABOX_HERMES_WEBAPP_EMBEDDED` 可在 HTTPS 网关后把它嵌入控制台。[指南](https://www.astrabox.ai/docs/assistants#panel-runtimes)
+- **引擎从模型连接获知模型参数**：上下文窗口、输出上限、图片输入与推理强度，由网关提供。[指南](https://www.astrabox.ai/docs/models#model-description)
+- **DeepSeek Harness 与 Pi Agent 可设置推理强度。** [指南](https://www.astrabox.ai/docs/authoring-agents#reasoning-effort)
+- **管理员的 Session 页面显示对话本身**，与所有者看到的一致，包括工具调用和子对话，事件日志仍在旁边。
+- 安装脚本新增 `ASTRABOX_INSTALL_PULL=missing`，只拉取主机上还没有的镜像。
 
-### 修复
+### 修复与改进
 
-- 对话在列表中的位置改为所有者最后一次操作它的时间，即 Session 的 `last_user_activity_at`：发送消息、回答、停止回复或子 Agent、运行或停止终端命令、修改文件、重命名、修改权限模式、分享、恢复、结束对话或终止沙箱。此前列表按行的更新时间排序，而回复结束以及运行时的启动、恢复或失败也会更新它，所以所有者没在用的对话可能排到正在使用的对话之上，而重命名反而不移动对话。回复仍会把对话标为未读，每行旁显示的时间就是排序所用的时间。已有对话在架构升级时按已记录的消息、回答、停止、终端命令和分享变更确定顺序。
-- **对话重连时沿用其沙箱准备时的 Agent 版本。** 此前 Agent 的插件改动后，已有 Claude Code 对话重连会报 `PACKAGE_INVALID`，消息一直等待。新沙箱仍使用当前版本。[指南](https://www.astrabox.ai/docs/authoring-agents#version-history)
-- **沙箱无法重连时，消息带着原因失败。** 此前重连遇到不可重试的错误时，消息一直等待，服务端反复重试；现在消息以该错误失败，对话显示为需要恢复。[指南](https://www.astrabox.ai/docs/sessions#send-a-message)
-
-- 控制台页面的脚本或样式加载失败时会自动重新加载，直到加载成功，最多连续五次；服务端不可达时页面会等待。缺失的 `/assets/` 文件返回 404，不再返回控制台页面。[升级副本](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+- 会话列表按所有者最后一次操作对话的时间（`last_user_activity_at`）排序，不再按行的更新时间。
+- 对话重连时沿用其沙箱准备时的 Agent 版本；此前插件改动后重连会报 `PACKAGE_INVALID`。
+- 沙箱无法重连时消息带着原因失败，不再在服务端重试时一直等待。
+- 渠道对话获得 Agent 的工具和预备容量；发给已归档对话的消息会开启新对话。
+- 普通成员可以创建个人 Assistant；此前表单要求管理员角色。
+- 面板 Assistant 启动需要所有者操作时，会显示操作链接，并在再次启动前先询问。
+- 对话不必等待引擎可选的斜杠命令、Skills 和版本信息即可就绪并接收第一条消息，这些信息在引擎报告后出现在输入框中；控制台此时也不再重新检查所有者的前置条件。
+- 开始对话只读取并解析一次 Agent；从预备容量启动不再等待 Agent 运行时记录的行锁，也不在每次交接时重复记录同一分配。启动日志记录各阶段耗时。[阶段说明](https://www.astrabox.ai/docs/deploy#time-a-conversations-startup)
+- Claude Code 进程退出时，失败的回复会保留退出码、Claude Code 自己的结束原因和脱敏后的 stderr 末尾，管理员可在 Session 页面查看；对话里只显示退出码。
+- 退役 Agent 的 OpenSandbox 预备池时，销毁失败或退役进程中途退出而留下的空闲沙箱不再一直运行到租约结束；无主回收会在它最后一次续期十分钟后将其销毁。
+- 记录 Agent 预备成功时发生的数据库错误按该错误本身报告，不再被当作预备失败再写一次。
+- 预备的 Claude Code 对话在引擎启动前确定插件 MCP 策略，每个对话只看到其所有者的资料。
+- 共享沙箱的 Pi 对话能连到各自的 Pi 运行时。
+- DeepSeek Harness Web 配置让两个入口都使用 Assistant 的模型，并让其路由器不进入普通新对话。
+- 控制台资源以 Brotli 或 gzip 压缩发送；切到其他页面时 Assistant 页面保持加载。
+- 控制台页面脚本加载失败时自动重新加载，最多五次；缺失的 `/assets/` 文件返回 404。[升级副本](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
+- 对话视图从发送到第一段回复文字只显示一行状态，加载更早消息时保持阅读位置。
+- Claude Code 2.1.330 与 claude-agent-sdk 0.2.187、Codex 0.171.0、Pi 1.6.0 与 pi-subagents 0.90.0、Hermes Agent 0.23.3、DeepSeek Harness 0.2.2-rc.5、LiteLLM 1.110.2；依赖更新。
 
 ### 升级说明
 
-- PostgreSQL 在启动时应用架构变更。外部持久化提供方需要支持 Session 的 `last_user_activity_at`：在 Session 创建、接受输入、收到回答或被所有者操作时写入，并让所有者的会话列表按它排序。
-- Schema 修订 `0028` 新增 `agent_versions` 表，并把每个现有 Agent 的当前配置记录为其历史起点。
-- Schema 修订 `0029` 把该版本记为每个现有 Agent 对话的沙箱准备版本。
+- 所有沙箱运行时镜像都有变化。
+- 启动时应用 Schema 修订 `0028`（Agent 版本）、`0029`（每个对话沙箱准备时的版本）、`0030`（会话列表排序）和 `0031`（失败回复的进程诊断）。
+- 外部持久化提供方需保存 Session 的 `last_user_activity_at`，并按它排序所有者的会话列表。
+- 外部模型端点提供方可实现新的 `describe_model`；未知字段保持为空。
+- `SEAMS_API_VERSION` 升为 12。声明 `seams_api_version = 11` 的提供方在启动时会被拒绝；覆写 `unclaimed_sandbox_refusal` 的沙箱提供方先接受新增的 `client_pools` 与 `grace_seconds` 参数，再更新声明。
 
 ## [0.1.15] - 2026-11-15
 
