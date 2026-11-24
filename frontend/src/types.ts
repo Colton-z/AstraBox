@@ -678,6 +678,12 @@ export interface AdminTraceResponse {
   /** What the person said that the response answers; empty for one the runtime started. */
   user_preview?: string;
   assistant_preview?: string;
+  /**
+   * What the engine process reported when this response failed with it, and
+   * the sandbox it ran in (`SessionResponse.diagnostic`); null when none was
+   * recorded. Operator evidence that no conversation view carries.
+   */
+  diagnostic?: Record<string, unknown> | null;
 }
 
 /** One stored part of the selected response's output (`admin_service._summarize_part`). */

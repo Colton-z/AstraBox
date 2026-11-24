@@ -394,7 +394,14 @@ class SessionResponse(Base):
     outcome: Mapped[str | None] = mapped_column(payload_text())
     native_reason: Mapped[str | None] = mapped_column(payload_text())
     usage: Mapped[dict[str, Any] | None]
+    #: Why the response failed, as the conversation's people are shown it.
     error: Mapped[dict[str, Any] | None]
+    #: Operator evidence about the engine process a failed response ended
+    #: with, and the sandbox it ran in: for Claude Code the exit code, Claude
+    #: Code's own terminal reason and a redacted, bounded stderr tail
+    #: (``sandbox_runner._process_report``). Read by the admin session trace;
+    #: no conversation view carries it.
+    diagnostic: Mapped[dict[str, Any] | None]
     #: An imported reply's source identity, completion, parent, digest and
     #: browser parts.
     import_record: Mapped[dict[str, Any] | None]

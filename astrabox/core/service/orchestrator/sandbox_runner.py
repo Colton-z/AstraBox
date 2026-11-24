@@ -290,6 +290,149 @@ def _detached_exception(exc: Exception) -> Exception:
         return RuntimeError(f"{type(exc).__name__}: {exc}")
 
 
+#: How much of the Claude CLI's stderr a process report keeps: its newest
+#: lines, at most this many characters after redaction. A Node.js crash report,
+#: the error line and its stack, fits several times over.
+CLI_STDERR_TAIL_CHARS = 8_000
+
+#: Environment names whose values are credentials. A value of eight or more
+#: characters under such a name is removed from every stderr line; a shorter
+#: one (``true``, ``1``) would erase ordinary words from the evidence.
+_CREDENTIAL_ENV_NAME = re.compile(
+    r"(?:^|_)(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|TOKEN|SECRET|PASSWORD"
+    r"|MASTER_KEY|CREDENTIALS?|DATABASE_URL)(?:$|_)",
+    re.IGNORECASE,
+)
+_MIN_REDACTED_VALUE_CHARS = 8
+_REDACTED = "[redacted]"
+#: Credential shapes for values this runner never held: a login the CLI keeps
+#: in its own files, a key echoed in a request header or URL. The same shapes
+#: as ``astrabox.deploy.onebox._redact_child_output``, which this standalone
+#: file cannot import.
+_CREDENTIAL_SHAPES: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\b([a-z][a-z0-9+.-]*://[^:/\s@]+:)[^@\s/]+@"), rf"\1{_REDACTED}@"),
+    (
+        re.compile(
+            r"(?i)(\b(?:api[ _-]?key|auth[ _-]?token|access[ _-]?token|refresh[ _-]?token"
+            r"|master[ _-]?key|password|secret)\b[\"']?\s*[=:]\s*[\"']?)[^\s,\"'}]+"
+        ),
+        rf"\1{_REDACTED}",
+    ),
+    (re.compile(r"(?i)(\bbearer\s+)[A-Za-z0-9._~+/=-]{8,}"), rf"\1{_REDACTED}"),
+    (re.compile(r"\bsk-[A-Za-z0-9._~+/=-]{8,}"), _REDACTED),
+    (re.compile(r"\b[0-9a-fA-F]{48,}\b"), _REDACTED),
+)
+
+
+class CliStderrTail:
+    """The newest lines the Claude CLI wrote to stderr, redacted, for a process report.
+
+    Installed as ``ClaudeAgentOptions.stderr``, the SDK's only route to the
+    CLI's stderr: without a callback the SDK leaves the stream on this
+    process's own stderr, which goes with the box, and the ``ProcessError`` it
+    raises for a non-zero exit carries the fixed text "Check stderr output for
+    details" in its ``stderr`` field. Each line is redacted as it arrives, with
+    the credential values :meth:`protect` has been given and the shapes in
+    ``_CREDENTIAL_SHAPES``. The CLI can only print a value from an environment
+    this runner gave it first, so protecting each environment before handing
+    it over covers every line. Lines are dropped from the front once more than
+    ``limit`` characters are kept; a single longer line keeps its end. Each
+    redacted line is also written to this runner's log, so the box's own logs
+    show the CLI's stderr while the box lives.
+    """
+
+    def __init__(self, *, limit: int = CLI_STDERR_TAIL_CHARS) -> None:
+        self._limit = limit
+        self._lines: deque[str] = deque()
+        self._chars = 0
+        self._omitted_chars = 0
+        self._secrets: list[str] = []
+
+    def protect(self, environment: Any) -> None:
+        """Redact the credential values in ``environment`` from every later line."""
+
+        values = {
+            str(value)
+            for name, value in dict(environment or {}).items()
+            if _CREDENTIAL_ENV_NAME.search(str(name))
+            and len(str(value)) >= _MIN_REDACTED_VALUE_CHARS
+        }
+        # Longest first, so a value that contains another is removed whole.
+        self._secrets = sorted(values | set(self._secrets), key=len, reverse=True)
+
+    def __call__(self, line: str) -> None:
+        text = str(line)
+        for secret in self._secrets:
+            text = text.replace(secret, _REDACTED)
+        for pattern, replacement in _CREDENTIAL_SHAPES:
+            text = pattern.sub(replacement, text)
+        logger.info("Claude CLI stderr: %s", text)
+        if len(text) > self._limit:
+            self._omitted_chars += len(text) - self._limit
+            text = text[-self._limit:]
+        # ``_chars`` is the length of the reported tail, newlines included.
+        self._chars += len(text) + (1 if self._lines else 0)
+        self._lines.append(text)
+        while self._chars > self._limit:
+            # One line never exceeds the limit, so a following line exists and
+            # the newline joining the two goes with the dropped one.
+            dropped = self._lines.popleft()
+            self._chars -= len(dropped) + 1
+            self._omitted_chars += len(dropped) + 1
+
+    def report(self) -> dict[str, Any]:
+        """What the CLI had written to stderr when the runner reported its failure.
+
+        ``stderr`` is ``empty`` when it had written nothing, else ``captured``
+        with ``stderr_tail`` and ``stderr_omitted_chars``, the characters
+        dropped from the front to keep the bound.
+        """
+
+        if not self._lines:
+            return {"stderr": "empty"}
+        return {
+            "stderr": "captured",
+            "stderr_tail": "\n".join(self._lines),
+            "stderr_omitted_chars": self._omitted_chars,
+        }
+
+
+def _process_report(exc: Exception, stderr: CliStderrTail) -> dict[str, Any]:
+    """The Claude CLI process's account of a failed message stream, for operators.
+
+    ``exit_code`` is ``ProcessError.exit_code`` exactly as the SDK reported it:
+    the process's exit status, a negative signal number for a process a signal
+    ended, or ``-1`` when the SDK could not wait for it. Nothing is inferred
+    from it; 137 is a status a process can exit with, not proof of a kill.
+    ``terminal_reason`` is Claude Code's own reason for ending, which only a
+    ``ResultError`` carries. Each is ``None`` when the failure supplied none.
+    """
+
+    from claude_agent_sdk import ProcessError, ResultError
+
+    return {
+        "exit_code": exc.exit_code if isinstance(exc, ProcessError) else None,
+        "terminal_reason": exc.terminal_reason if isinstance(exc, ResultError) else None,
+        **stderr.report(),
+    }
+
+
+def _failure_detail(exc: Exception) -> str:
+    """What the conversation is told about a failed message stream.
+
+    A bare ``ProcessError`` is stated by its exit code alone: its text ends in
+    the SDK's ``stderr`` field, a fixed placeholder in the pinned SDK and CLI
+    output in any SDK that fills it. The CLI's stderr reaches operators
+    through :func:`_process_report`, never the conversation.
+    """
+
+    from claude_agent_sdk import ProcessError, ResultError
+
+    if isinstance(exc, ProcessError) and not isinstance(exc, ResultError):
+        return f"Claude Code exited with code {exc.exit_code}."
+    return str(exc)
+
+
 #: prepare.options keys consumed by the runner itself, not the SDK.
 RUNNER_OPTION_KEYS: frozenset[str] = frozenset({
     "interaction_wait_s",
@@ -1436,6 +1579,7 @@ class RunnerSession:
         permission_mode: str = "default",
         session_mcp_servers: tuple[str, ...] = (),
         resolve_mcp_servers: Callable[[list[dict[str, Any]]], list[str]] | None = None,
+        cli_stderr: CliStderrTail,
     ) -> None:
         # Before activation this is a slot id, used only for local task names
         # and diagnostics.  No envelope is emitted under it.  Activation
@@ -1453,6 +1597,9 @@ class RunnerSession:
         )
         self._client_factory = client_factory
         self._resume_client_factory = resume_client_factory
+        #: The stderr of the CLI process ``client_factory`` starts, for the
+        #: process report an ended message stream sends the host.
+        self._cli_stderr = cli_stderr
         self._store = store
         self._activation_callback = activation_callback
         self._permission_mode = str(permission_mode or "default")
@@ -1601,6 +1748,7 @@ class RunnerSession:
             return
         if self._client is None:
             raise RunnerProtocolError("environment binding before native initialization")
+        self._cli_stderr.protect(environment)
         try:
             await self._client.apply_flag_settings({"env": environment})
             snapshot = await self._client.get_settings()
@@ -2329,8 +2477,8 @@ class RunnerSession:
                     reason="expired", requires_persistence=True,
                 )
             await self.sender.send(
-                "error", error_class=type(exc).__name__, detail=str(exc),
-                exit_code=getattr(exc, "exit_code", None), requires_persistence=True,
+                "error", error_class=type(exc).__name__, detail=_failure_detail(exc),
+                process=_process_report(exc, self._cli_stderr), requires_persistence=True,
             )
             await self._report_status()
             logger.exception("Claude SDK message stream failed")
@@ -3664,6 +3812,11 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
         )
 
     session: RunnerSession | None = None
+    # The SDK starts the CLI with this process's environment and the
+    # ``env`` option layered over it.
+    cli_stderr = CliStderrTail()
+    cli_stderr.protect(os.environ)
+    cli_stderr.protect(options_in.get("env") or {})
 
     def client_factory(broker: InteractionBroker, *, resume: str | None = None) -> SdkSession:
         if session is None:
@@ -3712,6 +3865,7 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
             # here. Setting permission_prompt_tool_name in the runner as well is
             # explicitly invalid in the vendor API.
             can_use_tool=broker.can_use_tool,
+            stderr=cli_stderr,
         )
         _ensure_working_directory(options)
         return NativeClient(options=options)
@@ -3728,6 +3882,7 @@ def _real_session_factory(opening: dict[str, Any], link: HostLink) -> RunnerSess
         permission_mode=str(options_in.get("permission_mode") or "default"),
         session_mcp_servers=tuple(deferred_mcp),
         resolve_mcp_servers=lambda references: _resolve_session_mcp_servers(options_in, references),
+        cli_stderr=cli_stderr,
     )
     return session
 

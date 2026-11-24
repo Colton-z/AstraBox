@@ -27,6 +27,7 @@ from astrabox.core.service.orchestrator.engine.runner_link import (
 from astrabox.core.service.orchestrator.engine.runtime import RuntimeInputRefused
 from astrabox.seams.sandbox_data import SandboxEndpoint
 from astrabox.core.service.orchestrator.sandbox_runner import (
+    CliStderrTail,
     HostLink,
     RunnerSession,
     RunnerWsServer,
@@ -124,6 +125,7 @@ async def wire(tmp_path):
             client_factory=lambda broker: client,
             activation_callback=client.bind_store,
             interaction_wait_s=5.0,
+            cli_stderr=CliStderrTail(),
         )
         client.consume_prompt = session.on_user_prompt_submit
         return session
@@ -209,6 +211,7 @@ async def test_an_empty_runner_admits_its_first_prepare_only_with_the_delivered_
             client_factory=lambda broker: client,
             activation_callback=client.bind_store,
             interaction_wait_s=5.0,
+            cli_stderr=CliStderrTail(),
         )
 
     token_file = tmp_path / ".astrabox-runner-token"
@@ -433,6 +436,7 @@ def test_a_bound_slot_refuses_a_claim_by_another_session() -> None:
         link=mock.Mock(),
         client_factory=lambda broker: mock.Mock(),
         activation_callback=lambda target, store: None,
+        cli_stderr=sandbox_runner.CliStderrTail(),
     )
     session.bind_store("sess-1", {"base_url": "http://platform.invalid"})
     session._prepared = True

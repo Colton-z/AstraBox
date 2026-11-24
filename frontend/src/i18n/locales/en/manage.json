@@ -566,6 +566,7 @@
     "parts_load_failed": "Couldn't load this response's parts",
     "parts_section": "Response detail",
     "parts_truncated": "Showing the most recent parts; {{count}} earlier ones are not included.",
+    "process_diagnostic": "Process diagnostic",
     "kill": "Kill",
     "kill_confirm": "End Session {{id}}? This stops its active Agent process.",
     "kill_confirm_btn": "End Session",
