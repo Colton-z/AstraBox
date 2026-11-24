@@ -96,10 +96,10 @@ export function assistantMaterializing(state?: string): boolean {
 }
 
 // ── Runtime surface ──────────────────────────────────────────────────────────
-// The runtime declares how its owner works with it (`runtime`). One that hosts
-// no conversations and serves its own page opens on that page instead.
+// A native page is the console entry point even when the runtime also accepts
+// conversations from platform integrations.
 export function assistantOpensPanel(a: AssistantRecord): boolean {
-  return a.runtime?.panel === true && a.runtime.conversations === false;
+  return a.runtime?.panel === true;
 }
 
 /**

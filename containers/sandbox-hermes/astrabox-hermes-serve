@@ -9,12 +9,13 @@
 # owns the process from boot, so a resumed box comes back with its engine
 # instead of waiting for someone's first message to start one.
 #
-# Three supervised programs run this script (supervisord.hermes.conf):
+# Supervised programs run this script (supervisord.hermes.conf):
 #
 #   (no argument)  the gateway daemon
 #   --mirror       the state mirror that saves `state.db` and the profile
 #   --bridge       hermes_gateway_bridge.py, which publishes the daemon on the
 #                  box's outward port for the platform host
+#   --webapp       the browser reverse proxy, running as the gateway's owner
 set -euo pipefail
 
 mode=daemon
@@ -22,8 +23,10 @@ if [ "${1:-}" = "--mirror" ] && [ "$#" -eq 1 ]; then
   mode=mirror
 elif [ "${1:-}" = "--bridge" ] && [ "$#" -eq 1 ]; then
   mode=bridge
+elif [ "${1:-}" = "--webapp" ] && [ "$#" -eq 1 ]; then
+  mode=webapp
 elif [ "$#" -ne 0 ]; then
-  printf 'astrabox-hermes-serve: expected no arguments, --mirror or --bridge\n' >&2
+  printf 'astrabox-hermes-serve: expected no arguments, --mirror, --bridge or --webapp\n' >&2
   exit 64
 fi
 
@@ -165,6 +168,11 @@ exec runuser -u "$ASTRABOX_HERMES_PROFILE_LINUX_USER" -- env \
       bridge)
         exec \"\$HERMES_VENV/bin/python\" /opt/astrabox/hermes/hermes_gateway_bridge.py \
           $(printf '%q' "$LISTEN_PORT") $(printf '%q' "$DAEMON_WAIT_SECONDS")
+        ;;
+      webapp)
+        mkdir -p -m 700 \"\$HERMES_HOME/webapp/proxy\"
+        exec env -i /usr/sbin/nginx -p \"\$HERMES_HOME/webapp/proxy/\" \
+          -c /opt/astrabox/hermes/hermes-webapp.nginx.conf -g 'daemon off;'
         ;;
     esac
     # One interpreter restores and prepares the profile, then enters the native

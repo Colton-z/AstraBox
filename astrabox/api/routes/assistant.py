@@ -104,14 +104,15 @@ class AssistantOwnerSecretStatus(BaseModel):
 class AssistantRuntimeSurface(BaseModel):
     """How the Assistant's runtime serves its owner.
 
-    ``conversations``: the console hosts its conversations. ``panel``: the
-    runtime serves its own page, opened through ``GET .../panel``.
+    ``conversations``: the runtime supports AstraBox conversation integrations.
+    ``panel``: the runtime serves its own page, opened through ``GET .../panel``.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     conversations: bool
     panel: bool
+    panel_opens_in_new_tab: bool = False
     owner_secrets: list[AssistantOwnerSecretStatus]
 
 

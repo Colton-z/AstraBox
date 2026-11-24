@@ -88,6 +88,16 @@ ASTRABOX_E2E_CONSOLE_URL=http://<代理地址> ASTRABOX_E2E_BASE_URL=http://<代
 npx playwright test specs/the-console-works-below-a-gateway-path.path-prefix.spec.ts
 ```
 
+`*.hermes-webapp.spec.ts` 使用启用 HTTPS 通配 Secure Access 的部署。准备带官方
+Webapp 的 Hermes RuntimeProfile，并通过 `ASTRABOX_E2E_ASSISTANT_ENVIRONMENT` 和
+`ASTRABOX_E2E_ASSISTANT_MODEL` 指定测试配置。用例从控制台打开原生页面，并对照
+Hermes SessionDB 核验换箱前后的记录。使用没有持久工作区卷的 RuntimeProfile。
+
+```bash
+ASTRABOX_E2E_HERMES_WEBAPP=1 npx playwright test \
+  specs/hermes-assistant-native-history.hermes-webapp.spec.ts --workers=1
+```
+
 `*.sandbox-envelope.spec.ts` 验收部署设置的沙箱资源规格：服务端用
 `ASTRABOX_SANDBOX_CPU_LIMIT`、`ASTRABOX_SANDBOX_MEMORY_LIMIT`、`ASTRABOX_SANDBOX_CPU_REQUEST`、
 `ASTRABOX_SANDBOX_MEMORY_REQUEST` 设一套非默认规格，运行时用 `ASTRABOX_E2E_SANDBOX_ENVELOPE`

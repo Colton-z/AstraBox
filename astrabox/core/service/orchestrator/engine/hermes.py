@@ -57,6 +57,7 @@ from astrabox.core.service.orchestrator.engine.base import (
 from astrabox.core.service.orchestrator.engine.capabilities import (
     CONVERSATION_PLACEMENT_PER_ACCOUNT,
     EngineAssistantDeclaration,
+    EnginePanelDeclaration,
     EngineRuntimeCapabilities,
     EngineWorkloadDeclaration,
 )
@@ -214,6 +215,7 @@ _HERMES_PROTECTED_CONFIG_KEYS = (
     "plugins.disabled",
     "platforms",
     "gateway",
+    "webapp",
 )
 
 #: Beside the profile env file: the digest of the process configuration the
@@ -309,8 +311,47 @@ class HermesEngineAdapter(EngineAdapter):
             conversation_placement=CONVERSATION_PLACEMENT_PER_ACCOUNT,
             default_runtime_image=release_image(HERMES_RUNTIME_IMAGE_COMPONENT),
             extensions=HERMES_EXTENSIONS,
-            assistant=EngineAssistantDeclaration(),
+            assistant=EngineAssistantDeclaration(
+                panel=EnginePanelDeclaration(
+                    port=HERMES_WEBAPP_PROXY_PORT,
+                    opens_in_new_tab=True,
+                    requires_secure_access=True,
+                ),
+            ),
         )
+
+    async def panel_launch_path(self, sandbox: Any, *, runtime_identity: dict[str, Any]) -> str:
+        """Ask the resident gateway for a one-use Webapp link as its Linux owner."""
+        identity = normalize_runtime_identity(runtime_identity)
+        if identity is None:
+            raise APIError(
+                code="HERMES_PROFILE_INVALID",
+                message="the Hermes Webapp requires a provisioned runtime identity",
+                status_code=500,
+            )
+        result = await sandbox.commands.run(shlex.join([
+            "runuser", "-u", identity["linux_user"], "--", "env",
+            f"HOME={identity['home_dir']}", f"HERMES_HOME={identity['config_dir']}",
+            "/opt/hermes/.venv/bin/python", "/opt/astrabox/hermes/hermes_webapp_link.py",
+        ]), timeout=15)
+        if result.exit_code == 75:
+            raise APIError(
+                code="ASSISTANT_WORKSPACE_NOT_READY",
+                message="the Hermes gateway has not made its Webapp available",
+                status_code=409,
+                data={"state": "STARTING"},
+            )
+        launch = re.fullmatch(
+            r"http://127\.0\.0\.1:9120(/webapp/launch#ticket=[A-Za-z0-9_-]{43})",
+            result.output.strip(),
+        )
+        if result.exit_code != 0 or launch is None:
+            raise APIError(
+                code="AGENT_RUNTIME_ERROR",
+                message="the Hermes gateway did not issue a Webapp launch link",
+                status_code=502,
+            )
+        return launch.group(1)
 
     def sandbox_request(
         self,
@@ -961,8 +1002,13 @@ async def _prepare_hermes_extensions(
     managed = dict(getattr(template, "engine_options", None) or {}).get("config")
     if managed and getattr(template, "assistant_id", None):
         managed = assistant_managed_config(managed)
-    if managed:
-        env[_HERMES_MANAGED_CONFIG_ENV] = json.dumps(managed, ensure_ascii=False, sort_keys=True)
+    env[_HERMES_MANAGED_CONFIG_ENV] = json.dumps(
+        {**(managed or {}), "webapp": {
+            "enabled": True, "host": "127.0.0.1", "port": 9120, "public_url": "",
+        }},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     return env
 
 
@@ -1034,6 +1080,8 @@ def _hermes_process_digest(env: dict[str, str], overwrite_blob: dict[str, Any]) 
 #: in containers/sandbox-hermes); this is the one the sandbox's endpoint face
 #: knows about.
 HERMES_BACKEND_PORT = 9118
+#: The browser proxy, separate from the platform's private gateway bridge.
+HERMES_WEBAPP_PROXY_PORT = 9121
 #: The bridge's readiness path: 200 while the gateway behind it is ready. The
 #: bridge names it in its own constant (``HEALTH_PATH``); the two must match.
 HERMES_BRIDGE_HEALTH_PATH = "/healthz"

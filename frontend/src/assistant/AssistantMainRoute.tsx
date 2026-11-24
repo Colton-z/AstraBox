@@ -11,21 +11,9 @@ import { AssistantPanelView } from './AssistantPanelView';
 import { usePrimaryAssistant } from './AssistantRail';
 
 /**
- * `/assistants/:assistantId`: the Assistant's main conversation.
- *
- * Opening an Assistant always lands in the same conversation, the one its
- * scheduled and proactive work reports into; the server starts it when there
- * is none. This route asks for it and replaces itself with the session view,
- * so the address an Assistant row links to stays stable while the
- * conversation behind it can be replaced. `/assistants` opens the primary
- * Assistant, which the rail has already asked for.
- *
- * An Assistant whose runtime hosts no conversations (`runtime` on its read)
- * has none to land in: this route shows its runtime's own page instead
- * (`AssistantPanelView`), and `/assistants` moves to the Assistant's address,
- * since no session view replaces it. Which kind an Assistant is decides what
- * the route asks the server for, so the Assistant is read first — the primary
- * from the read the rail already holds, any other from the server.
+ * Open the Assistant's native page when its runtime declares one. A runtime
+ * without a native page opens the platform main conversation, where scheduled
+ * and proactive work reports. `/assistants` opens the primary Assistant.
  */
 export function AssistantMainRoute({ onOpened }: { onOpened: () => void }) {
   const { t } = useTranslation();

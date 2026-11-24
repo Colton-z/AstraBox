@@ -173,12 +173,14 @@ class EngineWorkloadDeclaration:
 class EnginePanelDeclaration:
     """A browser page the runtime serves from inside its box.
 
-    The page is the runtime's own product surface: the console embeds it, and
-    the platform supplies only the signed address and the runtime's login.
+    The page is the runtime's own product surface. The platform supplies the
+    address and the runtime's login.
     ``port`` is the in-box port a browser request arrives on.
     """
 
     port: int
+    opens_in_new_tab: bool = False
+    requires_secure_access: bool = False
 
 
 @dataclass(frozen=True)

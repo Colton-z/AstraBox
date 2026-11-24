@@ -52,6 +52,8 @@
     "stopped": "{{name}} did not start",
     "stopped_hint": "Its runtime stopped before it was ready.",
     "open_failed": "Could not open {{name}}",
+    "open_in_tab": "Open {{name}} in a new tab",
+    "tab_blocked": "Allow pop-ups from this site, then open the Assistant again.",
     "route_unsupported": "This deployment cannot show {{name}}",
     "panel_unsupported": "{{name}} has no page to show",
     "renew_failed": "Could not renew the connection to {{name}}. The page stops responding when the current one expires.",
