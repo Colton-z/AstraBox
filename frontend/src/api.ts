@@ -2347,6 +2347,49 @@ export async function getSessionChildRunMessages(
   })));
 }
 
+export async function adminGetHistoryBlocks(
+  sessionId: string,
+  before?: string,
+  limit = 50,
+  init?: RequestInit,
+): Promise<HistoryBlockPage> {
+  return asDeclared<HistoryBlockPage>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/history-blocks', {
+    ...wire,
+    params: { path: { session_id: sessionId }, query: { before, limit } },
+    signal: init?.signal ?? undefined,
+  })));
+}
+
+export async function adminGetHistoryBlockDetails(
+  sessionId: string,
+  blockId: string,
+  cursor: string,
+  init?: RequestInit,
+): Promise<HistoryBlockDetails> {
+  return asDeclared<HistoryBlockDetails>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/history-blocks/{block_id}', {
+    ...wire,
+    params: { path: { session_id: sessionId, block_id: blockId }, query: { cursor } },
+    signal: init?.signal ?? undefined,
+  })));
+}
+
+export async function adminListSessionChildRuns(sessionId: string): Promise<SessionChildRunPage> {
+  return asDeclared<SessionChildRunPage>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/child-runs', {
+    ...wire,
+    params: { path: { session_id: sessionId } },
+  })));
+}
+
+export async function adminGetSessionChildRunMessages(
+  sessionId: string,
+  childRunId: string,
+): Promise<ChildRunMessagePage> {
+  return asDeclared<ChildRunMessagePage>(await send((wire) => client.GET('/api/v1/admin/sessions/{session_id}/child-runs/{child_run_id}/messages', {
+    ...wire,
+    params: { path: { session_id: sessionId, child_run_id: childRunId } },
+  })));
+}
+
 // ── Session sharing ───────────────────────────────────────────────────────
 export interface ShareConfig {
   enabled: boolean;

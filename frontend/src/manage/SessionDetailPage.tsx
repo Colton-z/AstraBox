@@ -1,17 +1,19 @@
 import { skillSourceLabel } from '@/types';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Download, RefreshCw, Trash2 } from 'lucide-react';
+import { ChevronDown, Download, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import useSWR from 'swr';
 
 import { Button, buttonVariants } from '@/components/ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   adminGetSessionDetail,
   adminGetSessionTrace,
   adminKillSession,
   buildAdminSessionTranscriptUrl,
 } from '@/api';
-import type { AdminSessionDetail, AdminSessionTrace } from '@/types';
+import type { AdminSessionDetail } from '@/types';
 import { localizeDisplayText } from '@/utils/format';
 
 import { ErrorNote } from '@/components/shell';
@@ -34,6 +36,7 @@ import {
   sessionUserDisplay,
   shortId,
 } from './sessionConfig';
+import { SessionConversationRecord } from './SessionConversationRecord';
 import { TraceDigest } from './SessionTraceDigest';
 import { ResponseParts } from './SessionResponseParts';
 import { SessionRuntimeVersions } from './SessionRuntimeVersions';
@@ -62,29 +65,32 @@ function formatMcpConfig(value: unknown): string {
   }
 }
 
-/**
- * One session, on its own page.
- *
- * The list is where an operator hunts; this is where they read. Twelve facts
- * over four groups and a digest of the last messages is not something anyone
- * glances at while comparing rows (docs/frontend-design.md §3) — it is opened
- * once, deliberately, to answer "why did that run do that". A panel beside the
- * list clips the digest, which is the only part with any length to it.
- *
- * The record shows its read time and can be refreshed without navigating away.
- */
 // The lifecycle state, READY while a response runs too. These records disclose
 // their read time; creation additionally follows through the polling hook.
 const RESTING_SESSION_STATES = new Set(['READY', 'TERMINATED', 'DELETED']);
 
 export default function SessionDetailPage() {
   const { sessionId = '' } = useParams();
+  return <SessionDetailRecord key={sessionId} sessionId={sessionId} />;
+}
+
+function SessionDetailRecord({ sessionId }: { sessionId: string }) {
   const navigate = useNavigate();
   const { t } = useTranslation();
 
   const [detail, setDetail] = useState<AdminSessionDetail | null>(null);
   const [readAt, setReadAt] = useState<string | null>(null);
-  const [trace, setTrace] = useState<AdminSessionTrace | null>(null);
+  const [conversationRevision, setConversationRevision] = useState(0);
+  const [traceOpen, setTraceOpen] = useState(false);
+  const {
+    data: trace,
+    error: traceError,
+    isValidating: traceLoading,
+    mutate: refreshTrace,
+  } = useSWR(traceOpen ? ['admin-session-trace', sessionId] : null, () => adminGetSessionTrace(sessionId), {
+    revalidateOnFocus: false,
+    shouldRetryOnError: false,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [actionError, setActionError] = useState('');
@@ -101,32 +107,19 @@ export default function SessionDetailPage() {
     const startedAt = new Date().toISOString();
     const background = context?.background === true;
     if (!background) setLoading(true);
-    // The trace is a second call and is allowed to fail on its own: a session
-    // whose sandbox is gone still has facts worth reading, and losing them
-    // because the transcript could not be fetched would be the wrong trade.
-    const [d, tr] = await Promise.allSettled([
-      adminGetSessionDetail(sessionId),
-      adminGetSessionTrace(sessionId),
-    ]);
-    // A manual refresh can overtake a background read of an older incident.
-    if (sequence !== readSequence.current) return;
-    setLoading(false);
-    // Kept whole: a background read that lost the network leaves the record
-    // and its trace as last read, rather than one of them.
-    if (d.status === 'rejected' && keepsLastRead(d.reason, context, loaded.current)) return;
-    if (d.status === 'fulfilled') {
-      setDetail(d.value);
+    try {
+      const record = await adminGetSessionDetail(sessionId);
+      if (sequence !== readSequence.current) return;
+      setDetail(record);
       setReadAt(startedAt);
       setError('');
       loaded.current = true;
-    } else {
+    } catch (failure) {
+      if (sequence !== readSequence.current || keepsLastRead(failure, context, loaded.current)) return;
       setDetail(null);
-      setError((d.reason as Error).message);
-    }
-    if (tr.status === 'fulfilled') {
-      setTrace(tr.value);
-    } else if (!keepsLastRead(tr.reason, context, loaded.current)) {
-      setTrace(null);
+      setError((failure as Error).message);
+    } finally {
+      if (sequence === readSequence.current) setLoading(false);
     }
   }, [sessionId]);
 
@@ -172,7 +165,11 @@ export default function SessionDetailPage() {
           <Button
             variant="outline"
             size="icon"
-            onClick={() => void load()}
+            onClick={() => {
+              void load();
+              setConversationRevision((revision) => revision + 1);
+              if (traceOpen) void refreshTrace();
+            }}
             disabled={loading}
             aria-label={t('common:refresh')}
           >
@@ -260,6 +257,12 @@ export default function SessionDetailPage() {
     >
       {actionError && <ErrorNote>{actionError}</ErrorNote>}
 
+      <SessionConversationRecord
+        key={conversationRevision}
+        sessionId={detail.session_id}
+        conversationState={detail.conversation_state}
+      />
+
       <ConsoleCard title={t('manage:sessions.section_overview')}>
         <ConsoleFieldRow label={t('manage:common_fields.agent')}>
           <p className="font-mono select-text">{detail.agent_id || '—'}</p>
@@ -316,47 +319,56 @@ export default function SessionDetailPage() {
         </ConsoleCard>
       )}
 
-      {/* The counts and the tail of the conversation, not the whole transcript:
-          inspecting individual parts stays a deeper drill opened deliberately. */}
-      <ConsoleCard title={t('manage:sessions.trace_section')}>
-        {trace ? (
-          <>
-            <ConsoleFieldRow label={t('manage:sessions.field_running_responses')}>
-              <p className="font-mono select-text">{trace.current_response_ids.join(', ') || '—'}</p>
-            </ConsoleFieldRow>
-            <ConsoleFieldRow label={t('manage:sessions.field_response_count')}>
-              <p className="tabular-nums">{trace.responses.length}</p>
-            </ConsoleFieldRow>
-            <ConsoleFieldRow label={t('manage:sessions.field_events')}>
-              <p className="tabular-nums">
-                {t('manage:sessions.events_value', {
-                  messages: trace.messages.length,
-                  parts: trace.parts.length,
-                })}
-              </p>
-            </ConsoleFieldRow>
-            <ConsoleFieldRow label={t('manage:sessions.recent_events')} labelsGroup>
-              <TraceDigest trace={trace} />
-            </ConsoleFieldRow>
-          </>
-        ) : (
-          <p className="t-copy text-muted-foreground">{t('manage:sessions.trace_unavailable')}</p>
-        )}
-      </ConsoleCard>
+      <Collapsible open={traceOpen} onOpenChange={setTraceOpen}>
+        <CollapsibleTrigger render={<Button variant="outline" />} className="group">
+          {t('manage:sessions.trace_section')}
+          <ChevronDown className="size-4 transition-transform group-data-open:rotate-180" aria-hidden />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-4 space-y-4">
+          <ConsoleCard title={t('manage:sessions.trace_section')}>
+            {trace ? (
+              <>
+                <ConsoleFieldRow label={t('manage:sessions.field_running_responses')}>
+                  <p className="font-mono select-text">{trace.current_response_ids.join(', ') || '—'}</p>
+                </ConsoleFieldRow>
+                <ConsoleFieldRow label={t('manage:sessions.field_response_count')}>
+                  <p className="tabular-nums">{trace.responses.length}</p>
+                </ConsoleFieldRow>
+                <ConsoleFieldRow label={t('manage:sessions.field_events')}>
+                  <p className="tabular-nums">
+                    {t('manage:sessions.events_value', {
+                      messages: trace.messages.length,
+                      parts: trace.parts.length,
+                    })}
+                  </p>
+                </ConsoleFieldRow>
+                <ConsoleFieldRow label={t('manage:sessions.recent_events')} labelsGroup>
+                  <TraceDigest trace={trace} />
+                </ConsoleFieldRow>
+              </>
+            ) : traceLoading ? (
+              <p className="t-copy text-muted-foreground" role="status">{t('common:loading')}</p>
+            ) : null}
+            {traceError && (
+              <ErrorNote>
+                {traceError.message}{' '}
+                <Button variant="outline" size="sm" onClick={() => void refreshTrace()}>
+                  {t('common:retry')}
+                </Button>
+              </ErrorNote>
+            )}
+          </ConsoleCard>
 
-      {/* A separate block from the digest above, because it answers a different
-          question: that one is the tail of the conversation at a glance, this
-          is one response opened deliberately and read part by part. It is the
-          deepest drill the console offers — the one the digest card above
-          defers to. */}
-      {trace && (trace.parts.length || trace.responses.length) ? (
-        <ConsoleCard
-          title={t('manage:sessions.parts_section')}
-          intro={t('manage:sessions.parts_intro')}
-        >
-          <ResponseParts sessionId={detail.session_id} trace={trace} />
-        </ConsoleCard>
-      ) : null}
+          {trace && (trace.parts.length || trace.responses.length) ? (
+            <ConsoleCard
+              title={t('manage:sessions.parts_section')}
+              intro={t('manage:sessions.parts_intro')}
+            >
+              <ResponseParts sessionId={detail.session_id} trace={trace} />
+            </ConsoleCard>
+          ) : null}
+        </CollapsibleContent>
+      </Collapsible>
     </ConsoleRecordPage>
   );
 }

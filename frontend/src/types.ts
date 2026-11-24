@@ -647,6 +647,7 @@ export interface AdminSessionMcpConnection {
 }
 
 export interface AdminSessionDetail extends AdminSessionSummary {
+  conversation_state: string;
   template_skills?: SkillDescriptor[];
   template_mcp_servers?: string[];
   template_mcp_config?: unknown;

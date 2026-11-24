@@ -585,8 +585,9 @@
     "section_overview": "概览",
     "title": "会话",
     "trace_no_messages": "暂无消息",
+    "conversation_section": "对话记录",
+    "subagents": "子 Agent",
     "trace_section": "技术事件",
-    "trace_unavailable": "该会话没有轨迹——它的沙箱可能已经不在。",
     "response_option": "{{at}} · {{outcome}}",
     "response_placeholder": "选择回复"
   },
