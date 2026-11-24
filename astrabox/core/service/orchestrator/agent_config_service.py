@@ -7,7 +7,7 @@ import hashlib
 import json
 import uuid
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, is_dataclass, replace
+from dataclasses import asdict, dataclass, is_dataclass, replace
 from typing import Any
 
 from astrabox.persistence.repository.agent_repository import AgentRepository
@@ -146,6 +146,13 @@ def _reference_missing(error: AgentReferenceMissing) -> APIError:
     return invalid_request(f"the Agent names a {error.reference} that does not exist")
 
 
+@dataclass(frozen=True)
+class AgentConversationAdmission:
+    template: AgentView
+    definition_version: int
+    started_at: float
+
+
 class AgentConfigService:
     """Store Agent configuration and resolve it into runtime views.
 
@@ -209,6 +216,14 @@ class AgentConfigService:
             item, viewer_user_id, viewer_roles or ()
         ):
             return None
+        return await self.resolve_agent_definition(
+            item, require_enabled_runtime_profile=require_enabled_runtime_profile,
+        )
+
+    async def resolve_agent_definition(
+        self, item: dict[str, Any], *, require_enabled_runtime_profile: bool = True,
+    ) -> AgentView:
+        """Build the runtime view from an already loaded Agent definition."""
         return await self._build_agent_view(
             item, {}, require_enabled_runtime_profile=require_enabled_runtime_profile
         )

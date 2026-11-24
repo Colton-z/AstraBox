@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import asyncio
 import dataclasses
 from collections.abc import Awaitable, Callable
@@ -122,14 +124,15 @@ class PlatformRuntimeConnector:
         coordination = get_persistence().coordination
         async with coordination.runtime_lock(session_id):
             session = await self._attachable(session_id)
-        result = await self._ensure.ensure_runtime(session)
-        runtime = result.runtime
-        if runtime is None:
-            if result.sandbox_gone:
-                raise RuntimeGone(session_id, reason="sandbox_lost")
-            if result.delivery_changed:
-                raise RuntimeGone(session_id, reason="model_delivery_changed")
-            raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
+        with startup_stage(session_id, "reader_ensure_runtime"):
+            result = await self._ensure.ensure_runtime(session)
+            runtime = result.runtime
+            if runtime is None:
+                if result.sandbox_gone:
+                    raise RuntimeGone(session_id, reason="sandbox_lost")
+                if result.delivery_changed:
+                    raise RuntimeGone(session_id, reason="model_delivery_changed")
+                raise RuntimeError(result.error_text or f"session {session_id} runtime could not be attached")
         client = runtime.engine_client
         if not isinstance(client, RuntimeClient):
             raise TypeError(f"the {runtime.engine_kind} adapter does not serve the runtime contract")

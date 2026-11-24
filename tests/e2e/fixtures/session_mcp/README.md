@@ -2,7 +2,9 @@
 
 This isolated provider supplies a private identity file and an environment
 pointer using the public runtime preparation seam. Its private token map binds
-two synthetic platform users through the public identity seam. It contains no
+two synthetic platform users through the public identity seam. The initial
+plan defers the engine for authored packages, and the installed-package plan
+defers only personal MCPs. It contains no
 external service endpoints or customer account configuration.
 
 Bake the read-only stdio service and the configured Plugin's package cache with

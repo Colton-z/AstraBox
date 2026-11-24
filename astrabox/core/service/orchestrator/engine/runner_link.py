@@ -14,6 +14,8 @@ once the platform has committed what it read up to that sequence.
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import asyncio
 import contextlib
 import time
@@ -471,19 +473,22 @@ class RunnerLink:
                 "platform_session_id": target_session,
                 "store": dict(store),
             }
-        await self.prepare(
-            slot_id,
-            options=resolved_options,
-            claimed_by=session_id,
-            store=store,
-        )
-        await self._replace_connection()
-        return await self.activate(
-            slot_id,
-            session_id,
-            store=store,
-            death_notice=death_notice,
-        )
+        with startup_stage(session_id, "runner_cold_prepare_ack"):
+            await self.prepare(
+                slot_id,
+                options=resolved_options,
+                claimed_by=session_id,
+                store=store,
+            )
+        with startup_stage(session_id, "runner_cold_reconnect"):
+            await self._replace_connection()
+        with startup_stage(session_id, "runner_activate_ack"):
+            return await self.activate(
+                slot_id,
+                session_id,
+                store=store,
+                death_notice=death_notice,
+            )
 
     async def attach(
         self,

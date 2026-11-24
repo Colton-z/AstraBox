@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from astrabox.observability.startup import startup_stage
+
 import time
 import uuid
 from typing import Any
@@ -12,7 +14,7 @@ from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import parse_iso, plus_seconds_iso, utcnow
 from astrabox.common.utils.user_context import UserContext, default_org_id
-from astrabox.core.model import SessionState
+from astrabox.core.model import AgentView, SessionState
 from astrabox.core.service.orchestrator.message_blocks import normalize_message_blocks
 from astrabox.core.service.orchestrator.runtime_manager import RemoteAgentRuntimeManager
 from astrabox.core.service.orchestrator.runtime_binding import (
@@ -76,15 +78,19 @@ class SessionService:
         agent_id: str | None = None,
         deployment_name: str | None = None,
         title: str | None = None,
+        resolved_template: AgentView | None = None,
+        expected_agent_version: int | None = None,
     ) -> dict[str, Any]:
         from astrabox.core.service.environment_access import require_environment_access
 
         await require_environment_access(user, operation="create conversation record")
         # The Session resolves its Agent or Assistant by identity (``agent_id``
         # or ``workspace_ref``), never by a mutable display name.
-        template = await self._agent_config.resolve_session_harness(
-            {"workspace_ref": workspace_ref, "agent_id": agent_id, "owner_id": owner_id}
-        )
+        template = resolved_template
+        if template is None:
+            template = await self._agent_config.resolve_session_harness(
+                {"workspace_ref": workspace_ref, "agent_id": agent_id, "owner_id": owner_id}
+            )
         if template is None:
             raise APIError(
                 code="TEMPLATE_NOT_ALLOWED",
@@ -215,7 +221,13 @@ class SessionService:
         if str(title or "").strip():
             payload["title"] = str(title).strip()
 
-        created = await self._sessions_repo.create_session(payload)
+        with startup_stage(resolved_session_id, "session_insert"):
+            if expected_agent_version is None:
+                created = await self._sessions_repo.create_session(payload)
+            else:
+                created = await self._sessions_repo.create_session(
+                    payload, expected_agent_version=expected_agent_version,
+                )
 
         clean = dict(created) if isinstance(created, dict) else dict(payload)
         clean.pop("sandbox_callback_token", None)

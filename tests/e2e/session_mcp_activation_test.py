@@ -83,13 +83,19 @@ def test_user_bound_mcp_activates_in_the_prepared_process_and_recovers(
         agent = data(a.post("/api/v1/agents", json={
             "name": "Session MCP " + uuid.uuid4().hex[:8],
             "runtime_profile_name": environment, "model": profile["model"],
-            "prepared_capacity": 2,
+            "prepared_capacity": 0,
             "packages": packages,
             "mcp_servers": {kind: {"command": "python3", "args": [
                 "/opt/astrabox/session-mcp-fixture/personal_mcp.py", kind,
             ]} for kind in ("personal", "shared")},
         }))["agent_id"]
         release_agent(agent)
+        data(a.put(f"/api/v1/agents/{agent}/access", json={
+            "visibility": "allowlist", "allowed_user_ids": [owners[1]],
+        }))
+        data(a.put(f"/api/v1/agents/{agent}", json={
+            "prepared_capacity": 2, "model": profile["model"], "runtime_profile_name": environment,
+        }))
         _wait_prepared_count(a, agent, 2, live_test_deadline)
         inventory = {}
 
@@ -189,7 +195,7 @@ print(json.dumps({'engine_initialized':seat['engine_initialized'],
         old_rows = _journals(execute, identity)
         plugin = next(row for row in reversed(old_rows) if row["kind"] == "plugin" and row["event"] == "identity_bound")
         old_native = _native_history(sid_a)
-        subprocess.run([*execute, "python3", "-c", """
+        fault = subprocess.run([*execute, "python3", "-c", """
 from pathlib import Path
 import os,signal,sys
 home,pid=Path(sys.argv[1]),int(sys.argv[2])
@@ -201,8 +207,7 @@ for proc in Path('/proc').iterdir():
         args=proc.joinpath('cmdline').read_bytes().split(b'\\0')
         if b'/opt/astrabox/session-mcp-fixture/personal_mcp.py' not in args or b'plugin' not in args:
             continue
-        env=dict(item.split(b'=',1) for item in proc.joinpath('environ').read_bytes().split(b'\\0') if b'=' in item)
-        if env.get(b'HOME',b'').decode()!=str(home):
+        if proc.stat().st_uid != home.stat().st_uid:
             continue
         status=proc.joinpath('status').read_text().splitlines()
         nspid=next(line.split()[1:] for line in status if line.startswith('NSpid:'))
@@ -213,7 +218,8 @@ for proc in Path('/proc').iterdir():
 assert len(matching)==1,matching
 (home/'.session-mcp-deny').touch()
 os.kill(matching[0],signal.SIGTERM)
-""", identity["home_dir"], str(plugin["pid"])], check=True, capture_output=True, timeout=15)
+""", identity["home_dir"], str(plugin["pid"])], capture_output=True, text=True, timeout=15)
+        assert fault.returncode == 0, fault.stderr
         failed = _settled_recovery(a, sid_a, live_test_deadline)
         assert failed.get("last_error") and "MCP" in failed["last_error"], failed
         assert _supplier_processes(execute, identity, "claude_code") == inventory[identity["home_dir"]]["native"]
@@ -253,3 +259,77 @@ os.kill(matching[0],signal.SIGTERM)
                           "recovery_live_answer": {"marker": recovered_marker, "text": recovered_reply.text},
                           "failed_recovery": {"session": failed, "native_history": failed_native},
                           "persistent_workspace_volume": False}))
+
+
+def test_agent_admission_rejects_a_concurrent_visibility_change(
+    e2e_client: httpx.Client, e2e_base_url: str,
+) -> None:
+    """Test the authorization boundary at insertion and an ordinary idempotent create."""
+    a = e2e_client
+    profile = current_profile()
+    server = require_service_container(SERVER_CONTAINER_HANDLE)
+    agent = data(a.post("/api/v1/agents", json={
+        "name": "Admission " + uuid.uuid4().hex[:8],
+        "runtime_profile_name": profile["runtime_profile_name"],
+        "model": profile["model"],
+        "prepared_capacity": 0,
+    }))
+    agent_id = agent["agent_id"]
+    release_agent(agent_id)
+    hold = f"/data/session-mcp-fixture/admit-{agent_id}"
+    reached = hold + ".reached"
+    token_path = Path(os.environ["ASTRABOX_E2E_SECOND_AUTH_TOKEN_FILE"])
+
+    def command(*args: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["docker", "exec", server, *args], capture_output=True, timeout=10,
+        )
+
+    def conversation(client: httpx.Client, key: str) -> httpx.Response:
+        return client.post(
+            f"/api/v1/agents/{agent_id}/conversations",
+            headers={"Idempotency-Key": key},
+            json={},
+        )
+
+    def set_visibility(visibility: str) -> None:
+        data(a.put(f"/api/v1/agents/{agent_id}/access", json={
+            "visibility": visibility, "admins": [], "allowed_user_ids": [],
+        }))
+
+    set_visibility("public")
+    assert command("touch", hold).returncode == 0
+    try:
+        with httpx.Client(base_url=e2e_base_url, headers={
+            "Authorization": "Bearer " + token_path.read_text().strip(),
+        }, timeout=30) as other, ThreadPoolExecutor(max_workers=1) as pool:
+            key = uuid.uuid4().hex
+            pending = pool.submit(conversation, other, key)
+            try:
+                deadline = time.monotonic() + 10
+                while command("test", "-f", reached).returncode != 0:
+                    assert time.monotonic() < deadline, "The request never reached Agent resolution"
+                    time.sleep(0.1)
+                set_visibility("private")
+            finally:
+                command("rm", "-f", hold)
+            status = pending.result(timeout=10)
+            assert status.status_code == 409 and status.json()["code"] == "AGENT_CHANGED", status.text
+            denied = conversation(other, key)
+            assert denied.status_code == 403 and denied.json()["code"] == "TEMPLATE_NOT_ALLOWED", denied.text
+
+            set_visibility("public")
+            started = data(conversation(other, key))["session_id"]
+            release_session(started)
+            assert data(conversation(other, key))["session_id"] == started
+
+            current = data(a.get(f"/api/v1/agents/{agent_id}"))
+            data(a.put(f"/api/v1/agents/{agent_id}", json={
+                "version": current["version"],
+                "model": profile["model"], "runtime_profile_name": profile["runtime_profile_name"],
+                "enabled": False,
+            }))
+            disabled = conversation(other, uuid.uuid4().hex)
+            assert disabled.status_code == 409 and disabled.json()["code"] == "AGENT_DISABLED", disabled.text
+    finally:
+        command("rm", "-f", hold, reached)

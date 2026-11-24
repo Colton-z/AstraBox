@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
-from astrabox.seams.runtime_preparation import runtime_preparation_plan
+from astrabox.seams.runtime_preparation import (
+    ResolvedPackage,
+    RuntimePreparationPlan,
+    RuntimePreparationProvider,
+    runtime_preparation_plan,
+    runtime_preparation_provider,
+)
 
+import asyncio
+import dataclasses
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -121,6 +129,38 @@ async def prepare_engine_runtime(
     engine_kind = str(context.template.engine_kind)
     plan = runtime_preparation_plan(context.template)
     adapter = get_engine_adapter(engine_kind)
+    provider = runtime_preparation_provider()
+    if provider is not None and type(provider).plan_prepared_packages is not RuntimePreparationProvider.plan_prepared_packages:
+        packages = await adapter.inspect_prepared_packages(context.sandbox, context.template)
+        if packages is not None:
+            async with asyncio.timeout(30):
+                refined = await provider.plan_prepared_packages(
+                    config=dataclasses.asdict(context.template), initial_plan=plan, packages=packages,
+                )
+            available = {ref for package in packages for ref in package.mcp_servers}
+            if (not isinstance(refined, RuntimePreparationPlan)
+                    or refined.model_credential_delivery != plan.model_credential_delivery
+                    or not set(plan.session_mcp_servers).issubset(refined.session_mcp_servers)
+                    or any(ref.plugin and ref not in available for ref in refined.session_mcp_servers)):
+                raise APIError(
+                    code="AGENT_PREWARM_CONFIG_INVALID",
+                    message="prepared package policy changed unrelated credentials or named an unavailable Plugin MCP",
+                    status_code=409,
+                )
+            if not refined.session_bound:
+                identity = {
+                    **context.runtime_identity,
+                    "prepared_package_policy": {
+                        "packages": package_inventory_record(packages),
+                        "plan": dataclasses.asdict(refined),
+                    },
+                    "plugin_mcp_server_ids": sorted(f"plugin:{ref.plugin}:{ref.name}" for ref in available),
+                }
+                context = dataclasses.replace(
+                    context, runtime_identity=identity,
+                    template=dataclasses.replace(context.template, runtime_preparation=refined),
+                )
+                plan = refined
     if plan.session_mcp_servers and not adapter.supports_session_mcp_activation():
         raise APIError(code="MCP_ACTIVATION_UNSUPPORTED", status_code=400,
                        message=f"Engine {engine_kind!r} cannot defer Session MCP connections")
@@ -146,6 +186,14 @@ async def prepare_engine_runtime(
         "environment_credential_contract": environment_contract,
         "prepared_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def package_inventory_record(packages: tuple[ResolvedPackage, ...]) -> list[dict[str, Any]]:
+    return [{
+        "index": package.index,
+        "commit": package.commit,
+        "mcp_servers": [dataclasses.asdict(ref) for ref in package.mcp_servers],
+    } for package in packages]
 
 
 async def read_pool_runtime_receipt(

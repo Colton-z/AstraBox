@@ -255,7 +255,9 @@ class SessionRepository:
             _SESSIONS.c.environment_name == self.environment_name,
         )
 
-    async def create_session(self, payload: dict[str, Any]) -> dict[str, Any]:
+    async def create_session(
+        self, payload: dict[str, Any], *, expected_agent_version: int | None = None,
+    ) -> dict[str, Any]:
         """Insert a session; ``payload`` names columns plus ``workspace_ref`` and ``vault_ids``.
 
         Creating an id that already exists returns the existing row: the id is
@@ -273,6 +275,19 @@ class SessionRepository:
         session_id = str(stored["session_id"])
 
         async def write(conn: AsyncConnection) -> None:
+            if expected_agent_version is not None:
+                from astrabox.persistence.repository.agent_repository import _definition_holds
+
+                if not await _definition_holds(
+                    conn, str(stored["agent_id"]),
+                    Agent.__table__.c.version == expected_agent_version,
+                    Agent.__table__.c.enabled.is_(True),
+                ):
+                    raise APIError(
+                        code="AGENT_CHANGED",
+                        message="Agent changed while starting the conversation. Start it again.",
+                        status_code=409,
+                    )
             if stored.get("agent_id"):
                 await insert_if_absent(
                     conn, AgentRuntime.__table__,
