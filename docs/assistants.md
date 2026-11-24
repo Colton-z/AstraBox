@@ -201,8 +201,8 @@ certificate for the gateway domain with a DNS challenge.
 
 ### Hermes
 
-Select **Open in a new tab** on the Assistant page to use the official Hermes
-Webapp. It uses the Assistant's resident Hermes Gateway and the same profile
+By default, select **Open in a new tab** on the Assistant page to use the
+official Hermes Webapp. It uses the Assistant's resident Hermes Gateway and the same profile
 and SessionDB that AstraBox saves and restores when it replaces a box. Use
 Hermes' own controls for new conversations, history, and continuing a chat.
 AstraBox issues a fresh one-use Hermes sign-in link each time you open it.
@@ -212,6 +212,13 @@ get a new address and continue from history.
 Configure the HTTPS reverse proxy to set `X-Forwarded-Host` from the
 incoming Host and overwrite any client-supplied value. Forward this header
 with HTTP requests and WebSocket upgrades so Hermes can validate their origin.
+
+Set `ASTRABOX_HERMES_WEBAPP_EMBEDDED=true` to open the Webapp inside the console.
+The console and sandbox gateway must be on the same HTTPS site. For signed
+Hermes Webapp document requests on port 9121, configure the reverse proxy to
+replace `frame-ancestors 'none'` in the upstream Content-Security-Policy with
+`frame-ancestors` followed by the exact HTTPS console origin. Preserve the
+other directives, including the one-use sign-in page's script nonce.
 
 The runtime image needs the bundled Hermes Webapp. After updating a
 RuntimeProfile's image, hibernate and wake existing workspaces to use the

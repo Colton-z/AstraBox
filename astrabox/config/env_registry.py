@@ -2527,6 +2527,15 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "(socket.gethostname() when absent).",
         "astrabox.providers.open_sandbox.agent_pool",
     ),
+    (
+        "ASTRABOX_HERMES_WEBAPP_EMBEDDED",
+        "public",
+        "false",
+        "Open Hermes inside the console. The HTTPS sandbox gateway must allow "
+        "the exact console origin in the Hermes Webapp's frame-ancestors policy, "
+        "and the gateway and console must be on the same site.",
+        "astrabox.config.settings",
+    ),
     # ---- Hermes engine: config-merge runtime (sandbox-side) -----------------
     (
         "ASTRABOX_HERMES_CONFIG_OVERWRITE",

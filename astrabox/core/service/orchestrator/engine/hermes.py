@@ -37,6 +37,7 @@ from typing import Any, Awaitable, Callable, Literal, Mapping
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.config.release_images import release_image
+from astrabox.config.settings import get_settings
 from astrabox.common.utils.errors import APIError
 from astrabox.core.service.orchestrator.engine.assistant_state_barrier import (
     await_command_channel,
@@ -314,7 +315,7 @@ class HermesEngineAdapter(EngineAdapter):
             assistant=EngineAssistantDeclaration(
                 panel=EnginePanelDeclaration(
                     port=HERMES_WEBAPP_PROXY_PORT,
-                    opens_in_new_tab=True,
+                    opens_in_new_tab=not get_settings().hermes_webapp_embedded,
                     requires_secure_access=True,
                 ),
             ),
