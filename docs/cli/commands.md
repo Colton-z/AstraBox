@@ -245,7 +245,7 @@ astrabox schema runtime_profile
 
 | Parameter | Description | Allowed values |
 | :--- | :--- | :--- |
-| `kind` | Resource type whose authoring schema should be shown. | `agent`, `environment` |
+| `kind` | Resource type whose authoring schema should be shown. | `agent`, `runtime_profile` |
 
 #### Candidate values
 
@@ -399,8 +399,8 @@ astrabox get runtime_profiles --output json
 The default table displays the identifying and commonly used fields for the selected collection. `--output json` returns the complete documents.
 
 ```text
-NAME        MODEL              ENVIRONMENT_NAME  ENABLED  AGENT_ID
-researcher  <model-name>       default           true     <agent-id>
+NAME        MODEL         RUNTIME_PROFILE_NAME  ENABLED  AGENT_ID
+researcher  <model-name>  default               true     <agent-id>
 ```
 
 ### Examples
@@ -494,9 +494,9 @@ astrabox diff -f astrabox.yaml --output json
 The default table contains one row per declared resource:
 
 ```text
-KIND         NAME        ACTION     FIELDS
-environment  default     unchanged
-agent        researcher  update     model, system
+KIND             NAME        ACTION     FIELDS
+runtime_profile  default     unchanged
+agent            researcher  update     model, system
 ```
 
 - `create`: The resource does not exist and `apply` would create it.
@@ -799,9 +799,9 @@ Resources omitted from the file are not touched.
 ### Execution Output
 
 ```text
-KIND         NAME        ACTION    FIELDS
-agent        researcher  delete
-environment  default     retained
+KIND             NAME        ACTION    FIELDS
+agent            researcher  delete
+runtime_profile  default     retained
 ```
 
 ### Usage Examples
@@ -906,7 +906,7 @@ astrabox model-account unshare mact_0123456789abcdef0123456789abcdef
 
 ### Output
 
-`login` prints the linked account and `list` prints every linked account, with the columns `LABEL`, `EMAIL`, `STATUS`, `IS_DEFAULT` and `ACCOUNT_ID`. `STATUS` is `active`, or `sign_in_required` once OpenAI refused to renew the account's access token for good. A declined sign-in exits with code 5 and the deployment's `MODEL_ACCOUNT_AUTHORIZATION_DECLINED`.
+`login` prints the linked account and `list` prints every linked account, with the columns `LABEL`, `VENDOR`, `EMAIL`, `STATUS`, `IS_DEFAULT`, `SHARED`, `USAGE_LIMITED_UNTIL`, `POOL_LAST_USED_AT` and `ACCOUNT_ID`. `STATUS` is `active`, or `sign_in_required` once OpenAI refused to renew the account's access token for good. A declined sign-in exits with code 5 and the deployment's `MODEL_ACCOUNT_AUTHORIZATION_DECLINED`.
 
 ---
 

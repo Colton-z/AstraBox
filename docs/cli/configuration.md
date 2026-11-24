@@ -44,7 +44,7 @@ agents:
 **The three sections**:
 
 - **version** - configuration document version; the current and only accepted value is `1`
-- **environments** - optional list of RuntimeProfile declarations
+- **runtime_profiles** - optional list of RuntimeProfile declarations
 - **agents** - optional list of Agent declarations
 
 ---
@@ -91,7 +91,7 @@ version: 1
 
 This is the `astrabox.yaml` document version. It is not the AstraBox release number and not an Agent's optimistic-concurrency version.
 
-#### `environments` (optional)
+#### `runtime_profiles` (optional)
 
 **RuntimeProfile declarations**
 
@@ -160,7 +160,7 @@ A deployment may contain several Agents with the same name. When that makes one 
 
 #### Unknown top-level keys
 
-The root is closed to these three keys: `version`, `environments`, and `agents`. A misspelled or extra top-level key fails before any request is sent. An `assistants` key fails with a message that names `astrabox assistant`, the command that configures an Assistant ([Command Reference](./commands.md#astrabox-assistant)).
+The root is closed to these three keys: `version`, `runtime_profiles`, and `agents`. A misspelled or extra top-level key fails before any request is sent. An `assistants` key fails with a message that names `astrabox assistant`, the command that configures an Assistant ([Command Reference](./commands.md#astrabox-assistant)).
 
 ```yaml
 version: 1
@@ -967,7 +967,7 @@ astrabox apply -f astrabox.yaml
 
 # 3) Read the stored resource
 astrabox get agents <agent-name> --output json
-astrabox get runtime_profiles <environment-name> --output json
+astrabox get runtime_profiles <runtime-profile-name> --output json
 ```
 
 - `unchanged` means the declared values already match.
@@ -978,7 +978,7 @@ astrabox get runtime_profiles <environment-name> --output json
 
 ### ❓ Field names are incompatible
 
-The document root accepts only `version`, `environments`, and `agents`. A resource accepts only fields declared by the target deployment.
+The document root accepts only `version`, `runtime_profiles`, and `agents`. A resource accepts only fields declared by the target deployment.
 
 Do not rename a rejected field or add a compatibility key. Export the current shape or read it directly:
 
@@ -997,7 +997,7 @@ astrabox schema agent --output json
 | Field | Required | Description |
 | :--- | :--- | :--- |
 | `version` | ✅ | Must be `1`. |
-| `environments` | ❌ | List of RuntimeProfile declarations. |
+| `runtime_profiles` | ❌ | List of RuntimeProfile declarations. |
 | `agents` | ❌ | List of Agent declarations. |
 
 ### RuntimeProfile fields

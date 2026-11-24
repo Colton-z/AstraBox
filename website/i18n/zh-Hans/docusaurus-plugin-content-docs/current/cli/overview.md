@@ -25,6 +25,7 @@
 | `astrabox destroy` | 删除 `astrabox.yaml` 声明的 Agent。 |
 | `astrabox run` | 向 Agent 发送任务并流式输出回复。 |
 | `astrabox status` | 查看部署的健康状态、就绪状态和访问地址。 |
+| `astrabox model-account` | 关联 ChatGPT 账号或添加 Anthropic API key 来为你的模型请求付费，列出你的账号，或把 ChatGPT 账号共享给团队。 |
 | `astrabox assistant` | 读取和修改你的某个 Assistant 的模型与 Agent 程序配置，设置其运行时要求的凭据，暂停或恢复其工作区。 |
 
 ### 部署与集成命令

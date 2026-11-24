@@ -127,6 +127,157 @@ Assistant 可以给它的 Agent 程序添加该程序接受的内容。Assistant
   `timezone`（请设置 Assistant 的[时区](#时区)）、`plugins.enabled` 和 `plugins.disabled`。`skills` 也会被拒绝，因为 Hermes 不从
   managed scope 读取技能设置。
 
+## 原生 Assistant 页面 {#panel-runtimes}
+
+在控制台中选择一个 Assistant，即可打开其运行时的页面。这些页面需要 HTTPS 和 OpenSandbox
+Secure Access。请把生命周期服务器的路由模式设为 `wildcard`，并使用以 `*.` 开头的网关地址。
+OpenSandbox 1.2.1 的 ingress chart 使用 `gateway.gatewayRouteMode=header`，按请求的 Host
+路由这些请求。控制台为归属用户签发短期有效的签名地址，形式为
+`<sandbox>-<port>-<expiry>-<signature>.<gateway domain>`。请通过 DNS 验证为网关域名签发通配符证书。
+
+### dsh-superagent {#dsh-superagent}
+
+[dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)
+运行在 DeepSeek Harness 上，从 Source 接收请求，把每个请求变成一个 Ticket，并交给归属用户
+的某个 Agent 处理。它的 Web profile 在控制台的 Superagent 面板中打开。使用 harness 自己的
+对话控件开始聊天、打开历史或继续已保存的 Session。Assistant 在两次访问之间保持运行，以便
+回应它的 Source。
+
+新的浏览器聊天，以及设为沿用 DSH 默认设置的 Superagent Session，都使用 Assistant 的模型
+连接。在 **DSH default model settings** 中设置原生的 `reasoningEffort`，例如
+`{"reasoningEffort": "xhigh"}`，即可选择模型连接提供的某个推理强度。未设置时，默认推理强度
+来自模型连接（如果模型连接描述了它）。DSH 也可以在已有 Session 或 Superagent 的各角色设置中
+保留显式选择。
+
+部署需要：
+
+- **网关域名与控制台位于同一站点。** harness 把登录状态保存在 `SameSite=Strict` cookie 中，
+  浏览器只有在控制台与网关共享可注册域名和协议时，才会在控制台的 frame 中发送它：例如控制台
+  位于 `https://astrabox.example.com`，网关位于 `*.sbx.example.com`，两者都使用 HTTPS。控制台
+  会在 `ASTRABOX_SANDBOX_ENDPOINT_URL_TTL_SECONDS`（默认 15 分钟）到期之前更新签名地址，这会
+  重新加载面板。
+- **在 GitHub 上工作需要一个代理账号。** 把部署密钥 `astrabox-dsh-superagent-github-token`
+  （对应的环境变量为 `ASTRABOX_DSH_SUPERAGENT_GITHUB_TOKEN`）设为一个机器人账号的令牌，所有
+  dsh-superagent Assistant 都会使用它。希望以另一个账号完成工作的归属用户，可以在 Assistant
+  的设置页设置 **GitHub agent account token**；它加密保存，只为该 Assistant 替换共享令牌。
+  两者都没有时，代理没有 GitHub 账号：GitHub Source 保持未设置，其他 Source 照常运行。该账号
+  必须在 GitHub 上接收提及通知：在它的通知设置中，**Participating, @mentions and custom**
+  必须包含 **On GitHub**。令牌是带有 `repo` 和 `notifications` 权限范围的 classic personal
+  access token。
+
+要让 Assistant 开始工作，请把机器人账号邀请到仓库，然后在面板的 **Settings** 中设置 GitHub
+Source 的仓库、它可以处理哪些账号的请求，以及准备 Ticket 检出目录的命令，例如：
+
+```bash
+git clone --quiet "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "$DSH_SUPERAGENT_DIR" \
+  && git -C "$DSH_SUPERAGENT_DIR" checkout -q -b "agent/$DSH_SUPERAGENT_NAME"
+```
+
+允许的账号在 issue 中提及机器人后，这条提及会成为一个 Ticket；机器人在该 issue 上回复，
+代码改动以 pull request 的形式提交，由人来合并。bundle 自己的模型调用通过部署的模型网关
+使用 Assistant 的模型。
+
+具体工作由归属用户的某个 Agent 完成。对于每个 Ticket，bundle 的主 Session 选出名称和描述
+与请求相符的 Agent，该 Ticket 会以归属用户的身份通过 [A2A](a2a.md) 成为这个 Agent 的一段
+对话。归属用户可以像其他对话一样在控制台中看到它，Ticket 页面上的 **Open conversation**
+会打开它；请求的后续内容（例如 issue 上的新评论）进入同一段对话。Agent 在自己的沙箱中用
+自己的程序和模型工作，上面的准备命令在它的工作区中运行，因此面板的执行设置不包含 bundle
+自己的 worker 模型、执行目录和禁止的命令。Agent 用它的 `report_outcome` 工具报告每条消息的
+结果（[A2A](a2a.md)）：
+
+- **完成。** 它的报告、它推送的分支和最后一次提交，以及它的回复，构成 Ticket 的结果；
+  Assistant 用这个结果在线程中回复请求，并就某个人的后续消息回复那个人。它提到的、来自
+  Ticket 分支的 pull request 会成为该 Ticket 跟踪的对象。没有报告的回复视为完成。
+- **拒绝。** Ticket 以 Agent 给出的原因结束为 dropped，Assistant 告诉对方原因。
+- **交回。** Agent 表示请求应由另一个 Agent 处理或必须拆分。Ticket 线程上的后续消息会带着
+  Agent 的原因回到 bundle 的主 Session，由它重新分派，Ticket 保留已有的工作。Ticket 自己的
+  请求不能重新分派：bundle 只从一条消息启动一个 Ticket，因此该 Ticket 会像被拒绝的一样以
+  dropped 结束，并说明它已被交回，由对方重新提出请求。
+
+Agent 提出的问题或等待的审批显示在 Ticket 上，并在 Agent 的对话中回答。停止 Ticket 会取消
+其对话中的工作（[取消](a2a.md)）。Assistant 可以选择的 Agent，是其运行时启动时归属用户可以
+使用的 Agent；之后新增的 Agent 在下一次启动后才会提供。
+
+Agent 在每个有意义的步骤之后都提交并推送 Ticket 的分支，而不只是在结束时，因此它的工作在
+Agent 的工作区之外也能保留：在没有这些工作的工作区中开始处理某个 Ticket 的 Agent（例如在
+没有工作区卷的新沙箱中），会在远端查找该 Ticket 的分支并从那里继续。bundle 的主 Session
+把来自其他 Ticket 的事实告诉某个 Ticket 的 Agent 并点名这些 Ticket 时，消息会引用这些
+Ticket 的最新任务（`referenceTaskIds`），Agent 会拿到其中每个 Ticket 最后报告的内容。
+
+让做代码工作的 Agent 以机器人的身份访问 GitHub。bundle 只跟踪机器人从 Ticket 分支打开的
+pull request，因此以其他账号工作的 Agent 打开的 pull request 不会被它的 Ticket 跟踪。管理员把
+机器人的令牌在一个 Vault 中添加两次，并把这个 Vault 分配给这些 Agent
+（[使用 Vault 认证](credentials.md#2-add-a-credential)）：
+
+- 作为仓库 HTTPS URL（例如 `https://github.com/your-org/your-repo.git`）的
+  **HTTP Basic（Git HTTPS）** 凭证，用户名为机器人的登录名，供 `git push` 使用；以及
+- 作为 `api.github.com` 的**环境变量**凭证，名为 `GH_TOKEN`，供 `gh pr create` 使用。
+
+这些 Agent 的沙箱镜像需要 `git` 和 `gh`；Claude Code 镜像两者都有。
+
+bundle 把它的 Ticket、线程和决定保存在自己的数据库中。平台在沙箱工作期间把这个数据库连同
+harness 的 Session 日志和设置保存到平台数据库，并在沙箱释放或丢失后把它们恢复到新沙箱中；
+Ticket 的检出目录会重新准备。
+
+限制：
+
+- 机器人读取每个 Assistant 指定仓库的通知，并且从不把它们标为已读，因此只要每个 Assistant
+  关注各自的仓库，多个 Assistant 就可以共用一个机器人。没有机制阻止两个 Assistant 指定同一个
+  仓库，Assistant 也可以指向机器人受邀加入的任何仓库。
+- [Assistant 默认配置](#defaults)中的 Skill、MCP 服务、软件包和 Agent 程序配置是为默认配置
+  所选 RuntimeProfile 的程序编写的。使用其他程序的 Assistant 不会继承它们。默认配置的模型
+  仍然适用；dsh-superagent 没有放置组织指令的位置。
+- 飞书是 bundle 的第二个 Source，平台不会配置它。
+- 进程保留它启动时的环境：添加到已分配 Vault 中的环境变量凭证会在 Assistant 的运行时下次
+  启动时到达 bundle，而轮换或归档的凭证会对正在运行的 bundle 生效
+  （[保护凭证](egress-credential-injection.md#添加出站凭证)）。
+
+### 你自己的 Source {#own-sources}
+
+Source 是一个 dsh-superagent 插件，读取某个服务的事件并在该服务上回复
+（[bundle 的 cookbook](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/008-cookbook.md#add-a-source)）。
+AstraBox 的镜像为 bundle 打了补丁，使 GitHub 成为可选项，并让 Source 可以位于自己的软件包中，
+从 `dsh-superagent/sources` 导入 bundle 的 Source 接口
+（`containers/sandbox-dsh-superagent/upstream-changes.patch`）。组织在 AstraBox 的镜像之上构建
+自己的镜像，即可加入自己的工单或待办服务：
+
+```dockerfile
+FROM ghcr.io/colton-z/astrabox-sandbox-dsh-superagent:<version>
+# 插件软件包及其自身依赖；`dsh-superagent` 解析为已安装的 bundle。
+COPY --chmod=u=rwX,go=rX my-tickets-source /opt/astrabox/dsh-plugins/my-tickets-source
+# 它的加载层：按名称顺序插入在 AstraBox 的加载层之后。
+COPY --chmod=0444 50-my-tickets.yml /opt/astrabox/superagent/patches.d/50-my-tickets.yml
+# 启动一次组合，并要求该 Source 类型已经安装。
+RUN /usr/local/bin/astrabox-dsh-superagent-boot-check --source my-tickets
+```
+
+加载层例如：
+
+```yaml
+- insert:
+    - id: my-tickets-source
+      name: file:///opt/astrabox/dsh-plugins/my-tickets-source/lib/index.js
+```
+
+该检查以非特权账号启动 harness，与沙箱在 Assistant 自己的账号下运行它的方式一致，因此该账号
+无法读取的插件文件会让构建失败，而不会让 Source 悄无声息地处于未安装状态；请让插件文件对所有人
+可读，就像 `--chmod=u=rwX,go=rX` 所做的那样。把一个使用 `dsh_superagent` 引擎的 RuntimeProfile
+指向这个镜像。Source 的设置显示在面板的 **Settings** 中。插件通过分配给 Assistant 的 Credential
+Vault 中的凭证访问它的服务：绑定到该服务主机的 `environment_variable` 凭证会在插件的环境中
+提供一个占位符，沙箱的出站代理会在匹配的请求中把它替换掉
+（[保护凭证](egress-credential-injection.md#添加出站凭证)）。RuntimeProfile 的网络访问必须
+允许该服务的主机。
+
+归属用户也可以给自己的 Assistant 添加 Source，无需自己的镜像：把它打包成一个 dsh 插件
+Bundle，由 Bundle 自己的 `cordis.patch.yml` 插入插件，并在 Assistant 的**技能、插件与配置**
+卡片中的 **Profile package.json** 下列出它，例如
+`{"dependencies": {"my-tickets-source": "1.2.0"}}`（npm 版本、git 规格或 tarball URL）。保存后，
+Assistant 会在它的沙箱上重新准备：harness 自己的 `dsh plugin` 安装 Bundle，然后 harness 重启；
+安装失败时，启动会停止并显示 pnpm 自己的消息。每个新沙箱都会按配置重新安装 Bundle，它们不属于
+保存的状态。[Assistant 默认配置](#defaults)可以为使用该程序的每个 Assistant 列出 Bundle。网络
+访问受限时，公共 registry 或 git 主机会为该 Assistant 放行；私有的 registry 或主机（例如内部
+registry）只有在管理员把它写入 RuntimeProfile 的允许主机后才会放行。
+
 ## 修改何时生效
 
 保存修改不会中断正在生成的回复。修改何时到达某个对话，取决于 Hermes 在什么时候读取

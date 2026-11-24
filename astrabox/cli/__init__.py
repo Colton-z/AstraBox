@@ -56,7 +56,7 @@ def _build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Field names for an astrabox.yaml resource come from the "
             "deployment itself: `astrabox schema agent` and "
-            "`astrabox schema environment` print the contract it enforces on "
+            "`astrabox schema runtime_profile` print the contract it enforces on "
             "write."
         ),
     )
