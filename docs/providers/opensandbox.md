@@ -759,20 +759,28 @@ sandbox needs its own endpoint before it receives this exemption.
 
 ### Configure a browser-facing Kubernetes Gateway
 
-Install the official OpenSandbox ingress Gateway in `opensandbox-system`, with
+Install the OpenSandbox ingress Gateway chart in `opensandbox-system` with
+AstraBox's gateway image, `ghcr.io/colton-z/astrabox-ingress` at the release's
+version, and with
 `gateway.dataplaneNamespace=opensandbox`, `gateway.gatewayRouteMode=uri`, and
 `gateway.secureAccess.existingSecret` naming a Secret in that namespace. Its
 `keys` entry contains `a=<base64-encoded-secret>`; key ID `a` must match the
 server configuration. Keep the Secret and the lifecycle server's key private.
 The [official chart](https://github.com/opensandbox-group/OpenSandbox/tree/release-1.2.1/manifests/charts/ingress-gateway)
 at tag `release-1.2.1` has chart and image version 1.2.1, the release of the
-bundled lifecycle server. With that checkout and a provisioned signing Secret,
-install it using:
+bundled lifecycle server. AstraBox's image is that gateway with one change: it
+keeps a request's body readable while the response is written. With the
+official image, a command's streamed answer through the Gateway is cut
+intermittently, and an isolated session ends with it
+([`containers/ingress/README.md`](https://github.com/colton-z/astrabox/blob/main/containers/ingress/README.md)).
+With that checkout and a provisioned signing Secret, install it using:
 
 ```bash
 helm upgrade --install opensandbox-ingress \
   ./manifests/charts/ingress-gateway \
   --namespace opensandbox-system \
+  --set gateway.image.repository=ghcr.io/colton-z/astrabox-ingress \
+  --set gateway.image.tag=<version> \
   --set gateway.gatewayRouteMode=uri \
   --set gateway.secureAccess.existingSecret=opensandbox-ingress-signing
 ```

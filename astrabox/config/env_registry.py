@@ -2119,7 +2119,7 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
         "OpenSandbox endpoint mode for the bundled Kubernetes lifecycle server. "
         "Use direct only when AstraBox and its clients can route to sandbox Pod "
         "addresses. Use gateway for a multi-node deployment after installing the "
-        "official OpenSandbox ingress component.",
+        "OpenSandbox ingress gateway chart with AstraBox's ingress image.",
         "astrabox.deploy.sandbox_server",
     ),
     (

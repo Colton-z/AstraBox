@@ -42,6 +42,7 @@ _EXECD_PREREQUISITE := $(if $(filter undefined,$(origin EXECD_IMAGE)),build-exec
 EXECD_IMAGE         ?= astrabox/execd:latest
 WORKSPACE_MOUNTER_IMAGE ?= astrabox/workspace-mounter:latest
 EGRESS_IMAGE        ?= astrabox/egress:latest
+INGRESS_IMAGE       ?= astrabox/ingress:latest
 SERVER_IMAGE        ?= astrabox/server:latest
 # `--build-context <stage>=DIR` flags for images with checksum-pinned source
 # stages. Empty for a standalone build, which downloads each pinned source in its
@@ -64,7 +65,7 @@ NPM_REGISTRY        ?= https://registry.npmjs.org/
         check-comments check-comments-report check-i18n check-upstream check-api-client check-all-in-one check-dockerfile-modes check-sandbox-seam \
         check-env-registry check-http-surface check-background-tasks check-release \
         test-web test-channel-gateway test-layout utilisation build-web build-dist e2e e2e-smoke e2e-browser e2e-live \
-        build-agent-image build-assistant-image build-dsh-image build-dsh-superagent-image build-codex-image build-pi-image build-execd-image build-workspace-mounter-image build-egress-image build-all-in-one-image clean \
+        build-agent-image build-assistant-image build-dsh-image build-dsh-superagent-image build-codex-image build-pi-image build-execd-image build-workspace-mounter-image build-egress-image build-ingress-image build-all-in-one-image clean \
         k8s-testbed-up k8s-testbed-status k8s-testbed-down k8s-testbed-purge
 
 help: ## Show this help.
@@ -287,6 +288,9 @@ build-workspace-mounter-image: ## Build the host-side mergerfs workspace helper,
 build-egress-image: ## Build the sandbox egress sidecar: OpenSandbox's, decrypting only credential-bound hosts.
 	docker build -t $(EGRESS_IMAGE) -f containers/egress/Dockerfile .
 
+build-ingress-image: ## Build the Kubernetes ingress gateway: OpenSandbox's, proxying request and response in full duplex.
+	docker build -t $(INGRESS_IMAGE) $(DOCKER_BUILD_CONTEXTS) -f containers/ingress/Dockerfile .
+
 build-server-image: ## Build the deployment image (console + backend). Slow by design: it builds the frontend.
 	docker build --build-arg NODE_VERSION=$$(cat .nvmrc) -t $(SERVER_IMAGE) -f containers/server/Dockerfile .
 
@@ -306,6 +310,7 @@ push-images: ## Tag every cluster-pulled image $(IMAGE_TAG) and push to $$REGIST
 	docker tag $(PI_IMAGE)        $(REGISTRY)/astrabox/sandbox-pi:$(IMAGE_TAG)
 	docker tag $(WORKSPACE_MOUNTER_IMAGE) $(REGISTRY)/astrabox/workspace-mounter:$(IMAGE_TAG)
 	docker tag $(EGRESS_IMAGE)    $(REGISTRY)/astrabox/egress:$(IMAGE_TAG)
+	docker tag $(INGRESS_IMAGE)   $(REGISTRY)/astrabox/ingress:$(IMAGE_TAG)
 	docker tag $(SERVER_IMAGE)    $(REGISTRY)/astrabox/server:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/execd:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/sandbox-claude-code:$(IMAGE_TAG)
@@ -315,12 +320,14 @@ push-images: ## Tag every cluster-pulled image $(IMAGE_TAG) and push to $$REGIST
 	docker push $(REGISTRY)/astrabox/sandbox-pi:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/workspace-mounter:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/egress:$(IMAGE_TAG)
+	docker push $(REGISTRY)/astrabox/ingress:$(IMAGE_TAG)
 	docker push $(REGISTRY)/astrabox/server:$(IMAGE_TAG)
 	@echo
 	@echo "pushed $(IMAGE_TAG) — point the deployment at it:"
 	@echo "  ASTRABOX_AGENT_IMAGE=$(REGISTRY)/astrabox/sandbox-claude-code:$(IMAGE_TAG)"
 	@echo "  ASTRABOX_WORKSPACE_MOUNTER_IMAGE=$(REGISTRY)/astrabox/workspace-mounter:$(IMAGE_TAG)"
 	@echo "  ASTRABOX_SANDBOX_EGRESS_IMAGE=$(REGISTRY)/astrabox/egress:$(IMAGE_TAG)"
+	@echo "  ingress gateway chart: --set gateway.image.repository=$(REGISTRY)/astrabox/ingress --set gateway.image.tag=$(IMAGE_TAG)"
 	@echo "  assistant environment runtime_template_name=$(REGISTRY)/astrabox/sandbox-hermes:$(IMAGE_TAG)"
 	@echo "  dsh environment runtime_template_name=$(REGISTRY)/astrabox/sandbox-deepseek-harness:$(IMAGE_TAG)"
 	@echo "  codex environment runtime_template_name=$(REGISTRY)/astrabox/sandbox-codex:$(IMAGE_TAG)"

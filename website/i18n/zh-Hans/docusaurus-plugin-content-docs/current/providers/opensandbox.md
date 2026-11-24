@@ -243,19 +243,24 @@ Pod 直连地址只在集群内有效；把它返回给公网上的控制台，�
 
 ### 配置面向浏览器的 Kubernetes Gateway {#configure-a-browser-facing-kubernetes-gateway}
 
-在 `opensandbox-system` 中安装官方 OpenSandbox ingress Gateway，设置
+在 `opensandbox-system` 中安装 OpenSandbox ingress Gateway chart，镜像使用 AstraBox 的
+Gateway 镜像（与发布版本相同的 `ghcr.io/colton-z/astrabox-ingress`），设置
 `gateway.dataplaneNamespace=opensandbox` 和 `gateway.gatewayRouteMode=uri`，并用
 `gateway.secureAccess.existingSecret` 指定该命名空间中的一个 Secret。这个 Secret 的
 `keys` 条目包含 `a=<base64-encoded-secret>`；密钥 ID `a` 必须与服务端配置一致。Secret
 和 Lifecycle 服务的密钥都要妥善保密。标签 `release-1.2.1`
 中的[官方 chart](https://github.com/opensandbox-group/OpenSandbox/tree/release-1.2.1/manifests/charts/ingress-gateway)
-的 chart 和镜像版本为 1.2.1，即随附生命周期服务的版本。检出该标签并准备好签名 Secret 后，
-用以下命令安装：
+的 chart 和镜像版本为 1.2.1，即随附生命周期服务的版本。AstraBox 的镜像只在此基础上改了一处：
+写响应时请求体保持可读。使用官方镜像时，经 Gateway 的命令流式输出会被间歇截断，隔离会话随之结束
+（[`containers/ingress/README.md`](https://github.com/colton-z/astrabox/blob/main/containers/ingress/README.md)）。
+检出该标签并准备好签名 Secret 后，用以下命令安装：
 
 ```bash
 helm upgrade --install opensandbox-ingress \
   ./manifests/charts/ingress-gateway \
   --namespace opensandbox-system \
+  --set gateway.image.repository=ghcr.io/colton-z/astrabox-ingress \
+  --set gateway.image.tag=<version> \
   --set gateway.gatewayRouteMode=uri \
   --set gateway.secureAccess.existingSecret=opensandbox-ingress-signing
 ```

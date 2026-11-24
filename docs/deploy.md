@@ -617,7 +617,9 @@ Every release publishes these images, tagged with its version. The installer
 writes that version to the settings file as `ASTRABOX_IMAGE_TAG`; a deployment
 that names no image of its own runs `<ASTRABOX_IMAGE_PREFIX><component>:<ASTRABOX_IMAGE_TAG>`
 for its server, every Agent program's sandbox, each sandbox's egress sidecar
-and the workspace helper.
+and the workspace helper. A Kubernetes deployment in gateway mode also runs the
+ingress gateway image
+([Configure a browser-facing Kubernetes Gateway](providers/opensandbox.md#configure-a-browser-facing-kubernetes-gateway)).
 
 | Image | Architectures |
 |---|---|
@@ -628,6 +630,7 @@ and the workspace helper.
 | `ghcr.io/colton-z/astrabox-sandbox-hermes` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-sandbox-pi` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-egress` | amd64, arm64 |
+| `ghcr.io/colton-z/astrabox-ingress` | amd64, arm64 |
 | `ghcr.io/colton-z/astrabox-workspace-mounter` | amd64 |
 
 The workspace helper is amd64 only: it installs the mergerfs release archive
