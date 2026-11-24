@@ -833,7 +833,7 @@ astrabox destroy -f astrabox.yaml --yes --output json
 
 ## `astrabox model-account`
 
-`astrabox model-account` 在你的 AstraBox 用户下保存为你的模型请求付费的模型账号：通过 OpenAI 的 Sign in with ChatGPT 关联的 ChatGPT 账号，以及 Anthropic API key。部署保存每个账号的令牌或 key；`list` 从不显示它们。参阅[连接模型服务](../models.md)。
+`astrabox model-account` 在你的 AstraBox 用户下保存为你的模型请求付费的模型账号：通过 OpenAI 的 Sign in with ChatGPT 关联的 ChatGPT 账号，以及 Anthropic API key。部署保存每个账号的令牌或 key；`list` 从不显示它们。参阅[使用 ChatGPT 套餐](../models.md#use-a-chatgpt-plan)和[使用你自己的 Anthropic API key](../models.md#anthropic-api-key)。
 
 ### 用法
 
@@ -876,7 +876,7 @@ OpenAI 会把浏览器送回 `http://127.0.0.1:<port>/auth/callback`，这个地
 
 ### 与团队共享账号
 
-`share` 让其他成员的对话在他们自己的账号达到套餐用量上限后使用该账号的 ChatGPT 套餐；`unshare` 从他们的下一次回复起收回该账号。部署的团队池必须开启（`ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED`），否则 `share` 以 `MODEL_ACCOUNT_POOL_DISABLED` 失败。只有 ChatGPT 账号可以共享：共享 Anthropic API key 会以 `MODEL_ACCOUNT_NOT_SHAREABLE` 失败。`list` 显示 `shared`、团队池最近一次把该账号交给队友使用的时间（`pool_last_used_at`），以及已报告的用量上限让它暂停使用到何时（`usage_limited_until`）。
+`share` 让其他成员的对话在他们自己的账号达到套餐用量上限后使用该账号的 ChatGPT 套餐；`unshare` 从他们的下一次回复起收回该账号。部署的团队池必须开启（`ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED`），否则 `share` 以 `MODEL_ACCOUNT_POOL_DISABLED` 失败。只有 ChatGPT 账号可以共享：共享 Anthropic API key 会以 `MODEL_ACCOUNT_NOT_SHAREABLE` 失败。`list` 显示 `shared`、团队池最近一次把该账号交给队友使用的时间（`pool_last_used_at`），以及已报告的用量上限让它暂停使用到何时（`usage_limited_until`）。参阅[与团队共享账号](../models.md#share-accounts-with-the-team)。
 
 ### 使用示例
 

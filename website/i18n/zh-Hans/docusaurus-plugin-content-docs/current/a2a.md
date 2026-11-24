@@ -50,6 +50,66 @@ Task 元数据包含平台 Session id 和这条消息的输入 id，文本结果
 重复发送相同的 `messageId` 会复用对应的输入；以不同的消息内容复用它会被拒绝。Hermes
 会自行生成消息 id，因此让 Assistant 再调用一次是一个新请求，而不是幂等重试。
 
+## 任务结果 {#task-outcomes}
+
+由 A2A 上下文创建的对话多一个平台工具，位于 `a2a` MCP 服务上：`report_outcome`。无论使用
+哪种引擎（Claude Code、Codex、Pi 或 DeepSeek Harness），Agent 都在最终回复之前调用它，说明
+请求的结果：
+
+| `state` | 含义 | 任务 |
+|---|---|---|
+| `TASK_STATE_COMPLETED` | 它完成了所要求的事；`message` 说明它做了什么 | `TASK_STATE_COMPLETED` |
+| `TASK_STATE_REJECTED` | 它没有做，也不会做；`message` 说明原因 | `TASK_STATE_REJECTED` |
+
+使用 `TASK_STATE_REJECTED` 时，它可以加上 `handback: true`：请求属于另一个 agent，或必须
+拆分，`message` 说明应当改为怎样处理。工作在 git 仓库中时，它给出 `repository`、`branch`、
+它推送的最后一个 `commit`，以及它创建的 `pull_request`。平台把这次调用与回复一起记录；回复
+以 `completed` 结束时，该回复的最后一次报告决定任务的状态，报告的 `message` 成为任务的
+`TaskStatus.message`，位于对话链接之前。以失败或取消结束的回复保持该状态。没有报告的回复
+是一个已完成的任务，与没有该工具的对话相同。
+
+任务的状态和状态消息属于 A2A 1.0 核心：任何客户端都会把被拒绝的请求读作
+`TASK_STATE_REJECTED` 及其原因。交回和代码引用在核心中没有对应元素；它们通过下文的任务结果
+扩展传递，供激活该扩展的客户端使用。
+
+这个工具只存在于 A2A 上下文创建的对话中，`send_agent_message` 送达的控制台对话中没有它。
+由于已准备好的 Agent 运行时在任何对话认领它之前就已确定其平台工具，A2A 上下文创建的对话会
+启动自己的运行时，而不是认领一个已准备好的运行时。
+
+## 任务结果扩展（v1） {#task-outcome-v1}
+
+URI：`https://www.astrabox.ai/docs/a2a#task-outcome-v1`
+
+这是 [A2A 扩展指南](https://a2a-protocol.org/v1.0.0/topics/extensions/)所说的 profile 扩展：
+它向核心对象添加数据，不改变任何方法。Agent Card 在 `capabilities.extensions` 中列出它，并
+标明 `required: false`。客户端在每个请求上用 `A2A-Extensions` 请求头激活它，例如
+`A2A-Extensions: https://www.astrabox.ai/docs/a2a#task-outcome-v1`；此时响应的
+`A2A-Extensions` 响应头会列出它，响应携带的每个任务都带有下面的数据。没有激活时，任务不带
+这些数据。
+
+数据放在核心对象的 `metadata` 中，以扩展的 URI 为键，对象的 `extensions` 列表列出该 URI：
+
+- 在 `TASK_STATE_REJECTED` 任务的 `status.message` 上，当 Agent 交回请求时：
+  `{"handback": true}`。请求属于另一个 agent，或必须拆分；状态消息说明应当改为怎样处理。
+  不带它的被拒绝任务是单纯的拒绝。
+- 在任务的结果 artifact（`artifactId` 为 `<task id>:result`）上，当 Agent 给出它们时：
+  `repository`、`branch`、`commit`（小写十六进制）和 `pull_request`（http(s) URL），每个都是
+  字符串，且都可选。
+
+```json
+{
+  "status": {
+    "state": "TASK_STATE_REJECTED",
+    "message": {
+      "role": "ROLE_AGENT",
+      "parts": [{"text": "Agent declined the task.\n\nThis is a billing change; the billing agent owns it.\n\n[View Agent session](/sessions/…)"}],
+      "extensions": ["https://www.astrabox.ai/docs/a2a#task-outcome-v1"],
+      "metadata": {"https://www.astrabox.ai/docs/a2a#task-outcome-v1": {"handback": true}}
+    }
+  }
+}
+```
+
 ## 交互支持范围
 
 固定版本的 Hermes 工具集发送文本，并返回文本、上下文和状态。它不提供独立的任务取消、
@@ -67,9 +127,24 @@ Assistant 所有者。Task 访问权限、目标访问权限和交互是否有�
 结果的公开结构相同。不需要替换 Hermes 插件，也不需要另一条 Agent 执行路径：固定版本的
 纯文本工具无法表达的结构化操作，由 MCP 桥接提供。
 
-限定于单个 Task 的取消会被拒绝：平台的中断会停止运行时正在进行的回复，而这个回复可能
-同时回答多条排队消息，无法把取消限定在一个 A2A Task 上。待处理的平台审批需要明确的
-交互 id 和回答；新的文本消息不算审批。
+`CancelTask` 停止某个任务的消息所启动的工作：
+
+- 还没有运行时收到的消息会被撤回。任务显示为 `TASK_STATE_CANCELED`，对话把这条消息显示为
+  已被其发送方取消。
+- 正在运行的回复所回答的消息，随该回复一起停止，该回复以 `cancelled` 结束。
+- 运行时排在其他工作之后的消息，会与正在进行的回复以及其他所有排队内容一起取消，因为运行时
+  只能一次性丢弃全部排队消息。Codex 和 Pi 可以丢弃它们。Claude Code、DeepSeek Harness 和
+  Hermes 会在前面的工作结束后运行排队的消息，因此这样的任务无法取消。
+
+一次取消可能会停止调用方在同一 `contextId` 中的其他任务，因为一个回复回答了其中多条消息，
+或者它们是一起排队的。它绝不会停止其他发送方的消息，例如对话所有者在控制台中输入的消息。
+会停止这样的消息时，取消该任务的请求以 `TaskNotCancelableError` 被拒绝，错误中说明原因。
+已经结束的任务也以同样的方式被拒绝。
+
+`CancelTask` 在运行时停止后返回。如果对话的运行时仍在连接，它返回任务当前的状态，工作会在
+运行时接收这条消息之前停止。
+
+待处理的平台审批需要明确的交互 id 和回答；新的文本消息不算审批。
 
 服务端接受文本任务，并提供结果和平台交互数据。它不接受上传的文件 part，也不接受推送
 通知配置。`SendMessage`、`SendStreamingMessage`、`GetTask`、`ListTasks` 和

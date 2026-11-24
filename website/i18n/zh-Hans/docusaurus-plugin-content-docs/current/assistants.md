@@ -135,6 +135,25 @@ OpenSandbox 1.2.1 的 ingress chart 使用 `gateway.gatewayRouteMode=header`，�
 路由这些请求。控制台为归属用户签发短期有效的签名地址，形式为
 `<sandbox>-<port>-<expiry>-<signature>.<gateway domain>`。请通过 DNS 验证为网关域名签发通配符证书。
 
+### Hermes
+
+默认情况下，在 Assistant 页面上选择**在新标签页打开**，即可使用官方 Hermes Webapp。它使用
+Assistant 常驻的 Hermes Gateway，以及 AstraBox 更换沙箱时保存并恢复的同一个 profile 和
+SessionDB。新对话、历史记录和继续聊天请使用 Hermes 自己的控件。每次打开时，AstraBox 都会
+签发一个新的一次性 Hermes 登录链接。签名地址过期后，从 Assistant 重新打开 Webapp，获取新
+地址并从历史记录继续。
+
+请配置 HTTPS 反向代理，根据传入请求的 Host 设置 `X-Forwarded-Host`，并覆盖客户端提供的任何
+值。HTTP 请求和 WebSocket 升级请求都要转发这个请求头，以便 Hermes 校验其来源。
+
+设置 `ASTRABOX_HERMES_WEBAPP_EMBEDDED=true` 可在控制台内打开 Webapp。控制台和沙箱网关必须
+位于同一个 HTTPS 站点。对于 9121 端口上经过签名的 Hermes Webapp 文档请求，请配置反向代理，
+把上游 Content-Security-Policy 中的 `frame-ancestors 'none'` 替换为 `frame-ancestors` 加上
+控制台准确的 HTTPS 源。保留其他指令，包括一次性登录页面的脚本 nonce。
+
+运行时镜像需要包含内置的 Hermes Webapp。更新 RuntimeProfile 的镜像后，先暂停再恢复现有
+工作区，让它们带着已保存的 Hermes 状态使用新镜像。
+
 ### dsh-superagent {#dsh-superagent}
 
 [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)
@@ -183,7 +202,7 @@ git clone --quiet "https://github.com/$DSH_SUPERAGENT_GITHUB_REPOSITORY.git" "$D
 会打开它；请求的后续内容（例如 issue 上的新评论）进入同一段对话。Agent 在自己的沙箱中用
 自己的程序和模型工作，上面的准备命令在它的工作区中运行，因此面板的执行设置不包含 bundle
 自己的 worker 模型、执行目录和禁止的命令。Agent 用它的 `report_outcome` 工具报告每条消息的
-结果（[A2A](a2a.md)）：
+结果（[任务结果](a2a.md#task-outcomes)）：
 
 - **完成。** 它的报告、它推送的分支和最后一次提交，以及它的回复，构成 Ticket 的结果；
   Assistant 用这个结果在线程中回复请求，并就某个人的后续消息回复那个人。它提到的、来自

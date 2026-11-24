@@ -258,6 +258,174 @@ server 容器。超时时间必须是有限的正数，无效值会导致设置�
 读取、写入和连接池等待，并不是整个请求的截止时间，也不会增加重试。超时后会保留
 默认的会话标题，并在管理员会话详情和服务端日志中记录超时类型和配置的时长。
 
+## 使用 ChatGPT 套餐 {#use-a-chatgpt-plan}
+
+用户可以通过 OpenAI 的 [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source)
+套餐用量，把一个或多个 ChatGPT 账号关联到自己的 AstraBox 用户。AstraBox 服务端把每个账号的
+访问令牌、刷新令牌和 ID 令牌保存在它的密钥存储中，并自行续期访问令牌；这些令牌从不到达
+用户的电脑。
+
+在用浏览器登录的那台电脑上关联账号：
+
+```bash
+astrabox model-account login chatgpt
+```
+
+OpenAI 会把浏览器送回 `http://127.0.0.1:<port>/auth/callback`，这是那台电脑上的地址，因此
+命令在打开 OpenAI 的登录页面之前，先在一个空闲端口上监听这个地址。随后它把浏览器带回的结果
+交给部署，部署兑换授权码、验证 ID 令牌并保存账号。请在 OpenAI 的页面上允许使用套餐用量：
+没有允许的登录不会关联任何账号。AstraBox 服务端必须能访问 `https://auth.openai.com`，
+列出账号的模型时还需要访问 `https://api.openai.com`。
+
+管理台的**模型账号**页面（在**配置**下）列出你已关联的账号及其状态，可以重命名账号、选择
+默认账号和移除账号。页面显示指向本部署的 `login` 命令，供你复制到自己的电脑上运行；由于
+OpenAI 会把浏览器送回 `127.0.0.1`，页面本身无法关联账号。
+
+- **多个账号。** 每次通过 `login chatgpt` 登录关联一个账号。第一个账号成为用户的默认
+  ChatGPT 账号。除非部署开启了[团队账号池](#share-accounts-with-the-team)，没有任何机制会
+  自行在账号之间切换。在模型账号页面上，或用 `PATCH /api/v1/me/model-accounts/{account_id}`
+  加 `{"is_default": true}`，把另一个账号设为默认。用户在每个厂商下各有一个默认账号，因此
+  默认 ChatGPT 账号和默认 Anthropic API key 可以并存。删除默认账号后，用户在该厂商下就没有
+  默认账号了。
+- **状态。** `astrabox model-account list` 显示每个账号的状态。OpenAI 永久拒绝续期的账号
+  （刷新令牌已过期、已撤销或被重复使用）状态为 `sign_in_required`；用
+  `astrabox model-account login chatgpt --account <account_id>` 重新登录它。
+- **移除。** `DELETE /api/v1/me/model-accounts/{account_id}` 先在 OpenAI 撤销该账号的会话，
+  再删除账号及其令牌。OpenAI 没有确认撤销时，响应中的 `revocation_confirmed` 为 `false`；
+  请在 ChatGPT 的设置中断开 AstraBox 来结束该会话。
+
+### 在它上面运行 Codex 对话
+
+`endpoint_provider` 为 `chatgpt_plan` 的 RuntimeProfile，以对话所有者关联的 ChatGPT 账号
+把其对话的模型请求发送到 OpenAI 的 API，OpenAI 计入该账号的套餐。请求不经过模型网关，
+因此网关不会为这些对话记录花费。
+
+- 该 RuntimeProfile 的 `engine_kind` 必须是 `codex`，`sandbox_tenancy` 必须是
+  `conversation`，并且部署必须保持受保护凭证传递开启。使用它的 Agent 的
+  `prepared_capacity` 必须为 0：对话出现之前准备好的沙箱没有所有者，也就没有可用的账号。
+- Agent 的模型是该账号可以使用的模型，例如 `gpt-6.1-sol`。在这样的 RuntimeProfile 上，
+  Agent 表单提供所选账号的模型（通过 `GET /api/v1/me/model-accounts/{account_id}/models`
+  从 OpenAI 读取，`default?vendor=chatgpt_plan` 指你的默认 ChatGPT 账号），并在模型旁边提供
+  ChatGPT 账号字段。这两者在其他 RuntimeProfile 上都不会显示，表单在那里也不会发送
+  `model_account_id`。
+- 由对话所有者付费。没有关联账号的人发起的对话以 `MODEL_ACCOUNT_REQUIRED` 结束。Agent 可以
+  在 `model_account_id` 中指定其创建者的某个账号；此后创建者与它的对话使用该账号而不是创建者
+  的默认账号，其他人的对话使用他们自己的默认账号。Session 详情
+  （`GET /api/v1/sessions/{session_id}`）在 `model_account_id` 中给出其最近一次回复消耗了
+  哪个账号的套餐。
+- 沙箱中只有占位符。出站边界只在 `POST https://api.openai.com/v1/responses` 上附加账号的
+  访问令牌，服务端在每轮开始前以及回复运行期间续期该令牌。
+- 套餐用量达到上限时，回复失败，不会被重放。它的 `error` 保留 Codex 的报告（`message`、
+  `codexErrorInfo`），并加上 `code` `MODEL_PLAN_USAGE_LIMIT`、达到上限的 `account_id` 和
+  `resets_at`。`resets_at` 始终为 `null`：OpenAI 的套餐用量错误不说明上限何时重置，OpenAI
+  也要求应用不要自行推断。不会切换到网关。没有团队账号池时，下一次回复仍消耗同一个账号。
+  OpenAI 没有提供读取剩余用量的方式；账号所有者可以在
+  [ChatGPT Settings → Usage](https://chatgpt.com/settings/usage) 中查看。
+- 对话标题仍然通过部署的模型网关生成，而不是使用用户的套餐。
+
+OpenAI 为开源和自托管应用提供了套餐用量的文档，并要求付费服务或远程托管服务的运营者先
+[登记意向](https://openai.com/form/sign-in-with-chatgpt-interest/)。
+
+### 与团队共享账号 {#share-accounts-with-the-team}
+
+团队成员可以互相使用彼此的 ChatGPT 套餐：某位成员的账号达到套餐用量上限时，他们的对话会
+继续使用另一位成员选择共享的账号。
+
+管理员用 `ASTRABOX_MODEL_ACCOUNT_POOL_ENABLED=true`（默认 `false`；重启后生效）为部署开启
+账号池。之后由每个账号的所有者决定是否共享：模型账号页面上的**与团队共享**开关、
+`astrabox model-account share <account_id>`（以及 `unshare`），或
+`PATCH /api/v1/me/model-accounts/{account_id}` 加 `{"shared": true}`。所有者表态之前，任何
+账号都不会被共享。`GET /api/v1/me/model-accounts/team-pool` 回答账号池是否开启；账号池关闭
+时，共享以 `MODEL_ACCOUNT_POOL_DISABLED` 被拒绝，对话的行为如上文所述。账号池只容纳 ChatGPT
+账号：共享 [Anthropic API key](#anthropic-api-key) 会以 `MODEL_ACCOUNT_NOT_SHAREABLE` 被
+拒绝，对话也只会得到其 RuntimeProfile 所消耗类型的账号。
+
+账号池开启时，对话在每次回复之前按以下顺序选择要消耗的账号：
+
+1. 所有者的首选账号（其 Agent 指定的账号，或默认 ChatGPT 账号），除非用量上限让该账号
+   暂停使用；
+2. 否则，所有者的其他可用 ChatGPT 账号，默认账号优先；
+3. 否则，同一组织的其他成员共享的可用 ChatGPT 账号，最早关联的优先。
+
+OpenAI 报告某个账号达到套餐用量上限后，该账号暂停使用一小时，之后再次提供；所有者账号的
+这一小时一过，对话就会回到该账号。达到上限的那次回复保持失败，不会被重放。回复运行期间不会
+更换账号：回复运行时发送的输入、回复期间访问令牌的续期，以及重新连接到正在运行的沙箱，都
+沿用该回复开始时的账号。所有候选账号都在暂停时，输入以 `MODEL_PLAN_USAGE_LIMIT` 被拒绝，
+其 `evidence` 给出所有者的账号以及它暂停到何时。没有任何关联账号的成员不会得到共享账号；
+他们的对话以 `MODEL_ACCOUNT_REQUIRED` 结束。
+
+所有者可以在模型账号页面和 `GET /api/v1/me/model-accounts` 中看到自己账号的状态：`shared`、
+`pool_last_used_at`（账号池最近一次把它交给队友的对话用于一次回复的时间）和
+`usage_limited_until`（已报告的上限让它暂停使用到何时）。成员只能看到其对话所消耗的共享
+账号的 `account_id`，看不到所有者的姓名、邮箱或令牌；与任何账号一样，令牌保留在服务端。
+停止共享从每个对话的下一次回复起生效；已经在运行的回复保留它已有的访问令牌，此后该令牌
+不再续期。
+
+共享消耗的是每位成员自己的登录，并且只在账号所有者选择加入之后。运营者要为其成员共享的
+ChatGPT 套餐的条款负责。
+
+AstraBox 从 Codex 对失败轮次的报告中读取用量上限。Codex 0.171 不会传递 OpenAI 的代码
+`subscription_sharing_usage_limit_exceeded`：对于来自模型 API、它不认识的任何 HTTP 429，它
+都报告为 `codexErrorInfo` `{"responseTooManyFailedAttempts": {"httpStatusCode": 429}}`。
+AstraBox 把这种报告以及 Codex 自己的 `usageLimitExceeded` 都算作套餐用量上限。在 ChatGPT
+套餐 RuntimeProfile 上，OpenAI 只为套餐用量上限记录了 HTTP 429；它发送的任何其他 429 也会
+让账号暂停使用一小时。
+
+## 使用你自己的 Anthropic API key {#anthropic-api-key}
+
+用户可以把自己的 Anthropic API key 保存为其模型账号之一。在 `endpoint_provider` 为
+`anthropic_api_key` 的 RuntimeProfile 上，Claude Code 对话用对话所有者的 key 把模型请求
+发送到 Anthropic 的 API，Anthropic 向该 key 所属的组织计费。请求不经过模型网关，因此网关
+不会为这些对话记录花费。Anthropic 关于在托管产品中使用 Claude Code 的条款要求每位最终用户
+用自己的 key 或套餐认证；这里提供的是 API key 方式。
+
+在管理台的**模型账号**页面上、用 `astrabox model-account add anthropic`，或用以下请求添加
+key：
+
+```http
+POST /api/v1/me/model-accounts/anthropic
+Content-Type: application/json
+
+{"api_key": "sk-ant-…", "label": "Personal key"}
+```
+
+AstraBox 服务端用这个 key 读取 Anthropic 的模型列表来检查它
+（`GET https://api.anthropic.com/v1/models`，key 放在 `x-api-key` 中），只有 Anthropic 接受
+时才保存；被拒绝的 key 以 `MODEL_ACCOUNT_API_KEY_REJECTED` 失败，不保存任何内容。服务端必须
+能访问 `https://api.anthropic.com`。key 保存在密钥存储中，之后任何响应或页面都不会再显示它。
+请使用属于某个 Anthropic workspace 的 key：对于不限定在某个 workspace 的 key，Anthropic 要求
+请求带 `anthropic-workspace-id` 请求头，而 AstraBox 不发送这个请求头。
+
+- **多个 key。** 用户可以保存多个 key；第一个是其默认 Anthropic API key，与默认 ChatGPT 账号
+  相互独立。key 不能共享到[团队账号池](#share-accounts-with-the-team)：对话只消耗其所有者的
+  key，不消耗其他任何人的。
+- **替换 key**：用 `PATCH /api/v1/me/model-accounts/{account_id}` 加 `{"api_key": "…"}`，或用
+  `astrabox model-account add anthropic --account <account_id>`。新 key 以同样的方式检查。
+  正在运行的对话从下一次回复起发送新 key。
+- **移除 key**：用 `DELETE /api/v1/me/model-accounts/{account_id}`，或在模型账号页面上移除。
+  AstraBox 删除它保存的副本；它无法在 Anthropic 撤销这个 key，因此需要让 key 在所有地方失效
+  时，请在 Claude Console 中撤销它。
+
+### 在它上面运行 Claude Code 对话
+
+- 该 RuntimeProfile 的 `engine_kind` 必须是 `claude_code`，`sandbox_tenancy` 必须是
+  `conversation`，并且部署必须保持受保护凭证传递开启。使用它的 Agent 的
+  `prepared_capacity` 必须为 0。
+- Agent 的模型是该 key 可以使用的模型，例如 `claude-sonnet-4-5`。在这样的 RuntimeProfile
+  上，Agent 表单提供所选 key 的模型（通过 `GET /api/v1/me/model-accounts/{account_id}/models`
+  从 Anthropic 读取，`default?vendor=anthropic_api_key` 指你的默认 key），并在模型旁边提供
+  Anthropic API key 字段。
+- 由对话所有者付费。没有 key 的人发起的对话以 `MODEL_ACCOUNT_REQUIRED` 结束。Agent 可以在
+  `model_account_id` 中指定其创建者的某个 key；此后创建者与它的对话使用该 key，其他人的对话
+  使用他们自己的默认 key。
+- 沙箱在 `ANTHROPIC_API_KEY` 中只有占位符，Claude Code 与它自己的默认端点
+  `https://api.anthropic.com` 通信，不设置 `ANTHROPIC_BASE_URL`。出站边界只在发往
+  `api.anthropic.com` 的 `/v1/` 下的 `GET` 和 `POST` 请求中用 key 替换占位符，其他地方都不
+  替换。Claude Code 运行的命令会继承这个占位符，因此它们向 Anthropic API 发出的请求同样会
+  消耗这个 key。
+- key 达到其速率或花费上限时，回复以 Anthropic 的错误失败；不会切换到其他 key 或网关。
+- 对话标题仍然通过部署的模型网关生成。
+
 ## 验证连接
 
 开放 Agent 给用户使用前：
