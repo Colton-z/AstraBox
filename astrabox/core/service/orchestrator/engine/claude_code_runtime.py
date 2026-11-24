@@ -503,12 +503,13 @@ async def activate_runtime(context: EngineStartupContext) -> SessionRuntime:
             )
             # A start that claimed nothing is this seat's setup: the runner
             # admits the prepare inside configure only against this file.
-            await deliver_in_box_service_token(
-                context.sandbox,
-                context.runtime_identity,
-                file_name=RUNNER_TOKEN_FILE_NAME,
-                token=activation_token,
-            )
+            with startup_stage(context.session_id, "runner_token_delivery"):
+                await deliver_in_box_service_token(
+                    context.sandbox,
+                    context.runtime_identity,
+                    file_name=RUNNER_TOKEN_FILE_NAME,
+                    token=activation_token,
+                )
             engine_client = await _connect_runner_engine_client(
                 runner_endpoint,
                 activation_token=activation_token,

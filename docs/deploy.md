@@ -1221,6 +1221,36 @@ restarted on the same host resumes replenishing at once; when a replica stops
 for good, another takes over replenishment within about two and a half minutes,
 while conversations keep taking the sandboxes already prepared.
 
+### Time a conversation's startup {#time-a-conversations-startup}
+
+The platform and the Claude Code runner log one line for each startup phase
+of a new conversation, on success and on failure:
+
+```text
+conversation_startup session_id=<id> stage=<phase> outcome=ok|failed duration_ms=<ms> at_unix_ms=<ms>
+```
+
+The line carries only the Session id, the phase, its outcome and timings;
+`at_unix_ms` is when the phase ended. The platform's phases are:
+
+| Phase | What it times |
+|---|---|
+| `agent_start_to_session_insert`, `session_create_record`, `session_insert` | Admitting the Agent and recording the Session |
+| `runtime_generation_check`, `client_pool_record`, `client_pool_ensure` | Taking prepared capacity |
+| `runner_token_delivery`, `runner_connect` | Writing the runner's activation file and opening its connection |
+| `runner_configure_ack`, `runner_cold_prepare_ack`, `runner_cold_reconnect` | Starting the Claude Code process in a sandbox that holds none |
+| `runner_activate_ack`, `runner_attach_ack` | Binding a prepared or running process to the Session |
+| `runtime_client_initialize` | Reading the engine's manifest |
+| `sandbox_expiry_read`, `runtime_subject_ready` | Reading the sandbox lease and publishing a shared runtime's readiness |
+| `startup_progress_drain`, `session_ready_publish` | Writing the last startup progress and `READY` |
+| `runtime_observation` | Reading the engine's optional slash commands, Skills and versions after `READY` |
+| `reader_ensure_runtime`, `reader_local_lookup`, `reader_remote_attach` | A reader taking the runtime on the starting replica, or attaching from another |
+
+The runner, inside the sandbox, logs `native_prepare` (starting the Claude Code
+process), `native_resume`, `native_environment`, `native_permission` and
+`native_mcp_activate` with the same Session id. Phases can nest: compare a
+phase with the phases inside its call, not with the sum of every line.
+
 ## Check health and sandbox recovery
 
 AstraBox exposes separate liveness and readiness endpoints:

@@ -368,9 +368,10 @@ class SessionStartup:
                     sandbox_id,
                 )
         try:
-            with startup_stage(session_id, "runtime_subject_ready"):
+            with startup_stage(session_id, "sandbox_expiry_read"):
                 real_expires_at = await self._runtime_manager.get_sandbox_expires_at(sandbox_id)
-                expires_at = real_expires_at.isoformat() if real_expires_at is not None else None
+            expires_at = real_expires_at.isoformat() if real_expires_at is not None else None
+            with startup_stage(session_id, "runtime_subject_ready"):
                 await self._runtime_subjects.publish_runtime_ready(
                     session=target.session,
                     template=template,
