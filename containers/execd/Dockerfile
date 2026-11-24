@@ -17,20 +17,26 @@ RUN --mount=type=bind,from=execd-source,source=/source.tar.gz,target=/tmp/source
 COPY --chmod=0644 containers/execd/stream-upload.patch /tmp/stream-upload.patch
 COPY --chmod=0644 containers/execd/pty-refusal-frames.patch /tmp/pty-refusal-frames.patch
 COPY --chmod=0644 containers/execd/access-token.patch /tmp/access-token.patch
-RUN git apply --check --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch /tmp/access-token.patch \
-    && git apply --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch /tmp/access-token.patch
+COPY --chmod=0644 containers/execd/workload-interrupt.patch /tmp/workload-interrupt.patch
+RUN git apply --check --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch /tmp/access-token.patch /tmp/workload-interrupt.patch \
+    && git apply --unidiff-zero /tmp/stream-upload.patch /tmp/pty-refusal-frames.patch /tmp/access-token.patch /tmp/workload-interrupt.patch
 WORKDIR /source/components/execd
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false \
-    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames.access-token" \
+    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames.access-token.workload-interrupt" \
     -o /build/execd ./main.go
 RUN go run github.com/cilium/ebpf/cmd/bpf2go@v0.16.0 \
     -cc clang -no-strip -cflags "-Ipkg/ebpf/prog" -target "${TARGETARCH}" \
     -go-package ebpf -output-dir pkg/ebpf audit pkg/ebpf/prog/audit.bpf.c
 RUN CGO_ENABLED=0 go build -tags ebpf -trimpath -buildvcs=false \
-    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames.access-token" \
+    -ldflags="-buildid= -B none -X github.com/alibaba/opensandbox/internal/version.Version=1.2.1+astrabox.stream-upload.refusal-frames.access-token.workload-interrupt" \
     -o /build/execd-ebpf ./main.go
+# The supplier's flags; glibc's static libc stands in for its musl.
+RUN gcc -Os -static -s -Wall -Wextra -Werror \
+    -o /build/opensandbox-session-gate native/session-gate.c
 
 FROM ${UPSTREAM_EXECD_IMAGE}
 COPY --from=builder --chmod=0755 /build/execd /execd
 COPY --from=builder --chmod=0755 /build/execd-ebpf /execd-ebpf
+COPY --from=builder --chmod=0755 /build/opensandbox-session-gate /usr/local/libexec/opensandbox-session-gate
+COPY --from=builder --chmod=0755 /build/opensandbox-session-gate /opt/opensandbox/opensandbox-session-gate
 COPY --from=builder --chmod=0644 /source/LICENSE /usr/share/doc/opensandbox/LICENSE

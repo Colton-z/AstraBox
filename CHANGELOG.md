@@ -37,6 +37,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - Prepared Claude Code conversations resolve Plugin MCP policy before the engine starts, so each conversation sees only its owner's materials.
 - Pi conversations that share a sandbox reach their own Pi runtime.
 - On Kubernetes in gateway mode, commands and isolated-session runs are no longer cut off intermittently, which ended the session and failed conversation starts. AstraBox publishes `astrabox-ingress`, the OpenSandbox 1.2.1 gateway that keeps a request's body readable while it streams the answer. [Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
+- In a shared sandbox, interrupting a running command, or losing the connection while it runs, no longer ends the conversation's isolated session: AstraBox's execd now interrupts only the session's shell and the command it runs. [Execd](https://github.com/colton-z/astrabox/blob/main/containers/execd/README.md)
 - The DeepSeek Harness web profile applies the Assistant's model to both entry points and keeps its router out of ordinary new chats.
 - The console is sent Brotli- or gzip-compressed, and an Assistant page stays loaded while you use another page.
 - A console page whose scripts fail to load reloads itself, at most five times; a missing `/assets/` file is a 404. [Upgrading replicas](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
@@ -80,6 +81,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - 预备的 Claude Code 对话在引擎启动前确定插件 MCP 策略，每个对话只看到其所有者的资料。
 - 共享沙箱的 Pi 对话能连到各自的 Pi 运行时。
 - Kubernetes 网关模式下，命令和隔离会话的执行不再被间歇截断（截断会结束会话、导致对话启动失败）。AstraBox 发布 `astrabox-ingress`：在 OpenSandbox 1.2.1 Gateway 基础上，流式返回期间请求体保持可读。[Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
+- 共享沙箱中，中断正在运行的命令或在运行期间断开连接，不再结束该对话的隔离会话：AstraBox 的 execd 只中断会话的 shell 及其正在运行的命令。[Execd](https://github.com/colton-z/astrabox/blob/main/containers/execd/README.md)
 - DeepSeek Harness Web 配置让两个入口都使用 Assistant 的模型，并让其路由器不进入普通新对话。
 - 控制台资源以 Brotli 或 gzip 压缩发送；切到其他页面时 Assistant 页面保持加载。
 - 控制台页面脚本加载失败时自动重新加载，最多五次；缺失的 `/assets/` 文件返回 404。[升级副本](https://www.astrabox.ai/docs/deploy-distributed#upgrade-the-replicas)
