@@ -26919,6 +26919,137 @@
         "x-required-api-scope": "astrabox:admin"
       }
     },
+    "/api/v1/admin/sessions/{session_id}/child-runs": {
+      "get": {
+        "operationId": "admin_session_child_runs_api_v1_admin_sessions__session_id__child_runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionChildRunPage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session Child Runs",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
+    "/api/v1/admin/sessions/{session_id}/child-runs/{child_run_id}/messages": {
+      "get": {
+        "operationId": "admin_session_child_run_messages_api_v1_admin_sessions__session_id__child_runs__child_run_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "child_run_id",
+            "required": true,
+            "schema": {
+              "title": "Child Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_ChildRunMessagePage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session Child Run Messages",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
     "/api/v1/admin/sessions/{session_id}/detail": {
       "get": {
         "operationId": "admin_session_detail_api_v1_admin_sessions__session_id__detail_get",
@@ -27036,6 +27167,176 @@
           }
         ],
         "summary": "Admin Evict Runtime",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
+    "/api/v1/admin/sessions/{session_id}/history-blocks": {
+      "get": {
+        "description": "Read the conversation of a managed session, starting with its newest messages.",
+        "operationId": "admin_session_history_blocks_api_v1_admin_sessions__session_id__history_blocks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 50,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionHistoryBlockPage_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session History Blocks",
+        "tags": [
+          "Admin"
+        ],
+        "x-required-api-scope": "astrabox:admin"
+      }
+    },
+    "/api/v1/admin/sessions/{session_id}/history-blocks/{block_id}": {
+      "get": {
+        "description": "Read a managed session's folded process at the cursor it was shown with.",
+        "operationId": "admin_session_history_block_details_api_v1_admin_sessions__session_id__history_blocks__block_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "block_id",
+            "required": true,
+            "schema": {
+              "title": "Block Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": true,
+            "schema": {
+              "title": "Cursor",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiEnvelope_SessionHistoryBlockDetails_"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed (INVALID_REQUEST)."
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          },
+          {
+            "BrowserSession": []
+          }
+        ],
+        "summary": "Admin Session History Block Details",
         "tags": [
           "Admin"
         ],

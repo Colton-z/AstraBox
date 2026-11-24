@@ -18,7 +18,7 @@ import tarfile
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Request
+from fastapi import APIRouter, Body, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -31,7 +31,13 @@ from astrabox.api.documentation import (
 )
 from astrabox.api.routes._shared import _resolve_user, _svc
 from astrabox.api.routes.response_envelope import ApiEnvelope
-from astrabox.api.routes.sessions import SessionRecord
+from astrabox.api.routes.sessions import (
+    ChildRunMessagePage,
+    SessionChildRunPage,
+    SessionHistoryBlockDetails,
+    SessionHistoryBlockPage,
+    SessionRecord,
+)
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
@@ -724,6 +730,52 @@ async def admin_session_detail(session_id: str, request: Request):
     user = await _resolve_user(request)
     detail = await _svc().admin_get_session_detail(user, session_id)
     return success_response(detail)
+
+
+@router.get(
+    "/api/v1/admin/sessions/{session_id}/history-blocks",
+    response_model=ApiEnvelope[SessionHistoryBlockPage],
+    response_model_exclude_unset=True,
+)
+async def admin_session_history_blocks(
+    session_id: str, request: Request, before: str | None = None, limit: int = Query(default=50, ge=1, le=50),
+):
+    """Read the conversation of a managed session, starting with its newest messages."""
+    user = await _resolve_user(request)
+    result = await _svc().admin_get_history_blocks(user, session_id, before=before, limit=limit)
+    return success_response(result)
+
+
+@router.get(
+    "/api/v1/admin/sessions/{session_id}/history-blocks/{block_id}",
+    response_model=ApiEnvelope[SessionHistoryBlockDetails],
+    response_model_exclude_unset=True,
+)
+async def admin_session_history_block_details(session_id: str, block_id: str, cursor: str, request: Request):
+    """Read a managed session's folded process at the cursor it was shown with."""
+    user = await _resolve_user(request)
+    result = await _svc().admin_get_history_block_details(user, session_id, block_id, cursor=cursor)
+    return success_response(result)
+
+
+@router.get(
+    "/api/v1/admin/sessions/{session_id}/child-runs",
+    response_model=ApiEnvelope[SessionChildRunPage],
+    response_model_exclude_unset=True,
+)
+async def admin_session_child_runs(session_id: str, request: Request):
+    user = await _resolve_user(request)
+    return success_response(await _svc().admin_list_child_runs(user, session_id))
+
+
+@router.get(
+    "/api/v1/admin/sessions/{session_id}/child-runs/{child_run_id}/messages",
+    response_model=ApiEnvelope[ChildRunMessagePage],
+    response_model_exclude_unset=True,
+)
+async def admin_session_child_run_messages(session_id: str, child_run_id: str, request: Request):
+    user = await _resolve_user(request)
+    return success_response(await _svc().admin_get_child_run_messages(user, session_id, child_run_id))
 
 
 @router.get(

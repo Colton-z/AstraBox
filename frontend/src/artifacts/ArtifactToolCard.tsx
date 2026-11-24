@@ -33,7 +33,7 @@ export function ArtifactToolCard({
           {t('misc:artifacts.open')}
         </Button>
       ) : (
-        !navigation.sharedTranscript && (
+        !navigation.readOnlyTranscript && (
           <Button
             size="sm"
             variant="outline"

@@ -18,7 +18,7 @@ import { Button } from '@/components/ui/button';
  */
 export function ConnectionRequestCard({ connectorId, name }: { connectorId: string; name: string }) {
   const { t } = useTranslation();
-  const { sharedTranscript } = useArtifactNavigation();
+  const { readOnlyTranscript } = useArtifactNavigation();
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -34,12 +34,12 @@ export function ConnectionRequestCard({ connectorId, name }: { connectorId: stri
   }, [connectorId]);
 
   useEffect(() => {
-    if (sharedTranscript) return undefined;
+    if (readOnlyTranscript) return undefined;
     void read();
     const onFocus = () => void read();
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
-  }, [read, sharedTranscript]);
+  }, [read, readOnlyTranscript]);
 
   const connect = async () => {
     // Opened in the click itself: a tab opened after an await is a pop-up.
@@ -71,7 +71,7 @@ export function ConnectionRequestCard({ connectorId, name }: { connectorId: stri
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="truncate text-sm font-medium">{t('misc:connections.card_title', { name })}</span>
         <span className="text-xs text-muted-foreground">
-          {sharedTranscript
+          {readOnlyTranscript
             ? t('misc:connections.card_shared', { name })
             : connected
               ? t('misc:connections.connected_now', { name })
@@ -81,10 +81,10 @@ export function ConnectionRequestCard({ connectorId, name }: { connectorId: stri
         </span>
         {error && <ErrorNote className="text-xs">{error}</ErrorNote>}
       </div>
-      {!sharedTranscript && connected && (
+      {!readOnlyTranscript && connected && (
         <StatusPill tone="done">{t('manage:connectors.status_connected')}</StatusPill>
       )}
-      {!sharedTranscript && status !== null && !connected && status !== 'unavailable' && (
+      {!readOnlyTranscript && status !== null && !connected && status !== 'unavailable' && (
         <Button size="sm" disabled={busy} onClick={() => void connect()}>
           {busy
             ? t('manage:connectors.connecting')

@@ -35,6 +35,7 @@ from astrabox.core.service.orchestrator.agent_access import (
 )
 from astrabox.common.utils.settings import load_astrabox_settings
 from astrabox.common.utils.time_utils import parse_iso, utcnow_iso
+from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import SessionState
 from astrabox.core.service.orchestrator.admin_error_capture import list_runtime_errors
 from astrabox.core.service.orchestrator.engine.capabilities import (
@@ -655,6 +656,13 @@ class AdminService:
             "limit": safe_limit,
         }
 
+    async def get_manageable_session(self, user: UserContext, session_id: str) -> dict[str, Any]:
+        session = await self._sessions_repo.get_session(session_id)
+        if session is None:
+            raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
+        await self._assert_can_manage_session(user, session)
+        return session
+
     async def admin_get_session_detail(self, user, session_id: str) -> dict[str, Any]:
         """One session for an operator, carrying both answers to "what state?".
 
@@ -672,10 +680,7 @@ class AdminService:
         difference readable; the second is computed by the same function the
         user-facing reads use.
         """
-        session = await self._sessions_repo.get_session(session_id)
-        if session is None:
-            raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
-        await self._assert_can_manage_session(user, session)
+        session = await self.get_manageable_session(user, session_id)
         clean = self._sanitize_session(session)
         view = await self._session_runtime.runtime_view(session)
         clean["conversation_state"] = view["state"]
@@ -778,10 +783,7 @@ class AdminService:
         left out. Without ``response_id`` the trace opens on the newest
         response still running, else the newest on the page.
         """
-        session = await self._sessions_repo.get_session(session_id)
-        if session is None:
-            raise APIError(code="SESSION_NOT_FOUND", message="session not found", status_code=404)
-        await self._assert_can_manage_session(user, session)
+        session = await self.get_manageable_session(user, session_id)
 
         safe_message_limit = max(1, min(int(message_limit), 100))
         safe_part_limit = max(1, min(int(part_limit), 1000))

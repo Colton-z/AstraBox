@@ -25,7 +25,7 @@ export default function SharePage() {
   const access = useMemo(() => sharedTranscriptAccess(token), [token]);
   return (
     <TranscriptAccessContext.Provider value={access}>
-      <ArtifactNavigationProvider sharedTranscript><SharedConversation key={token} token={token} /></ArtifactNavigationProvider>
+      <ArtifactNavigationProvider readOnlyTranscript><SharedConversation key={token} token={token} /></ArtifactNavigationProvider>
     </TranscriptAccessContext.Provider>
   );
 }

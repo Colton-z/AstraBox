@@ -93,10 +93,11 @@ test('an administrator of three Agents can read and batch export only their conv
     await page.getByRole('row').filter({ hasText: agents[0].name }).click();
     await expect(page).toHaveURL(new RegExp(`/manage/sessions/${sessionIds[0]}$`));
     const content = entries[0].message.content[0].text;
-    await expect(page.getByText(content, { exact: true }).last()).toBeVisible();
+    await expect(page.getByRole('log').getByText(content, { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Technical events', exact: true }).click();
     await page.getByRole('button', { name: new RegExp(content) }).last().click();
     await expect(page.locator('pre').filter({ hasText: content }).last()).toBeVisible();
-    for (const suffix of ['detail', 'trace', 'transcript']) {
+    for (const suffix of ['detail', 'trace', 'transcript', 'history-blocks', 'child-runs']) {
       expect((await context.request.get(apiPath(`/admin/sessions/${sessionIds[0]}/${suffix}`))).status()).toBe(200);
       expect((await context.request.get(apiPath(`/admin/sessions/${sessionIds[3]}/${suffix}`))).status()).toBe(403);
     }
@@ -113,6 +114,7 @@ test('an administrator of three Agents can read and batch export only their conv
     const revoked = await context.request.get(apiPath('/admin/sessions/all'));
     expect((await revoked.json()).data.pagination.total_items).toBe(2);
     expect((await context.request.get(apiPath(`/admin/sessions/${sessionIds[0]}/detail`))).status()).toBe(403);
+    expect((await context.request.get(apiPath(`/admin/sessions/${sessionIds[0]}/history-blocks`))).status()).toBe(403);
     const remaining = await context.request.get(apiPath('/admin/sessions/transcripts'));
     expect(tar(await remaining.body(), ['-tzf', '-']).trim().split('\n').sort())
       .toEqual(sessionIds.slice(1, 3).map((id) => `-workspace/${id}.jsonl`).sort());

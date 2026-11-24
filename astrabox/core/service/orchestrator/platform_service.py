@@ -1439,6 +1439,28 @@ class AgentPlatformService:
     async def admin_get_session_detail(self, user: UserContext, session_id: str) -> dict[str, Any]:
         return await self._admin_service.admin_get_session_detail(user, session_id)
 
+    async def admin_get_history_blocks(
+        self, user: UserContext, session_id: str, *, before: str | None, limit: int
+    ) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.history_blocks_for(session_id, before=before, limit=limit, shared=False)
+
+    async def admin_get_history_block_details(
+        self, user: UserContext, session_id: str, block_id: str, *, cursor: str
+    ) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.history_block_details_for(session_id, block_id, cursor=cursor, shared=False)
+
+    async def admin_list_child_runs(self, user: UserContext, session_id: str) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.child_runs_for(session_id)
+
+    async def admin_get_child_run_messages(
+        self, user: UserContext, session_id: str, child_run_id: str
+    ) -> dict[str, Any]:
+        await self._admin_service.get_manageable_session(user, session_id)
+        return await self.session_reads.child_run_messages_for(session_id, child_run_id)
+
     async def admin_get_session_trace(
         self,
         user: UserContext,
