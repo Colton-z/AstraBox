@@ -1005,6 +1005,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/sessions/{session_id}/child-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin Session Child Runs */
+        get: operations["admin_session_child_runs_api_v1_admin_sessions__session_id__child_runs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions/{session_id}/child-runs/{child_run_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin Session Child Run Messages */
+        get: operations["admin_session_child_run_messages_api_v1_admin_sessions__session_id__child_runs__child_run_id__messages_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/sessions/{session_id}/detail": {
         parameters: {
             query?: never;
@@ -1036,6 +1070,46 @@ export interface paths {
          * @description Evict cached runtime from memory (simulates request hitting a different machine).
          */
         post: operations["admin_evict_runtime_api_v1_admin_sessions__session_id__evict_runtime_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions/{session_id}/history-blocks": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin Session History Blocks
+         * @description Read the conversation of a managed session, starting with its newest messages.
+         */
+        get: operations["admin_session_history_blocks_api_v1_admin_sessions__session_id__history_blocks_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions/{session_id}/history-blocks/{block_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin Session History Block Details
+         * @description Read a managed session's folded process at the cursor it was shown with.
+         */
+        get: operations["admin_session_history_block_details_api_v1_admin_sessions__session_id__history_blocks__block_id__get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -15878,6 +15952,87 @@ export interface operations {
             };
         };
     };
+    admin_session_child_runs_api_v1_admin_sessions__session_id__child_runs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionChildRunPage_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_session_child_run_messages_api_v1_admin_sessions__session_id__child_runs__child_run_id__messages_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                child_run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_ChildRunMessagePage_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     admin_session_detail_api_v1_admin_sessions__session_id__detail_get: {
         parameters: {
             query?: never;
@@ -15936,6 +16091,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiEnvelope_AdminEvictResult_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_session_history_blocks_api_v1_admin_sessions__session_id__history_blocks_get: {
+        parameters: {
+            query?: {
+                before?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionHistoryBlockPage_"];
+                };
+            };
+            /** @description Request validation failed (INVALID_REQUEST). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request refused or execution failed. Inspect code and error for the reason; data carries operation-specific evidence. Transport status is authoritative. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    admin_session_history_block_details_api_v1_admin_sessions__session_id__history_blocks__block_id__get: {
+        parameters: {
+            query: {
+                cursor: string;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+                block_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiEnvelope_SessionHistoryBlockDetails_"];
                 };
             };
             /** @description Request validation failed (INVALID_REQUEST). */

@@ -585,8 +585,9 @@
     "section_overview": "Overview",
     "title": "Sessions",
     "trace_no_messages": "No messages yet",
+    "conversation_section": "Conversation",
+    "subagents": "Subagents",
     "trace_section": "Technical events",
-    "trace_unavailable": "No trace for this session — its sandbox may be gone.",
     "response_option": "{{at}} · {{outcome}}",
     "response_placeholder": "Select a response"
   },

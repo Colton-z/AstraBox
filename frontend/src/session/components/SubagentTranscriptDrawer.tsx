@@ -27,6 +27,7 @@ interface SubagentTranscriptDrawerProps {
   childRunId: string | null;
   entry: SubagentEntry | undefined;
   onClose: () => void;
+  readMessages?: typeof getSessionChildRunMessages;
   onStopChildRun?: (childRunId: string) => Promise<void>;
 }
 
@@ -36,6 +37,7 @@ export function SubagentTranscriptDrawer({
   childRunId,
   entry,
   onClose,
+  readMessages = getSessionChildRunMessages,
   onStopChildRun,
 }: SubagentTranscriptDrawerProps) {
   const { t } = useTranslation();
@@ -53,7 +55,7 @@ export function SubagentTranscriptDrawer({
     if (!selectedChildRunId) return;
     const generation = ++requestGeneration.current;
     try {
-      const page = await getSessionChildRunMessages(sessionId, selectedChildRunId);
+      const page = await readMessages(sessionId, selectedChildRunId);
       if (generation !== requestGeneration.current) return;
       setTranscript(page.messages);
       loadedTranscript.current = true;
@@ -64,7 +66,7 @@ export function SubagentTranscriptDrawer({
         setTranscriptError(error instanceof Error ? error.message : String(error));
       }
     }
-  }, [childRunId, sessionId]);
+  }, [childRunId, readMessages, sessionId]);
 
   useEffect(() => {
     requestGeneration.current += 1;
@@ -146,7 +148,7 @@ export function SubagentTranscriptDrawer({
     <div
       data-testid="subagent-transcript-drawer"
       className={cn(
-        'absolute inset-y-0 right-0 z-30 flex w-1/2 min-w-[20rem] flex-col border-l border-border bg-background shadow-xl',
+        'absolute inset-y-0 right-0 z-30 flex w-1/2 min-w-[min(20rem,100%)] flex-col border-l border-border bg-background shadow-xl',
         'animate-in slide-in-from-right',
       )}
       role="dialog"

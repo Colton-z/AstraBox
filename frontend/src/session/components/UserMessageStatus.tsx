@@ -41,13 +41,12 @@ export function UserMessageStatus({ message, includedInResponse }: { message: UI
       {t('chat:message.included_in_response')}
     </p>
   ) : null;
-  if (!state) return included;
-  const unsent = state.unsent.get(message.id);
+  const unsent = state?.unsent.get(message.id);
   if (unsent?.status === 'sending') {
     if (pendingFor === message.id) return included;
     return <p role="status" className="text-xs text-teal-fg">{t('misc:composer.queue_sending')}</p>;
   }
-  if (unsent?.status === 'failed') {
+  if (state && unsent?.status === 'failed') {
     return (
       <div className="flex w-full max-w-[85%] flex-col gap-2" data-testid="user-message-failure">
         {unsent.userAction
@@ -89,21 +88,23 @@ export function UserMessageStatus({ message, includedInResponse }: { message: UI
       >
         {cancelled
           ? <p role="status" className="text-xs text-muted-foreground">{t('misc:composer.cancelled')}</p>
-          : failure.user_action
+          : state && failure.user_action
             ? <UserActionNotice action={failure.user_action} />
             : <ErrorNote>{failure.message || t('misc:composer.queue_failed')}</ErrorNote>}
-        <div className="flex items-center justify-end">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={!state.canSend}
-            onClick={() => state.sendAgain(message)}
-            title={state.canSend ? undefined : t('misc:composer.retry_disabled')}
-          >
-            <RefreshCw />
-            <span>{t('misc:composer.send_again')}</span>
-          </Button>
-        </div>
+        {state && (
+          <div className="flex items-center justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={!state.canSend}
+              onClick={() => state.sendAgain(message)}
+              title={state.canSend ? undefined : t('misc:composer.retry_disabled')}
+            >
+              <RefreshCw />
+              <span>{t('misc:composer.send_again')}</span>
+            </Button>
+          </div>
+        )}
       </div>
     );
   }
@@ -111,7 +112,7 @@ export function UserMessageStatus({ message, includedInResponse }: { message: UI
   // holds arrives a read after the receipt, and the receipt already says so.
   const input = inputMetadata(message);
   const held = Boolean(input.input_id)
-    && (state.heldInputIds.has(String(input.input_id)) || input.state === 'pending');
+    && (state?.heldInputIds.has(String(input.input_id)) || input.state === 'pending');
   if (!included && held && pendingFor !== message.id) {
     return <p role="status" className="text-xs text-muted-foreground">{t('misc:composer.queue_waiting')}</p>;
   }

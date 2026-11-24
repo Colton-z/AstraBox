@@ -2,7 +2,7 @@ import { createContext, useContext, type ReactNode } from 'react';
 interface ArtifactNavigation {
   open?: (id: string) => void;
   setComposer?: (text: string) => void;
-  sharedTranscript?: boolean;
+  readOnlyTranscript?: boolean;
 }
 const Context = createContext<ArtifactNavigation>({});
 export function ArtifactNavigationProvider({

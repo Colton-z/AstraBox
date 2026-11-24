@@ -308,6 +308,7 @@ test('a turn closes with its meter, stops when asked, and reads back the same fr
 
   // ── 5. the console's record of the same session: Recent events ────────────
   await page.goto(appPath(`/manage/sessions/${sessionId}`));
+  await page.getByRole('button', { name: 'Technical events', exact: true }).click();
   const technical = card(page, 'Technical events');
   await expect(
     technical,
