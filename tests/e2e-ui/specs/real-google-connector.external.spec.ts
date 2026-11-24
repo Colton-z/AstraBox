@@ -248,7 +248,7 @@ test.describe.serial('Gmail connector with a real Google account', () => {
     const card = transcript.locator('[data-tool-call-id]').filter({ hasText: /gmail.*search/i }).first();
     await expect(card, 'the person sees the Gmail call as a tool card').toBeVisible();
     await card.locator('[data-slot="collapsible-trigger"]').first().click();
-    await expect(card.locator('[data-slot="collapsible-content"]')).toContainText(state.messageId);
+    await expect(card.locator('[data-slot="collapsible-panel"]')).toContainText(state.messageId);
     await closePageAfterAssertions(page);
   });
 

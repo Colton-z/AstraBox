@@ -41,7 +41,7 @@ async function readCompletedCard(page: Page): Promise<string> {
   await expect(header.locator('[data-slot="badge"]')).toHaveText(/^(Done|已完成)$/);
   const name = await header.getAttribute('aria-label');
   expect(name, 'the tool header must name the supplier tool').toBeTruthy();
-  const panel = cards.locator('[data-slot="collapsible-content"]');
+  const panel = cards.locator('[data-slot="collapsible-panel"]');
   if (!(await panel.isVisible())) await header.click();
   await expect(panel).toBeVisible();
   const result = panel.getByRole('heading', { name: 'Result', exact: true }).locator('..');
