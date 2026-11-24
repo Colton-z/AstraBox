@@ -539,6 +539,9 @@ for _code, _status, _category, _retryable, _owner in (
     ("BACKGROUND_TASK_CONTROL_UNAVAILABLE", 409, "state", False, "session"),
     # The conversation's Agent was deleted; its history stays readable.
     ("AGENT_DELETED", 409, "state", False, "session"),
+    # The Agent changed between admitting a new conversation and recording it;
+    # starting it again admits the current version.
+    ("AGENT_CHANGED", 409, "state", True, "session"),
     ("SESSION_READ_ONLY", 409, "state", False, "session"),
     # An engine with a permission-mode vocabulary but no product default needs
     # the caller to choose one explicitly.
