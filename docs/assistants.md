@@ -189,16 +189,23 @@ by those sources: update the source to change what the configuration supplies.
 
 ## Assistants that work from a panel: dsh-superagent {#panel-runtimes}
 
-Some Agent programs do not hold conversations with their owner.
 [dsh-superagent](https://github.com/deepseek-ai/dsh-superagent-prototype)
 runs on DeepSeek Harness, takes requests from its Sources (a GitHub
 repository, or a ticket or to-do service your own Source plugin reads), turns
-each into a Ticket, and has one of its owner's Agents work it. People talk to it where
-they already work; the owner supervises it in the bundle's own panel. An Assistant on a
-RuntimeProfile with the `dsh_superagent` engine therefore has no
-conversations: opening it shows the panel, on its Superagent page, inside the
-console, and the Assistant keeps running between visits so it can answer
-its Sources.
+each into a Ticket, and has one of its owner's Agents work it. An Assistant on
+a RuntimeProfile with the `dsh_superagent` engine opens the harness's Web
+profile inside the console, starting on the Superagent panel. Use the
+harness's own conversation controls to start a chat, open its history, or
+continue a saved Session. The Assistant keeps running between visits so it
+can answer its Sources.
+
+New browser chats and Superagent Sessions configured to inherit the DSH
+default use the Assistant's model connection. In **DSH default model
+settings**, set a native `reasoningEffort` such as
+`{"reasoningEffort": "xhigh"}` to select an effort the model connection
+offers. Otherwise the default effort comes from the model connection, when
+it describes one. DSH can also keep explicit selections in existing
+Sessions or in Superagent's per-role settings.
 
 The deployment needs:
 
