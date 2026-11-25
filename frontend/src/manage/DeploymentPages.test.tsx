@@ -699,6 +699,43 @@ describe('channel response policy', () => {
     } else expect(screen.queryByText('Stored instruction', { exact: true })).toBeNull();
   });
 
+  it.each(['agent', 'assistant'] as const)(
+    'adds, changes and clears the prompt prefix of an existing %s channel trigger',
+    async (owner) => {
+      channelDeployment(owner);
+      deployment.prompt_prefix = '';
+      renderDetail();
+      const prefix = async () =>
+        (await screen.findByRole('textbox', { name: 'Prompt prefix' })) as HTMLTextAreaElement;
+      const save = async (count: number) => {
+        fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+        await waitFor(() => expect(updateCalls).toHaveLength(count));
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Save' })).toBeNull());
+        return updateCalls[count - 1].patch;
+      };
+
+      fireEvent.change(await prefix(), { target: { value: 'Summarize in three sentences.' } });
+      expect((await save(1)).prompt_prefix).toBe('Summarize in three sentences.');
+      expect((await prefix()).value).toBe('Summarize in three sentences.');
+
+      selectPolicy('mentions');
+      expect(await save(2)).not.toHaveProperty('prompt_prefix');
+      expect((await prefix()).value).toBe('Summarize in three sentences.');
+
+      fireEvent.change(await prefix(), { target: { value: 'List the open items.' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Revert' }));
+      expect((await prefix()).value).toBe('Summarize in three sentences.');
+
+      fireEvent.change(await prefix(), { target: { value: 'List the open items.' } });
+      expect((await save(3)).prompt_prefix).toBe('List the open items.');
+
+      fireEvent.change(await prefix(), { target: { value: '' } });
+      expect((await save(4)).prompt_prefix).toBe('');
+      expect((await prefix()).value).toBe('');
+      expect(deployment.prompt_prefix).toBe('');
+    },
+  );
+
   it('reverts the policy and instruction to the stored values', async () => {
     channelDeployment();
     deployment.attention_policy = 'participated';

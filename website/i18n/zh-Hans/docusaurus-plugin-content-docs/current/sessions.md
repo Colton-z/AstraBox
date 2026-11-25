@@ -245,6 +245,12 @@ curl --silent --show-error --request POST \
 被 Agent 程序或部署的运行准备流程拒绝的消息不会开始回复：事件流会用带有原因的
 `data-input-failed` part 报告它，这条消息也会在 Session 历史中保留它的 `failure`。
 
+首次启动因可重试错误（`retryable: true`，如 `SANDBOX_UNREACHABLE`）失败时，按沙箱丢失处理：
+Session 不会结束，读取时显示 `RECOVERY_REQUIRED` 和 `runtime_unavailable`，等待它的消息交给
+一次替换启动，由它回答。等待的启动以其他原因失败，或那次替换启动也失败时，消息会以该次启动的
+`code` 和 `message` 被拒绝，与 Session 的 `last_error_code` 和 `last_error` 相同。首次启动因
+不可重试的错误失败时，Session 结束为 `TERMINATED`。
+
 ## 读取 Session 事件流
 
 事件流使用 AI SDK UI Message Stream 协议，从你在 `after_seq` 中传入的位置之后开始，

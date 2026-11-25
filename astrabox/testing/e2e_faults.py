@@ -15,6 +15,10 @@ Hook points (see :mod:`astrabox.common.fault_injection`):
 
 - ``transcript_append_5xx`` (context: ``session_id``, ``append_id``,
   ``entry_count``) — consume one temporary append rejection.
+- ``runtime_start_unreachable`` (context: ``session_id``, ``agent_id``) — fail
+  one runtime start with ``SANDBOX_UNREACHABLE`` before it reaches the sandbox
+  provider. The declaration must name the Agent in ``match.agent_id``: a
+  conversation's first start runs before its id is known.
 - ``response_part_read`` (context: ``session_id``, ``frame_type``) — hold the
   session's reader after one matching part, committed, until the declaration
   releases it.
@@ -62,6 +66,7 @@ def e2e_faults_enabled() -> bool:
 def install_e2e_fault_hooks() -> None:
     """Register the file-driven E2E fault handlers at the hook seam."""
     register_fault_hook("transcript_append_5xx", maybe_consume_transcript_append_5xx)
+    register_fault_hook("runtime_start_unreachable", maybe_fail_runtime_start)
     register_fault_barrier("response_part_read", maybe_hold_after_part)
     register_fault_barrier("reader_boundary", maybe_hold_reader_boundary)
     register_fault_barrier("tool_card_lookup", maybe_detach_during_card_lookup)
@@ -305,6 +310,28 @@ def maybe_consume_transcript_append_5xx(
         append_id,
         entry_count,
         path,
+    )
+    return True
+
+
+def maybe_fail_runtime_start(*, session_id: str, agent_id: str) -> bool:
+    """Consume one runtime-start failure for the named Agent when explicitly armed."""
+    if not agent_id:
+        return False
+    path = _consume_counted_fault(
+        "runtime_start_unreachable",
+        session_id=session_id,
+        consumed_value={
+            "fault": "runtime_start_unreachable",
+            "session_id": str(session_id),
+            "agent_id": str(agent_id),
+        },
+        match_context={"agent_id": str(agent_id)},
+    )
+    if path is None:
+        return False
+    logger.warning(
+        "e2e failing runtime start session=%s agent=%s path=%s", session_id, agent_id, path
     )
     return True
 

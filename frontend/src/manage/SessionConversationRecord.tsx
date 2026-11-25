@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSWR from 'swr';
 
@@ -64,6 +64,16 @@ function Conversation({ sessionId, conversationState }: {
   });
   const registry = useSubagentRegistry(childRuns?.child_runs ?? EMPTY_CHILD_RUNS);
   const [selectedChildRunId, setSelectedChildRunId] = useState<string | null>(null);
+  const transcriptFrame = useRef<HTMLDivElement>(null);
+  // The drawer overlays the transcript frame, and this page scrolls as a
+  // whole: the frame can sit partly below the fold, under the child list that
+  // opened it. Bring the whole frame into view, so the drawer reads with its
+  // own scroll alone. Its height, 62dvh but at least 18rem, fits any viewport
+  // taller than 18rem.
+  const openChild = useCallback((childRunId: string) => {
+    setSelectedChildRunId(childRunId);
+    transcriptFrame.current?.scrollIntoView({ block: 'nearest' });
+  }, []);
 
   return (
     <ConsoleCard
@@ -83,7 +93,7 @@ function Conversation({ sessionId, conversationState }: {
                 key={entry.childRunId}
                 entry={entry}
                 selected={entry.childRunId === selectedChildRunId}
-                onSelect={setSelectedChildRunId}
+                onSelect={openChild}
               />
             ))}
           </CollapsibleContent>
@@ -99,8 +109,11 @@ function Conversation({ sessionId, conversationState }: {
       ) : history.messages.length === 0 ? (
         <p className="t-copy text-muted-foreground">{t('misc:share.no_messages')}</p>
       ) : (
-        <SubagentNavigationProvider agents={registry.agents} openSubagent={setSelectedChildRunId}>
-          <div className="relative flex h-[clamp(18rem,62dvh,44rem)] min-w-0 flex-col overflow-hidden rounded-md border bg-background">
+        <SubagentNavigationProvider agents={registry.agents} openSubagent={openChild}>
+          <div
+            ref={transcriptFrame}
+            className="relative flex h-[clamp(18rem,62dvh,44rem)] min-w-0 flex-col overflow-hidden rounded-md border bg-background"
+          >
             <MessageList
               messages={history.messages}
               sessionId={sessionId}

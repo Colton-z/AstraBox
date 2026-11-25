@@ -1,14 +1,97 @@
 --- a/components/ingress/pkg/proxy/proxy.go
 +++ b/components/ingress/pkg/proxy/proxy.go
-@@ -91,0 +92,11 @@
+@@ -27,0 +28 @@
++	"sync/atomic"
+@@ -91,0 +93,11 @@
 +	// AstraBox modification: proxy the request body and the response together.
 +	// The upstream Transport reads r.Body once more after copying it, to see
 +	// its end, and a sandbox can answer before that read. In the HTTP/1
 +	// server's default half-duplex mode, the first response write discards and
 +	// closes r.Body, so that read fails and the Transport closes the upstream
 +	// connection mid-response: a streamed answer is cut and the sandbox sees
-+	// its client disconnect. HTTP/2 is always full duplex and reports
-+	// ErrNotSupported.
++	// its client disconnect. HTTP/2 is always full duplex; only a writer
++	// that is not the server's own reports ErrNotSupported.
 +	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil && !errors.Is(err, http.ErrNotSupported) {
 +		Logger.With(slogger.Field{Key: "error", Value: err.Error()}).Errorf("ingress: enable full duplex")
 +	}
+@@ -93,0 +106,9 @@
++	// AstraBox modification: full duplex also turns off the server's
++	// announcement that it will close the connection because the request body
++	// is unread, so the response writer makes it from what has been read of
++	// the body.
++	if r.Body != nil && r.ContentLength != 0 {
++		body := &requestBody{ReadCloser: r.Body, size: r.ContentLength}
++		r.Body = body
++		sw.requestBody = body
++	}
+@@ -444,0 +466,37 @@
++// maxUnreadRequestBody is net/http's maxPostHandlerReadBytes: after the
++// handler, the server reads at most this much more of a request body to reach
++// its end and reuse the connection, and closes the connection otherwise.
++const maxUnreadRequestBody = 256 << 10
++
++// requestBody counts what is read of a request body. The Transport reads it
++// while the handler writes the response, so the count is atomic.
++type requestBody struct {
++	io.ReadCloser
++	size  int64 // the declared length, or -1 when the body has none
++	read  atomic.Int64
++	ended atomic.Bool
++}
++
++func (b *requestBody) Read(p []byte) (int, error) {
++	n, err := b.ReadCloser.Read(p)
++	b.read.Add(int64(n))
++	if err == io.EOF {
++		b.ended.Store(true)
++	}
++	return n, err
++}
++
++// closesConnection reports whether the server may close the connection after
++// the response because of what is still unread of the body. In half duplex,
++// the server decides this when the response starts and announces it with
++// Connection: close: when maxUnreadRequestBody or more of a declared length
++// is unread, or when reading up to that much of a chunked body does not reach
++// its end. The proxy cannot read ahead in a chunked body, so any unread part
++// of one counts.
++func (b *requestBody) closesConnection() bool {
++	if b.size < 0 {
++		return !b.ended.Load()
++	}
++	return b.size-b.read.Load() >= maxUnreadRequestBody
++}
++
+@@ -448,0 +507,13 @@
++	// requestBody is the body of the request being answered, or nil when it
++	// has none.
++	requestBody *requestBody
++}
++
++// commit records that the response starts with code, and has it announce
++// that the connection closes after it when the request body leaves it so.
++func (w *statusCapturingResponseWriter) commit(code int) {
++	w.statusCode = code
++	w.written = true
++	if code != http.StatusSwitchingProtocols && w.requestBody != nil && w.requestBody.closesConnection() {
++		w.Header().Set("Connection", "close")
++	}
+@@ -456,2 +527 @@
+-		w.statusCode = code
+-		w.written = true
++		w.commit(code)
+@@ -464 +534 @@
+-		w.written = true
++		w.commit(http.StatusOK)
+@@ -468,0 +539,6 @@
++// Unwrap gives http.ResponseController the server's writer, so it can reach
++// the server's response through this one.
++func (w *statusCapturingResponseWriter) Unwrap() http.ResponseWriter {
++	return w.ResponseWriter
++}
++
+@@ -482,0 +559,4 @@
++		// A flush before any write starts a 200 response.
++		if !w.written {
++			w.commit(http.StatusOK)
++		}

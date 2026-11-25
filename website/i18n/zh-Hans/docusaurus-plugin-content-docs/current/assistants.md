@@ -137,7 +137,7 @@ OpenSandbox 1.2.1 的 ingress chart 使用 `gateway.gatewayRouteMode=header`，�
 
 ### Hermes
 
-默认情况下，在 Assistant 页面上选择**在新标签页打开**，即可使用官方 Hermes Webapp。它使用
+Assistant 页面在控制台内显示官方 Hermes Webapp。它使用
 Assistant 常驻的 Hermes Gateway，以及 AstraBox 更换沙箱时保存并恢复的同一个 profile 和
 SessionDB。新对话、历史记录和继续聊天请使用 Hermes 自己的控件。每次打开时，AstraBox 都会
 签发一个新的一次性 Hermes 登录链接。签名地址过期后，从 Assistant 重新打开 Webapp，获取新
@@ -146,10 +146,11 @@ SessionDB。新对话、历史记录和继续聊天请使用 Hermes 自己的控
 请配置 HTTPS 反向代理，根据传入请求的 Host 设置 `X-Forwarded-Host`，并覆盖客户端提供的任何
 值。HTTP 请求和 WebSocket 升级请求都要转发这个请求头，以便 Hermes 校验其来源。
 
-设置 `ASTRABOX_HERMES_WEBAPP_EMBEDDED=true` 可在控制台内打开 Webapp。控制台和沙箱网关必须
-位于同一个 HTTPS 站点。对于 9121 端口上经过签名的 Hermes Webapp 文档请求，请配置反向代理，
-把上游 Content-Security-Policy 中的 `frame-ancestors 'none'` 替换为 `frame-ancestors` 加上
-控制台准确的 HTTPS 源。保留其他指令，包括一次性登录页面的脚本 nonce。
+要在控制台内显示 Webapp，控制台和沙箱网关必须位于同一个 HTTPS 站点。对于 9121 端口上经过
+签名的 Hermes Webapp 文档请求，请配置反向代理，把上游 Content-Security-Policy 中的
+`frame-ancestors 'none'` 替换为 `frame-ancestors` 加上控制台准确的 HTTPS 源。保留其他指令，
+包括一次性登录页面的脚本 nonce。否则浏览器会拒绝在控制台内显示 Webapp。设置
+`ASTRABOX_HERMES_WEBAPP_EMBEDDED=false` 后，Assistant 页面改为提供**在新标签页打开**。
 
 运行时镜像需要包含内置的 Hermes Webapp。更新 RuntimeProfile 的镜像后，先暂停再恢复现有
 工作区，让它们带着已保存的 Hermes 状态使用新镜像。

@@ -5,8 +5,11 @@ ARG UPSTREAM_INGRESS_IMAGE=opensandbox/ingress:release-1.2.1@sha256:832fb8e8ef55
 FROM scratch AS ingress-source
 ADD --checksum=sha256:9b800800d52b4aeb0d47fbc0474eaa8aa7c649eaabd25dbc839c64a29d1c3a53 https://codeload.github.com/opensandbox-group/OpenSandbox/tar.gz/72e9feda4356a3087ae279af254ac67bb98c0129 /source.tar.gz
 
-# Match the pinned supplier's compiler; its image supplies the runtime base.
-FROM golang:1.25.9 AS builder
+# Go 1.26.11 or later, not the supplier's 1.25.9: before it, an HTTP/1 server in
+# full duplex crashes when it drains a request body after the handler, and it
+# misses an early close of a body the handler replaced, which the patch does
+# (golang/go#81946). The supplier's image supplies the runtime base.
+FROM golang:1.26.11 AS builder
 WORKDIR /source
 RUN --mount=type=bind,from=ingress-source,source=/source.tar.gz,target=/tmp/source.tar.gz \
     tar -xzf /tmp/source.tar.gz --strip-components=1

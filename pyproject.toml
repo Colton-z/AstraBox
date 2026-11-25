@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "astrabox"
-version = "0.1.16"
+version = "0.1.17"
 description = "AstraBox Community — an open, self-hosted agent runtime that streams a sandboxed coding agent to your frontend over the AI-SDK Data-Stream-Protocol."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -33,9 +33,9 @@ dependencies = [
   "anyio==4.15.1",
   "websockets>=17.1",
   # config + validation
-  "pydantic==2.13.5",
+  "pydantic==2.14.4",
   "pydantic-settings==2.15.0",
-  "pyyaml==6.0.3",
+  "pyyaml==6.0.4",
   # agent loop (KEYSTONE, Anthropic official MIT package)
   "claude-agent-sdk==0.2.187",
   # default sandbox driver -> /var/run/docker.sock
@@ -125,7 +125,7 @@ dev = [
   # both CI (installs `.[dev]`, runs `python -m ruff`/`python -m mypy`) and local
   # `make test`. The lint/type gate is calibrated to these versions, so a float
   # could silently change lint/type output between a laptop and CI. Bump both here.
-  "ruff==0.17.5",
+  "ruff==0.17.6",
   "mypy==2.4.1",
 ]
 # Live end-to-end smoke (tests/e2e/): drives a real turn against a real Docker

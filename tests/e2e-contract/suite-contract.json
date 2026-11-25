@@ -30,7 +30,7 @@
       }
     },
     "tests": {
-      "no_volume_core": 619,
+      "no_volume_core": 623,
       "persistent_files": 19
     }
   },
@@ -179,7 +179,7 @@
         "codex",
         "pi"
       ],
-      "matrix_tests": 256,
+      "matrix_tests": 260,
       "parallel_node_ids": [
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-conversation]",
         "tests/e2e/agent_instruction_install_test.py::test_authored_instructions_reach_the_first_reply[cold-agent]",
@@ -192,6 +192,7 @@
         "tests/e2e/input_capability_test.py::test_a_text_only_engine_refuses_images_without_accepting_them",
         "tests/e2e/model_profile_test.py::test_the_gateway_model_facts_reach_the_engine_configuration",
         "tests/e2e/pool_create_cancellation_test.py::test_retirement_reclaims_a_create_before_its_response_reaches_the_sdk",
+        "tests/e2e/retryable_start_failure_test.py::test_a_first_start_that_fails_retryably_hands_its_message_to_one_replacement",
         "tests/e2e/sandbox_data_conformance_test.py::test_a_box_keeps_the_data_plane_contract",
         "tests/e2e/test_background_subagent.py::test_background_subagent_surfaces_on_stream_and_stays_sendable",
         "tests/e2e/test_background_subagent.py::test_background_subagent_stop_is_accepted",
@@ -257,11 +258,11 @@
         "tests/e2e/test_skill_content.py::test_an_installed_content_provider_supplies_a_skill",
         "tests/e2e/test_terminal.py::test_a_command_after_runner_loss_uses_a_fresh_shell"
       ],
-      "tests": 73,
+      "tests": 74,
       "workers": 5
     },
-    "matrix_tests": 266,
-    "tests": 84
+    "matrix_tests": 270,
+    "tests": 85
   },
   "suites": {
     "container-engine": {
