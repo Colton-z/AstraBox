@@ -4,8 +4,10 @@ This image carries the OpenSandbox ingress gateway from release 1.2.1, source
 commit `72e9feda4356a3087ae279af254ac67bb98c0129` (the commit the release's
 images are built from, per `docs/releases/1.2.1.yaml`), with
 `full-duplex.patch` applied, on the official `opensandbox/ingress:release-1.2.1`
-image pinned by digest. The source archive is checksum-pinned and the Apache-2.0
-licence is retained in the image. A Kubernetes deployment in gateway mode
+image pinned by digest. It is compiled with Go 1.26.11 rather than the
+release's Go 1.25.9: full duplex depends on net/http fixes first released in
+Go 1.26.11. The source archive is checksum-pinned and the Apache-2.0 licence is
+retained in the image. A Kubernetes deployment in gateway mode
 installs the official chart with this image
 (`docs/providers/opensandbox.md`, "Configure a browser-facing Kubernetes
 Gateway").
@@ -24,5 +26,13 @@ requests to the Pod address do not.
 
 The patch enables full duplex (`http.ResponseController.EnableFullDuplex`) for
 every request before it is proxied, so the request body stays readable while the
-response is written. HTTP/2 requests are always full duplex. Routing,
-authentication, wake and WebSocket handling are unchanged.
+response is written. HTTP/2 requests are always full duplex.
+
+Full duplex also turns off the server's announcement, when a response starts,
+that it will close the connection afterwards because of the unread request
+body. Without it, a keep-alive client reuses a connection the server then
+closes. The patch has the gateway's response writer send `Connection: close`
+itself when 256 KiB or more of a declared length, or any part of a chunked
+body, is unread when the response starts: past 256 KiB the server stops reading
+an unread body and closes the connection. Routing, authentication, wake and
+WebSocket handling are unchanged.
