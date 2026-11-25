@@ -83,8 +83,14 @@ test('the management record reads the same conversation one page at a time', asy
   await expect(result.locator('..')).toContainText(rootMarker);
 
   await page.getByRole('button', { name: 'Subagents', exact: true }).click();
-  await page.getByTestId('subagent-agent-row').click();
+  // Open the child from the bottom of the viewport, with the transcript frame
+  // the drawer overlays still below the fold: the drawer must arrive whole.
+  const childRow = page.getByTestId('subagent-agent-row');
+  await childRow.evaluate((row) => row.scrollIntoView({ block: 'end' }));
+  await expect(chat).not.toBeInViewport({ ratio: 1 });
+  await childRow.click();
   const drawer = page.getByTestId('subagent-transcript-drawer');
+  await expect(drawer).toBeInViewport({ ratio: 1 });
   await expect(drawer.getByTestId('assistant-text').filter({ hasText: childMarker })).toBeVisible();
   await drawer.getByRole('button', { name: /^Bash / }).click();
   await expect(drawer.getByRole('heading', { name: 'Result', exact: true }).locator('..')).toContainText(childMarker);
