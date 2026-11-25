@@ -299,9 +299,14 @@ A message that the Agent program or the deployment's preparation refuses does
 not start a response: the stream reports it as a `data-input-failed` part with
 the reason, and the message keeps its `failure` in the Session history.
 
-A message waiting for a runtime whose start fails is refused with that
-start's `code` and `message`, the same as the Session's `last_error_code` and
-`last_error`. A Session whose first start fails ends `TERMINATED`.
+A first start that fails with a retryable error (`retryable: true`, such as
+`SANDBOX_UNREACHABLE`) is handled like a lost sandbox: the Session does not
+end, it reads `RECOVERY_REQUIRED` with `runtime_unavailable`, and the messages
+waiting for it go to one replacement start, which answers them. A message
+waiting for a start that fails otherwise, or for that replacement, is refused
+with that start's `code` and `message`, the same as the Session's
+`last_error_code` and `last_error`. A Session whose first start fails with an
+error that is not retryable ends `TERMINATED`.
 
 A message waiting for AstraBox to reconnect to the Session's sandbox is refused
 with the reconnect's error when that error is not retryable, such as
