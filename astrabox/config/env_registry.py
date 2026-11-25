@@ -2530,10 +2530,11 @@ _ROWS: tuple[tuple[str, Tier, str, str, str], ...] = (
     (
         "ASTRABOX_HERMES_WEBAPP_EMBEDDED",
         "public",
-        "false",
+        "true",
         "Open Hermes inside the console. The HTTPS sandbox gateway must allow "
         "the exact console origin in the Hermes Webapp's frame-ancestors policy, "
-        "and the gateway and console must be on the same site.",
+        "and the gateway and console must be on the same site. Set false to "
+        "open it in a new tab.",
         "astrabox.config.settings",
     ),
     # ---- Hermes engine: config-merge runtime (sandbox-side) -----------------
