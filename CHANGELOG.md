@@ -7,6 +7,46 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-11-25
+
+## English
+
+### Changed
+
+- **Hermes Assistants show the Hermes Webapp inside the console by default.** The HTTPS sandbox gateway must let the console frame it; `ASTRABOX_HERMES_WEBAPP_EMBEDDED=false` opens it in a new tab instead. [Guide](https://www.astrabox.ai/docs/assistants#hermes)
+
+### Fixed and improved
+
+- In Kubernetes gateway mode, `astrabox-ingress` no longer fails a client's next request on a kept-alive connection after answering one whose body it did not read whole, such as a routing or sign-in error. It now says `Connection: close` before closing a connection, and is built with Go 1.26.11. [Ingress](https://github.com/colton-z/astrabox/blob/main/containers/ingress/README.md)
+- A conversation whose first start fails with a retryable error, such as `SANDBOX_UNREACHABLE`, no longer ends: its waiting message goes to one replacement start, and fails only if that start fails too. [Sessions](https://www.astrabox.ai/docs/sessions#send-a-message)
+- A channel deployment's page can add, change or clear its prompt prefix.
+- On the administrator's Session page, a child conversation opens in view.
+- Dependency updates.
+
+### Upgrading
+
+- A deployment that shows Hermes through an HTTPS gateway without the `frame-ancestors` rewrite adds it or sets `ASTRABOX_HERMES_WEBAPP_EMBEDDED=false`; without either, the browser refuses the Webapp in the console. [Guide](https://www.astrabox.ai/docs/assistants#hermes)
+- Kubernetes deployments in gateway mode switch the ingress Gateway chart's image to `ghcr.io/colton-z/astrabox-ingress` at this release's version.
+
+## 中文
+
+### 变更
+
+- **Hermes Assistant 默认在控制台内显示 Hermes Webapp。** HTTPS 沙箱网关需允许控制台嵌入它；设置 `ASTRABOX_HERMES_WEBAPP_EMBEDDED=false` 则改为在新标签页打开。[指南](https://www.astrabox.ai/docs/assistants#hermes)
+
+### 修复与改进
+
+- Kubernetes 网关模式下，`astrabox-ingress` 在没读完请求体就回复（如路由或登录错误）后，同一长连接上的下一个请求不再失败。它在关闭连接前会发送 `Connection: close`，并改用 Go 1.26.11 构建。[Ingress](https://github.com/colton-z/astrabox/blob/main/containers/ingress/README.md)
+- 对话首次启动因可重试错误（如 `SANDBOX_UNREACHABLE`）失败时不再结束：等待的消息交给一次替换启动，只有这次也失败时才失败。[Sessions](https://www.astrabox.ai/docs/sessions#send-a-message)
+- 渠道部署页面可以添加、修改或清除提示词前缀。
+- 管理员的 Session 页面中，打开的子对话会出现在视野内。
+- 依赖更新。
+
+### 升级说明
+
+- 通过 HTTPS 网关显示 Hermes、但没有改写 `frame-ancestors` 的部署，需加上该改写或设置 `ASTRABOX_HERMES_WEBAPP_EMBEDDED=false`；两者都没有时，浏览器会拒绝在控制台内显示 Webapp。[指南](https://www.astrabox.ai/docs/assistants#hermes)
+- Kubernetes 网关模式的部署把 ingress Gateway chart 的镜像换成本版本的 `ghcr.io/colton-z/astrabox-ingress`。
+
 ## [0.1.16] - 2026-11-24
 
 ## English

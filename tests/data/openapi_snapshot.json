@@ -21083,7 +21083,7 @@
   "info": {
     "summary": "Self-hosted agent runtime that runs installed Agent programs in isolated sandboxes and streams responses over the AI SDK Data Stream Protocol (SSE).",
     "title": "AstraBox",
-    "version": "0.1.16",
+    "version": "0.1.17",
     "x-web-identity": "OidcSessionWebIdentityResolver"
   },
   "openapi": "3.1.0",
