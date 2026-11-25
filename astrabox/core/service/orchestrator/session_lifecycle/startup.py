@@ -29,6 +29,7 @@ import uuid
 from dataclasses import asdict
 from typing import Any
 
+from astrabox.common.fault_injection import consume_fault
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.time_utils import utcnow_iso
@@ -96,6 +97,8 @@ class SessionStartup:
 
         ``replacing`` marks a start that replaces a runtime the conversation
         lost: its failure leaves the conversation open for a later message.
+        A first start that fails with a retryable error leaves it open too,
+        as a lost box: its waiting messages go to one replacement start.
 
         ``owner`` and ``sandbox_generation`` are the claim the caller made on
         the ``CREATING`` row. Each startup gets its own sandbox assignment, the
@@ -185,6 +188,7 @@ class SessionStartup:
             user_action: dict[str, Any] | None = None,
             *,
             error_code: str = RUNTIME_START_FAILED,
+            retryable: bool = False,
         ) -> dict[str, Any]:
             cleanup = await release(failure_phase, created_sandbox_id)
             latest = await self._mark_failed(
@@ -194,6 +198,7 @@ class SessionStartup:
                 error_text=error_text,
                 leaked_sandbox_id=cleanup.leaked_sandbox_id,
                 user_action=user_action,
+                retryable=retryable,
             )
             return latest or {"session_id": session_id}
 
@@ -201,6 +206,16 @@ class SessionStartup:
             session = await ownership.require_current()
             await require_session_user_prerequisites(session)
             await ownership.require_current()
+            if consume_fault(
+                "runtime_start_unreachable",
+                session_id=session_id,
+                agent_id=str(session.get("agent_id") or ""),
+            ):
+                raise APIError(
+                    code="SANDBOX_UNREACHABLE",
+                    message="E2E fault: the sandbox could not be reached during startup",
+                    status_code=503,
+                )
             target = await self._runtime_subjects.acquire_startup(
                 session_id=session_id,
                 template=template,
@@ -298,7 +313,7 @@ class SessionStartup:
             )
             return await fail(
                 exc.message, "runtime_start_failed", created_sandbox_id or None, user_action,
-                error_code=exc.code,
+                error_code=exc.code, retryable=exc.retryable,
             )
         except asyncio.CancelledError:
             raise
@@ -313,6 +328,7 @@ class SessionStartup:
                     error_text=error_text,
                     leaked_sandbox_id=cleanup.leaked_sandbox_id,
                     user_action=None,
+                    retryable=False,
                 )
             except Exception:
                 # Marking the failure is the last line between a failed startup
@@ -448,7 +464,7 @@ class SessionStartup:
         latest = await self._mark_failed(
             ownership,
             replacing=replacing, error_code=error_code, error_text=error_text,
-            leaked_sandbox_id=None, user_action=None,
+            leaked_sandbox_id=None, user_action=None, retryable=False,
         )
         if not isinstance(latest, dict):
             raise RuntimeError(error_text)
@@ -463,6 +479,7 @@ class SessionStartup:
         leaked_sandbox_id: str | None,
         user_action: dict[str, Any] | None,
         replacing: bool,
+        retryable: bool,
     ) -> dict[str, Any] | None:
         current = await self._sessions.get_session(ownership.session_id)
         if not current or str(current.get("state") or "") != SessionState.CREATING.value:
@@ -475,7 +492,12 @@ class SessionStartup:
         lifecycle_only = (
             bool(current.get("hidden")) and current.get("owner_type") == "assistant_workspace"
         )
-        stays_open = (bool(user_action) and not lifecycle_only) or replacing
+        # A first start that failed with a retryable error, one the same
+        # request can get past, is a lost box too: the conversation stays
+        # READY without a runtime, and the reader starts one replacement for
+        # the messages waiting, as it does when a running box is lost.
+        lost_box = retryable and not replacing and not user_action and not lifecycle_only
+        stays_open = (bool(user_action) and not lifecycle_only) or replacing or lost_box
         updates: dict[str, Any] = {
             "state": SessionState.READY.value if stays_open else SessionState.TERMINATED.value,
             # A message sent while this is set is answered with the action.
@@ -495,7 +517,7 @@ class SessionStartup:
             known = read_undestroyed(current)
             if leaked not in known:
                 updates[UNDESTROYED_SANDBOX_IDS] = sorted({*known, leaked})
-        if stays_open:
+        if stays_open and not lost_box:
             # The messages waiting for this start get no second attempt, even
             # when the provider next reports its prerequisite met: a start
             # refused again would take and release another box for them.
