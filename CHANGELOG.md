@@ -7,6 +7,18 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## English
+
+### Fixed and improved
+
+- The ingress gateway image is also published as `v<version>`, the tag the OpenSandbox chart pulls for the documented `gateway.image.tag=<version>`; 0.1.17 and 0.1.18 carry it too. [Kubernetes Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
+
+## 中文
+
+### 修复与改进
+
+- ingress gateway 镜像同时发布 `v<version>` tag，即 OpenSandbox chart 在文档中的 `gateway.image.tag=<version>` 下实际拉取的 tag；0.1.17 和 0.1.18 也已补上。[Kubernetes Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
+
 ## [0.1.18] - 2026-11-27
 
 ## English

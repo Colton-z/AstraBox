@@ -396,8 +396,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ steps.image.outputs.name }}
+          # The OpenSandbox ingress chart prefixes a bare x.y.z image tag with
+          # "v", so the documented `gateway.image.tag=<version>` pulls
+          # v<version>; publish that tag for the ingress image as well.
           tags: |
             type=semver,pattern={{version}}
+            type=semver,pattern=v{{version}},enable=${{ matrix.component == 'ingress' }}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=raw,value=edge,enable=${{ github.event_name == 'workflow_dispatch' }}
 
