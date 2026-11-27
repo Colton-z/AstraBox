@@ -45,7 +45,7 @@ const copy = {
   },
   environment: {
     heading: ['Basics', '基本信息'],
-    help: ['One line on what this environment is good for', '一句话说明这个环境适合什么场景'],
+    help: ['One line on what this runtime profile is good for', '一句话说明这个运行配置适合什么场景'],
   },
   assistant: {
     heading: ['Basics', '基本信息'],
@@ -57,6 +57,7 @@ const copy = {
 type AuthoringField = { key: string; label?: string };
 type AuthoringEnvironment = {
   name: string;
+  endpoint_provider?: string;
   enabled?: boolean;
   engine_available?: boolean;
   supported_session_kinds?: string[];
@@ -78,14 +79,22 @@ async function checkCompleteAgentCreateForm(page: Page, api: AstraApi) {
   const form = page.locator('[data-slot="create-page"]');
   await expect(form).toBeVisible();
   await page.getByRole('button', { name: /^Show advanced settings/ }).click();
+  // Some fields are asked only once an earlier answer makes them meaningful.
+  // Give those answers so every field the schema declares has its turn.
   await page.locator('#agent-new-visibility').selectOption('allowlist');
+  await page.locator('#agent-new-a2a_access').selectOption('selected');
 
   for (const environment of selectable) {
     await test.step(`Complete Agent form for ${environment.name}`, async () => {
       await page.locator('#agent-new-runtime_profile_name').selectOption(environment.name);
       const nativeFields = environment.engine_options_schema ?? [];
-      const fieldKeys = schema.fields.flatMap((field) => field.key === 'engine_options'
-        ? nativeFields.map((block) => `engine_options.${block.key}`) : [field.key]);
+      // The model account is asked only where the Agent spends its author's
+      // own account (docs/models.md); elsewhere the deployment pays.
+      const spendsOwnerAccount = ['chatgpt_plan', 'anthropic_api_key'].includes(environment.endpoint_provider ?? '');
+      const fieldKeys = schema.fields
+        .filter((field) => field.key !== 'model_account_id' || spendsOwnerAccount)
+        .flatMap((field) => field.key === 'engine_options'
+          ? nativeFields.map((block) => `engine_options.${block.key}`) : [field.key]);
       const expectedIds = [...fieldKeys, 'visibility', 'admins', 'allowed_user_ids']
         .map((key) => `agent-new-${key}-label`).sort();
       const labels = form.locator('[id^="agent-new-"][id$="-label"]');
@@ -110,6 +119,7 @@ async function checkCompleteAgentCreateForm(page: Page, api: AstraApi) {
         if (language === 'en') englishLabels = rendered;
         for (const field of schema.fields.filter((field) => field.key !== 'engine_options' && !field.label)) {
           const id = `agent-new-${field.key}-label`;
+          if (field.key === 'model_account_id' && !spendsOwnerAccount) continue;
           expect(rendered[id], `${field.key} must not use the wire key as its label`).not.toEqual(field.key);
           if (language === 'zh') {
             expect(rendered[id], `${field.key} must not fall back to English`).not.toEqual(englishLabels[id]);
