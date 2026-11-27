@@ -173,9 +173,15 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     {
         "key": "mcp_servers",
         "type": "object",
-        "advanced": True,
         "group": GROUP_TOOLS,
         "complex": True,
+    },
+    {
+        "key": "default_repo",
+        "type": "object",
+        "group": GROUP_WORKSPACE,
+        "complex": True,
+        "item_schema": _DEFAULT_REPO_ITEM_SCHEMA,
     },
     # Which workspace surfaces a person needs to inspect THIS Agent's work.
     # AstraBox runs Agent programs of any purpose, and a diff view serves only
@@ -192,17 +198,8 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
     {"key": "terminal_panel", "type": "boolean", "group": GROUP_WORKSPACE},
     {"key": "diff_panel", "type": "boolean", "group": GROUP_WORKSPACE},
     {
-        "key": "default_repo",
-        "type": "object",
-        "advanced": True,
-        "group": GROUP_WORKSPACE,
-        "complex": True,
-        "item_schema": _DEFAULT_REPO_ITEM_SCHEMA,
-    },
-    {
         "key": "packages",
         "type": "object_list",
-        "advanced": True,
         "group": GROUP_TOOLS,
         "complex": True,
         "item_schema": _PACKAGE_ITEM_SCHEMA,
@@ -220,8 +217,8 @@ AGENT_FIELD_SCHEMA: list[dict[str, Any]] = [
         "group": GROUP_RUNTIME,
     },
     {"key": "idle_hibernate_seconds", "type": "integer", "advanced": True, "group": GROUP_RUNTIME},
-    {"key": "prepared_capacity", "type": "integer", "advanced": True, "group": GROUP_RUNTIME},
-    {"key": "enabled", "type": "boolean", "group": GROUP_RUNTIME},
+    {"key": "prepared_capacity", "type": "integer", "group": GROUP_RUNTIME},
+    {"key": "enabled", "type": "boolean", "advanced": True, "group": GROUP_RUNTIME},
 ]
 
 # The schema uses logical keys for labels while a path can place a field under

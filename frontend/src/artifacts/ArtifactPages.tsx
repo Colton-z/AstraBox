@@ -7,6 +7,7 @@ import { Lock } from 'lucide-react';
 import { ApiError } from '@/api';
 import { AppTopbar, PageShell } from '@/components/shell';
 import { ErrorNote } from '@/components/shell/ErrorNote';
+import { ConsoleLoadMore } from '@/manage/console';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -25,7 +26,6 @@ export function ArtifactGallery() {
     error,
     size,
     setSize,
-    isValidating,
     mutate,
   } = useSWRInfinite(
     (index, previous) =>
@@ -101,15 +101,14 @@ export function ArtifactGallery() {
             </Link>
           ))}
         </div>
-        {pages?.at(-1)?.has_more && (
-          <Button
-            variant="outline"
-            disabled={isValidating}
-            onClick={() => void setSize(size + 1)}
-          >
-            {t('misc:artifacts.more')}
-          </Button>
-        )}
+        {/* A failed page is retried by the Retry above, which re-reads every
+            page the gallery holds, so the foot stands down while it shows. */}
+        <ConsoleLoadMore
+          hasMore={Boolean(pages?.at(-1)?.has_more) && !error}
+          loading={size > (pages?.length ?? 0)}
+          error=""
+          onLoadMore={() => void setSize((current) => current + 1)}
+        />
       </PageShell>
     </div>
   );

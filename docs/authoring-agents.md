@@ -203,9 +203,9 @@ prepared.
 Prepared capacity holds resources for as long as it is above 0 and the Agent
 and its RuntimeProfile are enabled. What one unit costs on each deployment is in
 [Plan capacity for prepared sandboxes](deploy.md#plan-capacity-for-prepared-sandboxes).
-To turn prewarming off for one Agent, set **Prepared capacity** to 0 (under the
-advanced settings when creating the Agent, or in **Runtime and availability**
-on its page), or send `"prepared_capacity": 0` when creating or updating it.
+To turn prewarming off for one Agent, set **Prepared capacity** to 0 (in the
+create form, or in **Runtime and availability** on its page), or send
+`"prepared_capacity": 0` when creating or updating it.
 
 ### Read
 

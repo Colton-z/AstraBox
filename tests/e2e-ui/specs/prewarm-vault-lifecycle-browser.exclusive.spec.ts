@@ -80,7 +80,6 @@ async function createAgent(page: Page, environment: string, name: string): Promi
   await page.locator('#agent-new-runtime_profile_name').selectOption(environment);
   await page.locator('#agent-new-model').fill(reference!.model);
   await page.getByRole('option', { name: reference!.model, exact: true }).click();
-  await page.getByRole('button', { name: /^Show advanced settings/ }).click();
   await page.getByRole('spinbutton', { name: 'Prepared capacity', exact: true }).fill('1');
   await page.locator('[role="switch"][aria-labelledby="agent-new-terminal_panel-label"]').check();
   const created = responseFor(page, '/agents', 'POST');

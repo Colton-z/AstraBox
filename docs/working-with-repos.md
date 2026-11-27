@@ -84,8 +84,8 @@ made available:
 
 ## Configure a GitHub repository on an Agent
 
-In the console, open **Agents**, create or edit an Agent, and expand **Show
-advanced settings**. Under **Project repository**, enter:
+In the console, open **Agents** and create or edit an Agent. Under **Project
+repository**, enter:
 
 ![Configure the project repository while creating an Agent](img/agent-create-console-en.png)
 

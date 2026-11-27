@@ -1,6 +1,6 @@
 import { ArtifactGallery, ArtifactPage } from './artifacts/ArtifactPages';
 import { ConnectionsPage } from './connections/ConnectionsPage';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, Route, Routes, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import i18n from '@/i18n';
@@ -9,6 +9,7 @@ import type { TFunction } from 'i18next';
 import useSWR from 'swr';
 import useSWRInfinite from 'swr/infinite';
 import { keepsLastRead } from './hooks/useKeepCurrent';
+import { useAutoLoadMore } from './hooks/useAutoLoadMore';
 import { Archive, Bell, Bot, Check, Hammer, LoaderCircle, MoreHorizontal, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -135,13 +136,11 @@ export default function App() {
   const { theme, setTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();
-  const loadMoreSessionsRef = useRef<HTMLDivElement | null>(null);
 
   const {
     data: sessionPages = [],
     error: sessionsError,
     isLoading: sessionsLoading,
-    isValidating: sessionsValidating,
     mutate: mutateSessions,
     size: sessionPageSize,
     setSize: setSessionPageSize,
@@ -189,7 +188,8 @@ export default function App() {
     body: t('shell:new_reply'),
     open: openSession,
   });
-  const loadingMoreSessions = sessionsValidating && sessionPageSize > 0;
+  // A page asked for and not yet arrived; the rail's own refresh is not one.
+  const loadingMoreSessions = sessionPageSize > sessionPages.length;
   const error = useMemo(() => {
     if (actionError) return actionError;
     const railError = keepsLastRead(sessionsError, { background: true }, sessionPages.length > 0)
@@ -201,16 +201,12 @@ export default function App() {
   }, [actionError, sessionPages, sessionsError, userInfo, userInfoError]);
 
 
-  useEffect(() => {
-    const node = loadMoreSessionsRef.current;
-    if (!node || !hasMoreSessions || sessionsLoading || sessionsValidating) return;
-    const observer = new IntersectionObserver((entries) => {
-      if (!entries.some((entry) => entry.isIntersecting)) return;
-      void setSessionPageSize((size) => size + 1);
-    }, { rootMargin: '120px' });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [hasMoreSessions, sessionsLoading, sessionsValidating, setSessionPageSize]);
+  // The rail's periodic refresh re-reads every page it holds, so a failed page
+  // is retried there rather than by the sentinel.
+  const loadMoreSessionsRef = useAutoLoadMore<HTMLDivElement>(
+    hasMoreSessions && !sessionsLoading && !loadingMoreSessions && !sessionsError,
+    () => { void setSessionPageSize((size) => size + 1); },
+  );
 
   const refreshOverview = useCallback(async () => {
     await Promise.allSettled([mutateSessions()]);
@@ -500,17 +496,17 @@ export default function App() {
                   );
                 })}
                 {hasMoreSessions && (
-                  <div ref={loadMoreSessionsRef} className="px-2 py-2">
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="w-full text-xs"
-                      disabled={loadingMoreSessions}
-                      onClick={() => { void setSessionPageSize((size) => size + 1); }}
-                    >
-                      {loadingMoreSessions ? t('common:loading') : t('shell:session_load_more')}
-                    </Button>
+                  <div
+                    ref={loadMoreSessionsRef}
+                    data-testid="sessions-load-more"
+                    className="flex h-8 items-center justify-center px-2 text-xs text-muted-foreground"
+                  >
+                    {loadingMoreSessions && (
+                      <span role="status" className="flex items-center gap-1.5 group-data-[collapsible=icon]:hidden">
+                        <LoaderCircle className="size-3.5 animate-spin" />
+                        {t('common:loading')}
+                      </span>
+                    )}
                   </div>
                 )}
                 {railSessions.length === 0 && !sessionsError && (

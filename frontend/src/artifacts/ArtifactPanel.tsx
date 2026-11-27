@@ -3,6 +3,7 @@ import useSWR from 'swr';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { ErrorNote } from '@/components/shell/ErrorNote';
+import { ConsoleLoadMore } from '@/manage/console';
 import { artifactsApi } from './api';
 import { ArtifactViewer } from './ArtifactViewer';
 export function ArtifactPanel({
@@ -22,6 +23,7 @@ export function ArtifactPanel({
 }) {
   const { t } = useTranslation();
   const [moreError, setMoreError] = useState('');
+  const [loadingMore, setLoadingMore] = useState(false);
   const { data, error, mutate } = useSWR(
     assistantConversation && !assistantId
       ? null
@@ -42,9 +44,9 @@ export function ArtifactPanel({
     );
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {(error || moreError) && (
+      {error && (
         <div className="p-3">
-          <ErrorNote>{error?.message || moreError}</ErrorNote>
+          <ErrorNote>{error.message}</ErrorNote>
           <Button variant="outline" size="sm" onClick={() => void mutate()}>
             {t('common:retry')}
           </Button>
@@ -73,31 +75,32 @@ export function ArtifactPanel({
               {artifact.title}
             </Button>
           ))}
-          {data.has_more && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                void mutate(
-                  async (current) => {
-                    const page = await artifactsApi.list({
-                      ...(assistantId
-                        ? { assistant_id: assistantId }
-                        : { session_id: sessionId }),
-                      cursor: current!.next_cursor!,
-                    });
-                    return {
-                      ...page,
-                      items: [...current!.items, ...page.items],
-                    };
-                  },
-                  { revalidate: false },
-                ).catch((failure) => setMoreError((failure as Error).message))
-              }
-            >
-              {t('misc:artifacts.more')}
-            </Button>
-          )}
+          <ConsoleLoadMore
+            hasMore={data.has_more}
+            loading={loadingMore}
+            error={moreError}
+            onLoadMore={() => {
+              setLoadingMore(true);
+              void mutate(
+                async (current) => {
+                  const page = await artifactsApi.list({
+                    ...(assistantId
+                      ? { assistant_id: assistantId }
+                      : { session_id: sessionId }),
+                    cursor: current!.next_cursor!,
+                  });
+                  return {
+                    ...page,
+                    items: [...current!.items, ...page.items],
+                  };
+                },
+                { revalidate: false },
+              )
+                .then(() => setMoreError(''))
+                .catch((failure) => setMoreError((failure as Error).message))
+                .finally(() => setLoadingMore(false));
+            }}
+          />
         </div>
       )}
       {selectedId && (

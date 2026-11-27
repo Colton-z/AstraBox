@@ -198,8 +198,11 @@ test('250 real Agents retain complete cursor pages, access counts and loaded row
       await expect.poll(rowNames).toEqual(
         ordered(native.filter((row) => row.name.startsWith(prefix))).slice(0, PAGE_SIZE).map((row) => row.name),
       );
-      const loadMore = page.getByRole('button', { name: 'Load more', exact: true });
-      await loadMore.click();
+      // The next page is read when the foot of the table scrolls into view;
+      // no page waits for a click.
+      const foot = page.locator('[data-slot="console-load-more"]');
+      await expect(page.getByRole('button', { name: /^Load more/ })).toHaveCount(0);
+      await foot.scrollIntoViewIfNeeded();
       await expect(rows).toHaveCount(PAGE_SIZE * 2);
       await expect.poll(rowNames).toEqual(
         ordered(native.filter((row) => row.name.startsWith(prefix))).slice(0, PAGE_SIZE * 2).map((row) => row.name),
@@ -227,11 +230,11 @@ test('250 real Agents retain complete cursor pages, access counts and loaded row
       expect(refreshReads[0]).toBe('first');
       expect(refreshReads[1]).not.toBe('first');
       for (let count = PAGE_SIZE * 2; count < ROWS; count += PAGE_SIZE) {
-        await loadMore.click();
+        await foot.scrollIntoViewIfNeeded();
         await expect(rows).toHaveCount(count + PAGE_SIZE);
       }
       await expect.poll(rowNames).toEqual(browserExpected.map((row) => row.name));
-      await expect(loadMore).toHaveCount(0);
+      await expect(foot).toHaveCount(0);
       await expect(headerCount).toHaveText(expectedMeta());
       await expect(railCount).toHaveText(String(native.length));
       await rows.last().scrollIntoViewIfNeeded();

@@ -395,7 +395,6 @@
     "empty_conversation": "Pages, diagrams and reusable tools published by the Agent appear here. Ask the Agent to create an artifact.",
     "empty_gallery": "Pages, diagrams and reusable tools from your conversations appear here. Ask an Agent to create an artifact.",
     "choose": "Choose an artifact to open it.",
-    "more": "Load more artifacts",
     "search": "Search artifacts",
     "no_matches": "No artifacts match your search.",
     "origin": "Origin conversation",

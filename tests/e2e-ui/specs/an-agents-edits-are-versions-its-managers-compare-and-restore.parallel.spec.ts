@@ -356,7 +356,7 @@ test('an Agent keeps each edit as a version its managers compare and restore, an
       expect(after.versions).toHaveLength(meanwhileVersion);
     });
 
-    await test.step('older versions load on demand', async () => {
+    await test.step('older versions load when the reader scrolls to them', async () => {
       let version = meanwhileVersion;
       for (let edit = 1; version <= HISTORY_PAGE; edit += 1) {
         version = (await saveAgent(
@@ -370,12 +370,12 @@ test('an Agent keeps each edit as a version its managers compare and restore, an
       await page.reload({ waitUntil: 'domcontentloaded' });
       await expect(versionRow(page, history, version)).toBeVisible();
       await expect(versionRow(page, history, 1)).toHaveCount(0);
-      await history.getByRole('button', { name: 'Load more', exact: true }).click();
+      await history.locator('[data-slot="console-load-more"]').scrollIntoViewIfNeeded();
       await expect(versionRow(page, history, 1)).toContainText('Created');
       for (const kept of recorded.versions) {
         await expect(versionRow(page, history, kept.version)).toHaveCount(1);
       }
-      await expect(history.getByRole('button', { name: 'Load more', exact: true })).toHaveCount(0);
+      await expect(history.locator('[data-slot="console-load-more"]')).toHaveCount(0);
     });
     passed = true;
   } finally {

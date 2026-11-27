@@ -2,6 +2,7 @@ import { Loader2, Search } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { ErrorNote } from '@/components/shell/ErrorNote';
+import { useAutoLoadMore } from '@/hooks/useAutoLoadMore';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group';
@@ -101,12 +102,12 @@ export function ConsoleToolbar({ children, className }: { children: React.ReactN
 }
 
 /**
- * The foot of a list the server pages: one control that reads the next page
- * into the table, and the failure of that read beside it.
+ * The foot of a list the server pages: it reads the next page into the list
+ * as the reader scrolls to it, and shows the failure of that read in its place.
  *
  * Renders nothing once the list is whole. A failed page keeps the rows already
- * shown and offers the same control again, so the failure is the one read's,
- * not the list's.
+ * shown and stops reading further until the reader retries, so the failure is
+ * the one read's, not the list's.
  */
 export function ConsoleLoadMore({
   hasMore,
@@ -120,15 +121,26 @@ export function ConsoleLoadMore({
   onLoadMore: () => void;
 }) {
   const { t } = useTranslation();
+  const sentinel = useAutoLoadMore<HTMLDivElement>(hasMore && !loading && !error, onLoadMore);
   if (!hasMore && !error) return null;
   return (
-    <div className="flex flex-col items-center gap-2">
-      {error && <ErrorNote>{error}</ErrorNote>}
-      {hasMore && (
-        <Button variant="outline" size="sm" onClick={onLoadMore} disabled={loading}>
-          {loading && <Loader2 className="size-4 animate-spin" />}
-          {t('manage:console.load_more')}
-        </Button>
+    <div ref={sentinel} data-slot="console-load-more" className="flex min-h-9 flex-col items-center justify-center gap-2">
+      {error ? (
+        <>
+          <ErrorNote>{error}</ErrorNote>
+          {hasMore && (
+            <Button variant="outline" size="sm" onClick={onLoadMore}>
+              {t('common:retry')}
+            </Button>
+          )}
+        </>
+      ) : (
+        loading && (
+          <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+            {t('common:loading')}
+          </span>
+        )
       )}
     </div>
   );

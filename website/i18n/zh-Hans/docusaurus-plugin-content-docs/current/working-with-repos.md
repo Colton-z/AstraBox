@@ -71,8 +71,7 @@ Agent 的 `deploy_key_secret_name` 只保存逻辑名称。AstraBox 准备工作
 
 ## 在 Agent 上配置 GitHub 仓库
 
-在控制台中打开 **Agent**，新建或编辑 Agent，然后展开**显示高级设置**。在
-**项目代码仓库**中填入：
+在控制台中打开 **Agent**，新建或编辑 Agent，在**项目代码仓库**中填入：
 
 ![创建 Agent 时配置项目代码仓库](img/agent-create-console-zh.png)
 
