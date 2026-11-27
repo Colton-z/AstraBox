@@ -42,9 +42,9 @@
   ],
   "playwright": {
     "exclusive": {
-      "files": 205,
-      "parallel_files": 125,
-      "parallel_tests": 219,
+      "files": 206,
+      "parallel_files": 126,
+      "parallel_tests": 221,
       "serial_files": [
         "specs/a-background-task-runs-apart-from-the-reply.exclusive.spec.ts",
         "specs/a-granted-access-token-is-renewed-while-a-response-runs.exclusive.spec.ts",
@@ -129,7 +129,7 @@
       ],
       "serial_tests": 124,
       "serial_workers": 1,
-      "tests": 343,
+      "tests": 345,
       "workers": 5
     },
     "parallel": {

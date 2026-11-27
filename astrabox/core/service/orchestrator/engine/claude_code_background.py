@@ -77,7 +77,6 @@ _LIFECYCLE_MESSAGE_SDK_TYPES = frozenset(
         "TaskUpdatedMessage",
     }
 )
-_AGENT_TRANSCRIPT_PREFIX = "subagents/agent-"
 
 
 def project_child_run_entries(
@@ -110,19 +109,74 @@ def project_child_run_entries(
     return retained
 
 
+def _native_agent_transcripts(raw_scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Join each native Agent's transcript across the two paths Claude Code writes.
+
+    Claude Code resolves an Agent's transcript path on every write from a
+    registration keyed by Agent id: an Agent a Workflow starts writes to
+    ``subagents/workflows/<run>/agent-<id>``, any other Agent to
+    ``subagents/agent-<id>``. ``runAgent`` registers the Workflow directory only
+    at spawn and clears it when any invocation of that Agent ends, and a
+    ``SendMessage`` resume does not register it again (Claude Code 2.1.330). A
+    Workflow Agent resumed around the end of its run therefore continues in the
+    plain path, which then has no ``agent_metadata`` of its own.
+
+    One Agent id in one native session is one Agent. Its Workflow entries come
+    first: nothing writes to that path once the registration is cleared. Each
+    result is ``{"agent_id", "run_id", "entries"}``; ``run_id`` is empty for an
+    Agent no Workflow started. Raises ``ChildRunProjectionError`` for a
+    malformed scope or for two transcripts of one Agent on the same path kind.
+    """
+    agents: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for raw_scope in raw_scopes:
+        if not isinstance(raw_scope, dict):
+            continue
+        subpath = str(raw_scope.get("subpath") or "").strip()
+        path = subpath.split("/")
+        if len(path) == 2 and path[0] == "subagents" and path[1].startswith("agent-"):
+            run_id = ""
+        elif len(path) == 4 and path[:2] == ["subagents", "workflows"] and path[3].startswith("agent-"):
+            run_id = path[2]
+        else:
+            continue
+        agent_id = path[-1].removeprefix("agent-").strip()
+        raw_entries = raw_scope.get("entries")
+        if not agent_id or not isinstance(raw_entries, list):
+            raise ChildRunProjectionError(
+                f"Claude Agent transcript scope is malformed subpath={subpath!r}"
+            )
+        key = (str(raw_scope.get("project_key") or ""), str(raw_scope.get("session_id") or ""), agent_id)
+        agent = agents.setdefault(key, {"agent_id": agent_id, "run_id": "", "workflow": None, "plain": None})
+        slot = "workflow" if run_id else "plain"
+        if agent[slot] is not None:
+            raise ChildRunProjectionError(
+                f"Claude SessionStore holds two {slot} transcripts for agent_id={agent_id!r}"
+            )
+        agent[slot] = [entry for entry in raw_entries if isinstance(entry, dict)]
+        if run_id:
+            agent["run_id"] = run_id
+    return [
+        {
+            "agent_id": agent["agent_id"],
+            "run_id": agent["run_id"],
+            "entries": [*(agent["workflow"] or []), *(agent["plain"] or [])],
+        }
+        for agent in agents.values()
+    ]
+
+
 def _workflow_agent_scopes(raw_scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Read native Workflow run directories without treating a task as an Agent."""
     scopes: list[dict[str, Any]] = []
-    for raw_scope in raw_scopes:
-        path = str(raw_scope.get("subpath") or "").split("/")
-        if len(path) != 4 or path[:2] != ["subagents", "workflows"] or not path[3].startswith("agent-"):
+    for agent in _native_agent_transcripts(raw_scopes):
+        if not agent["run_id"]:
             continue
-        entries = raw_scope["entries"]
+        entries = agent["entries"]
         metadata = [entry for entry in entries if entry.get("type") == "agent_metadata"]
         identity = metadata[-1] if metadata else {}
         scopes.append({
-            "agent_id": path[3].removeprefix("agent-"),
-            "run_id": path[2],
+            "agent_id": agent["agent_id"],
+            "run_id": agent["run_id"],
             "parent_agent_id": str(identity.get("parentAgentId") or ""),
             "description": str(identity.get("description") or ""),
             "agent_type": str(identity.get("agentType") or ""),
@@ -191,19 +245,24 @@ def workflow_agent_message_blocks(raw_scopes: list[dict[str, Any]], engine_ref: 
     return [block for block in blocks if block.get("type") == "subagent" and block["data"].get("kind") == "message"]
 
 
-def _agent_scope(raw_scope: dict[str, Any]) -> dict[str, Any] | None:
-    """Decode one Claude SessionStore Agent scope and its native metadata."""
+def _agent_scopes(raw_scopes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Decode every Agent no Workflow started, with its native metadata.
 
-    subpath = str(raw_scope.get("subpath") or "").strip()
-    if not subpath.startswith(_AGENT_TRANSCRIPT_PREFIX):
-        return None
-    agent_id = subpath[len(_AGENT_TRANSCRIPT_PREFIX) :].strip()
-    raw_entries = raw_scope.get("entries")
-    if not agent_id or not isinstance(raw_entries, list):
-        raise ChildRunProjectionError(
-            f"Claude Agent transcript scope is malformed subpath={subpath!r}"
-        )
-    entries = [dict(entry) for entry in raw_entries if isinstance(entry, dict)]
+    A Workflow Agent's metadata names no spawning tool call, so the Workflow
+    readers above own those Agents, including any continuation in the plain path.
+    """
+    return [
+        _agent_scope(agent)
+        for agent in _native_agent_transcripts(raw_scopes)
+        if not agent["run_id"]
+    ]
+
+
+def _agent_scope(agent: dict[str, Any]) -> dict[str, Any]:
+    """Decode one Agent transcript from ``_native_agent_transcripts`` and its metadata."""
+
+    agent_id = str(agent["agent_id"])
+    entries = list(agent["entries"])
     metadata = [entry for entry in entries if entry.get("type") == "agent_metadata"]
     if not metadata:
         raise ChildRunProjectionError(
@@ -251,10 +310,7 @@ def stored_child_identities(
 ) -> ClaudeChildIdentities:
     """Restore native Agent aliases and lineage independently of journal retention."""
     identities = ClaudeChildIdentities.from_messages(main_entries)
-    for raw_scope in raw_scopes:
-        scope = _agent_scope(raw_scope)
-        if scope is None:
-            continue
+    for scope in _agent_scopes(raw_scopes):
         agent_id = str(scope["agent_id"])
         identities.bind(str(scope["tool_use_id"]), agent_id)
         parent_id = str(scope["parent_agent_id"])
@@ -330,12 +386,7 @@ def background_task_transcript_tree_blocks(
 
     scopes: dict[str, dict[str, Any]] = {}
     ordered_agent_ids: list[str] = []
-    for raw_scope in raw_scopes:
-        if not isinstance(raw_scope, dict):
-            continue
-        scope = _agent_scope(raw_scope)
-        if scope is None:
-            continue
+    for scope in _agent_scopes(raw_scopes):
         agent_id = str(scope["agent_id"])
         if agent_id in scopes:
             raise ChildRunProjectionError(
