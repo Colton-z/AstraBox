@@ -315,6 +315,13 @@ version declares. The Session then reads `RECOVERY_REQUIRED`; recovering it
 moves the conversation to a new sandbox prepared from the Agent's current
 version.
 
+Sub-agent history that the runtime stored outside its engine's contract, such
+as a Claude Code Agent transcript that names no spawning tool call, stops the
+Session's reader with `runtime_protocol_incompatible`. The Session reads
+`RECOVERY_REQUIRED`, `last_error` names the record, new messages are refused
+with that error, and messages already accepted stay queued under their ids.
+Reader sweeps do not retry it, because every reconnect reads the same history.
+
 ## Read the Session Stream
 
 The stream uses the AI SDK UI Message Stream protocol and delivers each

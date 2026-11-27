@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from astrabox.common.logger.logger_factory import get_logger
+from astrabox.core.service.orchestrator.engine.child_runs import ChildRunProjectionError
 from astrabox.core.service.orchestrator.engine.runtime import (
     InputMessageObserved,
     InputAdmitted,
@@ -297,7 +298,9 @@ class SessionReader:
     async def _read(self, cursor: RuntimeCursor | None) -> None:
         try:
             await self._read_events(cursor)
-        except RuntimeProtocolError as exc:
+        except (RuntimeProtocolError, ChildRunProjectionError) as exc:
+            # Child-run data outside the contract is read again, unchanged, by
+            # every reconnect, so it is this runtime's protocol fault too.
             # Return normally so the task group stops delivery and flushes the
             # readable prefix together with this fault under its reader lease.
             self._protocol_error = True

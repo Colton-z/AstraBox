@@ -251,6 +251,11 @@ Session 不会结束，读取时显示 `RECOVERY_REQUIRED` 和 `runtime_unavaila
 `code` 和 `message` 被拒绝，与 Session 的 `last_error_code` 和 `last_error` 相同。首次启动因
 不可重试的错误失败时，Session 结束为 `TERMINATED`。
 
+运行时存下的子 Agent 历史不符合其引擎的约定时（例如一份没有指明发起它的工具调用的 Claude Code
+Agent 转录），Session 的读取会以 `runtime_protocol_incompatible` 停止。Session 显示
+`RECOVERY_REQUIRED`，`last_error` 指出是哪条记录，新消息以该错误被拒绝，已接受的消息保留原 id
+继续排队。读取巡检不会重试它，因为每次重连读到的都是同一份历史。
+
 ## 读取 Session 事件流
 
 事件流使用 AI SDK UI Message Stream 协议，从你在 `after_seq` 中传入的位置之后开始，
