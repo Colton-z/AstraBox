@@ -7,6 +7,22 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-11-27
+
+## English
+
+### Fixed and improved
+
+- A Claude Code Workflow Agent resumed with `SendMessage` keeps its whole history and settles in the Agents view, and reconnecting to its conversation no longer fails with `lacks agent_metadata`.
+- Sub-agent history that the runtime stored outside its engine's contract now stops the conversation with `runtime_protocol_incompatible` and `RECOVERY_REQUIRED`, instead of showing it ready while its messages wait; recovering it delivers them. [Sessions](https://www.astrabox.ai/docs/sessions#send-a-message)
+
+## 中文
+
+### 修复与改进
+
+- 用 `SendMessage` 恢复的 Claude Code Workflow Agent 会保留完整历史并在 Agents 视图中正常结束，重连它所在的对话不再报 `lacks agent_metadata`。
+- 运行时存下的子 Agent 历史不符合引擎约定时，对话会以 `runtime_protocol_incompatible` 停在 `RECOVERY_REQUIRED`，不再显示就绪而消息一直等待；恢复后这些消息会被处理。[Sessions](https://www.astrabox.ai/docs/sessions#send-a-message)
+
 ## [0.1.17] - 2026-11-25
 
 ## English
