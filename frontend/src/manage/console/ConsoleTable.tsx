@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
 import { Ellipsis } from '@/components/shell';
+import { Button } from '@/components/ui/button';
 import {
   Table,
   TableBody,
@@ -251,14 +252,17 @@ export function ConsoleTable<Row>({
                   )}
                 >
                   {sortKey === undefined ? c.header : (
-                    <button
-                      type="button"
+                    // The arrows stay drawn on every sortable column, the way
+                    // shadcn's data table marks one: a header that only shows
+                    // it sorts on hover reads as a plain label.
+                    <Button
+                      variant="ghost"
+                      size="xs"
                       data-testid={`console-sort-${sortKey}`}
                       className={cn(
-                        'group inline-flex max-w-full items-center gap-1 rounded-sm hover:text-foreground',
-                        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
-                        INTENT[c.intent].end && 'flex-row-reverse',
-                        order && 'text-foreground',
+                        'max-w-full font-normal text-muted-foreground',
+                        INTENT[c.intent].end ? '-mr-2 flex-row-reverse' : '-ml-2',
+                        order && 'font-medium text-foreground',
                       )}
                       onClick={() => onSortChange?.({
                         key: sortKey,
@@ -268,12 +272,10 @@ export function ConsoleTable<Row>({
                       <span className="truncate">{c.header}</span>
                       <SortIcon
                         aria-hidden="true"
-                        className={cn(
-                          'size-3 shrink-0',
-                          !order && 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100',
-                        )}
+                        data-icon={INTENT[c.intent].end ? 'inline-start' : 'inline-end'}
+                        className="size-3 shrink-0"
                       />
-                    </button>
+                    </Button>
                   )}
                 </TableHead>
               );
