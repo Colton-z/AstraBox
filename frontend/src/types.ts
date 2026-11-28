@@ -580,6 +580,8 @@ export interface ListPageQuery {
   limit?: number;
   q?: string;
   status?: string;
+  /** The order, for a list route that takes one: a column, `-` first for descending. */
+  sort?: string;
 }
 
 // ── Admin session console (management surface) ──────────────────────────────

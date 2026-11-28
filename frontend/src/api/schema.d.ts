@@ -17064,6 +17064,8 @@ export interface operations {
                 q?: string;
                 /** @description Agent availability filter. */
                 status?: string;
+                /** @description List order: a column, with a leading '-' for descending. A cursor continues only the order it was returned in. */
+                sort?: "-model" | "-name" | "-runtime_profile_name" | "-updated_at" | "model" | "name" | "runtime_profile_name" | "updated_at";
             };
             header?: never;
             path?: never;

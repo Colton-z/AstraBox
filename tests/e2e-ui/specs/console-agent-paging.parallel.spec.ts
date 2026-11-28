@@ -23,6 +23,8 @@ async function batches<T>(items: T[], operation: (item: T) => Promise<unknown>):
 
 type NativeAgent = {
   agent_id: string; name: string; deleted?: boolean; enabled?: boolean;
+  /** `updated_at` to the microsecond, fixed width, so it sorts as text. */
+  updated: string;
   created_by?: string; visibility?: string; admins?: string[]; allowed_user_ids?: string[];
 };
 
@@ -35,6 +37,7 @@ function nativeAgents(): NativeAgent[] {
     `SELECT json_build_object(
       'agent_id', agent_id, 'name', name, 'deleted', state = 'DELETED',
       'enabled', enabled, 'created_by', created_by,
+      'updated', to_char(updated_at AT TIME ZONE 'UTC', 'YYYYMMDDHH24MISSUS'),
       'visibility', visibility, 'admins', admins,
       'allowed_user_ids', allowed_user_ids)::text
       FROM agents`,
@@ -259,6 +262,32 @@ test('250 real Agents retain complete cursor pages, access counts and loaded row
       expect(layout.height).toBeLessThanOrEqual(layout.clientHeight + 2);
       await page.locator('[data-slot="page-scroll"]').evaluate((node) => { node.scrollTop = 0; });
       await expect(page.getByRole('heading', { level: 1 })).toBeInViewport();
+
+      // A column header orders the whole list, not the rows on screen: the
+      // server cuts every page in that order, newest change first for a time,
+      // and the same header asks for the reverse.
+      native = nativeAgents();
+      const newestFirst = native.filter((row) => row.name.startsWith(prefix)).sort((left, right) => (
+        left.updated !== right.updated ? (left.updated < right.updated ? 1 : -1)
+          : left.agent_id < right.agent_id ? 1 : -1
+      ));
+      const updatedSort = page.getByTestId('console-sort-updated_at');
+      const updatedHeader = page.getByRole('columnheader').filter({ has: updatedSort });
+      await expect(updatedHeader).toHaveAttribute('aria-sort', 'none');
+      await updatedSort.click();
+      await expect(updatedHeader).toHaveAttribute('aria-sort', 'descending');
+      await expect(page.getByRole('columnheader').filter({ has: page.getByTestId('console-sort-name') }))
+        .toHaveAttribute('aria-sort', 'none');
+      await expect.poll(rowNames).toEqual(newestFirst.slice(0, PAGE_SIZE).map((row) => row.name));
+      for (let count = PAGE_SIZE; count < ROWS; count += PAGE_SIZE) {
+        await foot.scrollIntoViewIfNeeded();
+        await expect(rows).toHaveCount(count + PAGE_SIZE);
+      }
+      await expect.poll(rowNames).toEqual(newestFirst.map((row) => row.name));
+      await expect(foot).toHaveCount(0);
+      await updatedSort.click();
+      await expect(updatedHeader).toHaveAttribute('aria-sort', 'ascending');
+      await expect.poll(rowNames).toEqual([...newestFirst].reverse().slice(0, PAGE_SIZE).map((row) => row.name));
       await test.info().attach('real-agent-pages.json', {
         body: JSON.stringify({ createdIds, machineVisibleIds: received, refreshReads, layout,
           browserCounts: { total: native.length, enabled: native.filter((row) => row.enabled !== false).length } }),

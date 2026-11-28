@@ -211,6 +211,8 @@ create form, or in **Runtime and availability** on its page), or send
 
 Open **Console > Agents** to list the Agents available to your account. Select an Agent to view its model, RuntimeProfile, and capabilities. If you are allowed to manage it, the page also shows editable configuration and authorization settings.
 
+The list is in name order. Select a column header to order it by that column, and select it again to reverse the order; **Updated at** starts with the most recent change. Through the API, `GET /api/v1/agents?page=1` takes the same orders as `sort`: `name`, `model`, `runtime_profile_name` or `updated_at`, with a leading `-` for descending. A `next_cursor` continues only the order it was returned in.
+
 ### Update
 
 Open the Agent, edit the relevant section, then click **Save** on that section. The console includes the current `version` so a concurrent edit produces a conflict instead of silently replacing another user's changes. Saving does not reconfigure a task already running; the latest settings are used when AstraBox first prepares or rebuilds a Session runtime.

@@ -4,11 +4,13 @@
  *
  * A reply can start a background shell and end while the shell keeps running.
  * The conversation is then not answering anything: it is READY, the next
- * message is sent rather than queued, and the running shell is listed apart
- * from the conversation with a Stop of its own. Stopping it reaches the shell
- * through Claude Code's own task stop; the runtime then reports the task
- * ended, the list empties, the runtime reads idle, and the next message is
- * answered.
+ * message is sent rather than queued, and the running shell is counted in one
+ * quiet line above the composer, its list folded until the reader opens it,
+ * with a Stop of its own. The line takes room from the conversation, and a
+ * reader at the end of the conversation stays at its end. Stopping the task
+ * reaches the shell through Claude Code's own task stop; the runtime then
+ * reports the task ended, the line goes, the runtime reads idle, and the next
+ * message is answered.
  */
 import { test, expect } from '@playwright/test';
 
@@ -18,6 +20,9 @@ import { trackSessions } from '../fixtures/sessionCleanup';
 import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 
 const SEND = /^(Send|发送)$/;
+const SUMMARY = /^(1 background task running|1 个后台任务运行中)$/;
+/** Lines that make the conversation taller than its viewport. */
+const PADDING = Array.from({ length: 40 }, (_, line) => `Padding line ${line + 1}; ignore it.`).join('\n');
 const STOP = /^(Stop|停止)$/;
 
 const sessions = trackSessions();
@@ -33,13 +38,15 @@ test('a background shell left by a reply is listed apart, stops on its own, and 
   sessions.push(sessionId);
   await api.waitForSessionReady(sessionId, 60_000);
   await api.setPermissionMode(sessionId, modeName(profile, 'unattended'));
+  await page.setViewportSize({ width: 1280, height: 720 });
   await openSessionView(page, sessionId);
 
   await sendPrompt(
     page,
     sessionId,
     `Use the Bash tool once with run_in_background set to true to run exactly: sleep 900 # ${marker} `
-      + 'Do not wait for it and do not check on it. Then reply with only the word STARTED.',
+      + 'Do not wait for it and do not check on it. Then reply with only the word STARTED.\n\n'
+      + PADDING,
   );
 
   // The reply ended; only the shell runs.
@@ -53,11 +60,22 @@ test('a background shell left by a reply is listed apart, stops on its own, and 
   expect(task?.kind).toEqual('local_bash');
 
   const strip = page.getByTestId('session-background-tasks');
-  await expect(strip.getByTestId('session-background-task')).toHaveCount(1, { timeout: 15_000 });
+  const summary = page.getByTestId('session-background-tasks-summary');
+  await expect(summary).toHaveText(SUMMARY, { timeout: 15_000 });
+  await expect(page.getByTestId('session-background-task'), 'the list stays folded until asked for')
+    .toHaveCount(0);
   await expect(page.getByTestId('composer-submit'), 'the next message is sent, not queued')
     .toHaveAccessibleName(SEND);
+  await expect.poll(() => page.getByTestId('session-conversation').evaluate((element) => ({
+    overflows: element.scrollHeight > element.clientHeight,
+    atEnd: element.scrollHeight - element.clientHeight - element.scrollTop <= 2,
+  })), { message: 'the line above the composer leaves the conversation at its end' })
+    .toEqual({ overflows: true, atEnd: true });
 
-  await strip.getByRole('button', { name: STOP }).click();
+  await summary.click();
+  const listed = page.getByTestId('session-background-task');
+  await expect(listed).toHaveCount(1);
+  await listed.getByRole('button', { name: STOP }).click();
   await expect.poll(async () => {
     const session = await api.getSession(sessionId);
     return [session.state, session.runtime_status, session.background_tasks?.length ?? 0];

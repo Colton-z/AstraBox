@@ -73,10 +73,27 @@ export function MessageList({
   onLoadOlder,
 }: MessageListProps) {
   const { t } = useTranslation();
-  const { scrollRef, contentRef, isAtBottom, scrollToBottom } = useStickToBottom({
+  const { scrollRef, contentRef, isAtBottom, scrollToBottom, state: stick } = useStickToBottom({
     initial: 'instant',
     resize: 'instant',
   });
+  // `use-stick-to-bottom` follows the content's height, not the viewport's.
+  // When something below the list takes room — a line above the composer, the
+  // composer growing with a long draft — the viewport shrinks around the same
+  // content and the end slides under it. A reader held at the end stays there;
+  // the assignment runs in the resize notification, before the frame paints.
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    let height = element.clientHeight;
+    const observer = new ResizeObserver(() => {
+      const next = element.clientHeight;
+      if (next < height && stick.isAtBottom) stick.scrollTop = stick.targetScrollTop;
+      height = next;
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [scrollRef, stick]);
   const userRequestedOlderRef = useRef(false);
   const loadOlderStateRef = useRef({ hasMore, loadingMore, onLoadOlder });
   // Folded work a reader has already opened, and the labels already fetched,

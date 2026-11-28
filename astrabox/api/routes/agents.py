@@ -18,6 +18,7 @@ from astrabox.api.routes.sessions import SessionRecord
 from astrabox.common.utils.api_response import success_response
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import get_current_user_context
+from astrabox.core.service.orchestrator.agent.agent_service import AGENT_LIST_SORTS
 from astrabox.core.service.orchestrator.agent_schema import AGENT_FIELD_SCHEMA, get_agent_schema
 from astrabox.core.service.orchestrator.engine.capabilities import (
     SESSION_KINDS,
@@ -396,6 +397,14 @@ def register_agent_routes(app: Any) -> None:
                 query_parameter("cursor", "string", "Opaque next_cursor from the previous page."),
                 query_parameter("q", "string", "Case-insensitive Agent search."),
                 query_parameter("status", "string", "Agent availability filter.", default="all"),
+                query_parameter(
+                    "sort",
+                    "string",
+                    "List order: a column, with a leading '-' for descending. A cursor "
+                    "continues only the order it was returned in.",
+                    default="name",
+                    enum=sorted(AGENT_LIST_SORTS),
+                ),
             ]
         },
     )
@@ -409,6 +418,7 @@ def register_agent_routes(app: Any) -> None:
                 cursor=params.get("cursor"),
                 query=str(params.get("q") or ""),
                 status=str(params.get("status") or "all").strip() or "all",
+                sort=str(params.get("sort") or "name").strip() or "name",
             )
             return success_response(page)
         result = await _service.list_agents(user)

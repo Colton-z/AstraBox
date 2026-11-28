@@ -791,6 +791,7 @@ export function listPageQuery(query: ListPageQuery): never {
     cursor: query.cursor,
     q: query.q?.trim(),
     status: query.status === 'all' ? undefined : query.status,
+    sort: query.sort,
   });
 }
 

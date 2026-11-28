@@ -10,7 +10,7 @@
  * text for {@link ConsoleEmptyState}.
  */
 export { ConsolePageHeader, MetaLine } from './ConsolePageHeader';
-export { ConsoleTable, type ConsoleColumn } from './ConsoleTable';
+export { ConsoleTable, type ConsoleColumn, type ConsoleSort } from './ConsoleTable';
 export { FilterChips, type FilterChipOption } from './FilterChips';
 export { DateRangeFilter, type DateWindow } from './DateRangeFilter';
 export { StatusPill, AstraMark, type PillTone } from './StatusPill';

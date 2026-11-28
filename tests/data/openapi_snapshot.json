@@ -28707,6 +28707,26 @@
               "default": "all",
               "type": "string"
             }
+          },
+          {
+            "description": "List order: a column, with a leading '-' for descending. A cursor continues only the order it was returned in.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "default": "name",
+              "enum": [
+                "-model",
+                "-name",
+                "-runtime_profile_name",
+                "-updated_at",
+                "model",
+                "name",
+                "runtime_profile_name",
+                "updated_at"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {

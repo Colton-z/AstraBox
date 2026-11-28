@@ -1,4 +1,4 @@
-import { ChevronRight } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { cn } from '@/lib/utils';
@@ -75,7 +75,16 @@ export type ConsoleColumn<Row> = {
   title?: (row: Row) => string;
   /** Extra className applied to both the header and the cell. */
   className?: string;
+  /**
+   * The order this column's header reads the list in, for a table given
+   * `onSortChange`. The server pages the list, so the order is its to apply:
+   * the table only asks for it.
+   */
+  sortKey?: string;
 };
+
+/** The order a sortable {@link ConsoleTable} reads its list in. */
+export type ConsoleSort = { key: string; descending: boolean };
 
 /**
  * The grid track list for a set of columns — the single source the table and
@@ -126,6 +135,8 @@ export function ConsoleTable<Row>({
   empty,
   footer,
   className,
+  sort,
+  onSortChange,
 }: {
   columns: ConsoleColumn<Row>[];
   rows: Row[];
@@ -139,6 +150,13 @@ export function ConsoleTable<Row>({
   /** Optional node rendered after the body, inside the table frame (loading line). */
   footer?: React.ReactNode;
   className?: string;
+  /** The order the rows are in, for a table whose columns declare `sortKey`. */
+  sort?: ConsoleSort;
+  /**
+   * Asks for another order. A header asks for its own column ascending, a
+   * time newest first, and asks again for the reverse.
+   */
+  onSortChange?: (sort: ConsoleSort) => void;
 }) {
   const { t } = useTranslation();
   const gridStyle = {
@@ -216,18 +234,50 @@ export function ConsoleTable<Row>({
         */}
         <TableHeader className="console-thead block [&_tr]:border-b-0">
           <TableRow className="grid items-center gap-3 px-5 pb-2.5 hover:bg-transparent" style={gridStyle}>
-            {columns.map((c) => (
-              <TableHead
-                key={c.key}
-                className={cn(
-                  'console-label h-auto min-w-0 truncate p-0',
-                  INTENT[c.intent].end && 'text-right',
-                  c.className,
-                )}
-              >
-                {c.header}
-              </TableHead>
-            ))}
+            {columns.map((c) => {
+              const sortKey = onSortChange ? c.sortKey : undefined;
+              // The order this column is the key of, when it is.
+              const order = sortKey !== undefined && sort?.key === sortKey ? sort : undefined;
+              const SortIcon = !order ? ArrowUpDown : order.descending ? ArrowDown : ArrowUp;
+              return (
+                <TableHead
+                  key={c.key}
+                  aria-sort={sortKey === undefined ? undefined : !order ? 'none'
+                    : order.descending ? 'descending' : 'ascending'}
+                  className={cn(
+                    'console-label h-auto min-w-0 truncate p-0',
+                    INTENT[c.intent].end && 'text-right',
+                    c.className,
+                  )}
+                >
+                  {sortKey === undefined ? c.header : (
+                    <button
+                      type="button"
+                      data-testid={`console-sort-${sortKey}`}
+                      className={cn(
+                        'group inline-flex max-w-full items-center gap-1 rounded-sm hover:text-foreground',
+                        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring',
+                        INTENT[c.intent].end && 'flex-row-reverse',
+                        order && 'text-foreground',
+                      )}
+                      onClick={() => onSortChange?.({
+                        key: sortKey,
+                        descending: order ? !order.descending : c.intent === 'timestamp',
+                      })}
+                    >
+                      <span className="truncate">{c.header}</span>
+                      <SortIcon
+                        aria-hidden="true"
+                        className={cn(
+                          'size-3 shrink-0',
+                          !order && 'opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100',
+                        )}
+                      />
+                    </button>
+                  )}
+                </TableHead>
+              );
+            })}
             {onRowClick && (
               <TableHead className="h-auto p-0">
                 <span className="sr-only">{t('common:open_record')}</span>

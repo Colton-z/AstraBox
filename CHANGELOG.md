@@ -9,14 +9,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## English
 
+### Added
+
+- **The Agents list orders by any column.** Select Name, Model, Runtime profile or Updated at to order the whole list by it, and again to reverse it; `GET /api/v1/agents?page=1` takes the same orders as `sort`. [Guide](https://www.astrabox.ai/docs/authoring-agents#read)
+
 ### Fixed and improved
 
+- Work a reply leaves running in the background shows as one line above the composer with how many tasks run; select it to see them and stop one.
+- A conversation read to its end stays at its end when something above the composer takes room from it, such as the background-task line or a long draft.
 - The ingress gateway image is also published as `v<version>`, the tag the OpenSandbox chart pulls for the documented `gateway.image.tag=<version>`; 0.1.17 and 0.1.18 carry it too. [Kubernetes Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
 
 ## 中文
 
+### 新增
+
+- **Agent 列表可按任意列排序。** 点击「名称」「模型」「运行配置」或「更新时间」即按该列对整个列表排序，再点一次反向；`GET /api/v1/agents?page=1` 用 `sort` 参数指定同样的顺序。[指南](https://www.astrabox.ai/docs/authoring-agents#read)
+
 ### 修复与改进
 
+- 回复结束后仍在后台运行的任务，在输入框上方只显示一行任务数量；点开才列出各任务并可单独停止。
+- 停在对话末尾时，输入框上方出现的内容（如后台任务行或较长的草稿）不再遮住最后的消息。
 - ingress gateway 镜像同时发布 `v<version>` tag，即 OpenSandbox chart 在文档中的 `gateway.image.tag=<version>` 下实际拉取的 tag；0.1.17 和 0.1.18 也已补上。[Kubernetes Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
 
 ## [0.1.18] - 2026-11-27

@@ -8,8 +8,11 @@ from collections.abc import AsyncIterator
 from time import monotonic
 from typing import Any
 
-from astrabox.persistence.repository.agent_repository import AgentRepository
-from astrabox.persistence.repository.agent_repository import NAME_SORT_KEY_FIELD
+from astrabox.persistence.repository.agent_repository import (
+    AGENT_LIST_SORT_COLUMNS,
+    NAME_SORT_KEY_FIELD,
+    AgentRepository,
+)
 from astrabox.persistence.repository.keyset import (
     SWEEP_PAGE_SIZE,
     InvalidListCursor,
@@ -44,7 +47,12 @@ _AGENT_STARTUP_TIMEOUT_SECONDS = 300
 
 #: The status narrowings the Agent list page accepts.
 AGENT_LIST_STATUSES = frozenset({"all", "enabled", "disabled"})
-_AGENT_LIST_CURSOR_KEYS = ("name_key", "agent_id")
+#: A list order: a column of :data:`AGENT_LIST_SORT_COLUMNS`, ``-`` first for
+#: descending.
+AGENT_LIST_SORTS = frozenset(
+    order for column in AGENT_LIST_SORT_COLUMNS for order in (column, f"-{column}")
+)
+_AGENT_LIST_CURSOR_KEYS = ("sort", "value", "agent_id")
 
 
 class AgentService:
@@ -272,12 +280,15 @@ class AgentService:
         cursor: str | None = None,
         query: str = "",
         status: str = "all",
+        sort: str = "name",
     ) -> dict[str, Any]:
-        """One page of the Agents this caller may see, by name regardless of case.
+        """One page of the Agents this caller may see, in ``sort`` order.
 
-        ``query`` matches the name, display name and model, case-insensitively;
-        ``status`` keeps enabled or disabled Agents. Both apply before the page
-        is cut, so a page is short only at the end of the list. The first page
+        ``sort`` is one of :data:`AGENT_LIST_SORTS`; ``name`` reads the name
+        regardless of case. ``query`` matches the name, display name and model,
+        case-insensitively; ``status`` keeps enabled or disabled Agents. Both
+        apply before the page is cut, so a page is short only at the end of the
+        list. A cursor continues only the order it was cut in. The first page
         (no ``cursor``) also counts every Agent the caller may see, and how
         many of them are enabled, whatever the narrowing.
         """
@@ -285,6 +296,12 @@ class AgentService:
             raise APIError(
                 code="INVALID_REQUEST",
                 message=f"status must be one of {sorted(AGENT_LIST_STATUSES)}",
+                status_code=400,
+            )
+        if sort not in AGENT_LIST_SORTS:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message=f"sort must be one of {sorted(AGENT_LIST_SORTS)}",
                 status_code=400,
             )
         try:
@@ -295,14 +312,23 @@ class AgentService:
                 message="cursor is not one this list returned",
                 status_code=400,
             ) from exc
+        if after is not None and after[0] != sort:
+            raise APIError(
+                code="INVALID_REQUEST",
+                message="cursor continues a different sort",
+                status_code=400,
+            )
+        column = sort.removeprefix("-")
         platform_admin = is_platform_admin(user.roles)
         fetched = await self._agent_repo.list_visible_agents_page(
             user.user_id,
             platform_admin=platform_admin,
-            after=(after[0], after[1]) if after is not None else None,
+            after=(after[1], after[2]) if after is not None else None,
             limit=limit + 1,
             needle=query,
             enabled={"enabled": True, "disabled": False}.get(status),
+            sort=column,
+            descending=sort.startswith("-"),
         )
         rows, has_more = fetched[:limit], len(fetched) > limit
         page: dict[str, Any] = {
@@ -311,7 +337,10 @@ class AgentService:
             "next_cursor": (
                 encode_list_cursor(
                     {
-                        "name_key": str(rows[-1].get(NAME_SORT_KEY_FIELD) or ""),
+                        "sort": sort,
+                        "value": str(
+                            rows[-1].get(NAME_SORT_KEY_FIELD if column == "name" else column) or ""
+                        ),
                         "agent_id": str(rows[-1].get("agent_id") or ""),
                     }
                 )

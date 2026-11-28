@@ -112,6 +112,15 @@ _LIVE = _AGENTS.c.state != "DELETED"
 #: Where each Agent read carries the key the console list is ordered by.
 NAME_SORT_KEY_FIELD = "_name_key"
 
+#: The orders an Agent list page can be read in, by the column each reads.
+#: ``agent_id`` breaks ties in the same direction, so every order is total.
+AGENT_LIST_SORT_COLUMNS = {
+    "name": "name_key",
+    "model": "model",
+    "runtime_profile_name": "runtime_profile_name",
+    "updated_at": "updated_at",
+}
+
 #: Authored fields stored in a column of the same name.
 _COLUMN_FIELDS = (
     "name",
@@ -960,25 +969,34 @@ class AgentRepository:
         limit: int,
         needle: str = "",
         enabled: bool | None = None,
+        sort: str = "name",
+        descending: bool = False,
     ) -> list[dict[str, Any]]:
-        """One page of the live Agents ``viewer`` may see, by name regardless of case.
+        """One page of the live Agents ``viewer`` may see, in ``sort`` order.
 
-        Rows come in ``(name_key, agent_id)`` order after ``after``.
-        ``needle`` keeps the Agents whose name, display name or model contains
-        it, ignoring case; ``enabled`` keeps the enabled or the disabled ones.
+        ``sort`` names an :data:`AGENT_LIST_SORT_COLUMNS` order; ``name`` reads
+        the name regardless of case. Rows come in ``(column, agent_id)`` order,
+        reversed when ``descending``, after ``after`` — that pair as the
+        previous page's last row carried it, its time as ISO-8601. ``needle``
+        keeps the Agents whose name, display name or model contains it,
+        ignoring case; ``enabled`` keeps the enabled or the disabled ones.
         """
         conditions: list[ColumnElement[bool]] = [
             _LIVE,
             visible_to(viewer, platform_admin=platform_admin),
         ]
+        column = _AGENTS.c[AGENT_LIST_SORT_COLUMNS[sort]]
         if after is not None:
-            name_key, agent_id = after
-            conditions.append(
-                or_(
-                    _AGENTS.c.name_key > name_key,
-                    and_(_AGENTS.c.name_key == name_key, _AGENTS.c.agent_id > agent_id),
+            value, agent_id = after
+            bound: Any = from_iso(value) if sort == "updated_at" else value
+            if descending:
+                conditions.append(
+                    or_(column < bound, and_(column == bound, _AGENTS.c.agent_id < agent_id))
                 )
-            )
+            else:
+                conditions.append(
+                    or_(column > bound, and_(column == bound, _AGENTS.c.agent_id > agent_id))
+                )
         wanted = str(needle or "").strip().lower()
         if wanted:
             conditions.append(
@@ -994,7 +1012,13 @@ class AgentRepository:
         rows = await fetch_all(
             _definition(environment_name=self.environment_name)
             .where(*conditions)
-            .order_by(_AGENTS.c.name_key, _AGENTS.c.agent_id)
+            .order_by(
+                *(
+                    (column.desc(), _AGENTS.c.agent_id.desc())
+                    if descending
+                    else (column, _AGENTS.c.agent_id)
+                )
+            )
             .limit(max(1, min(int(limit or 200), 10_000)))
         )
         return [_view(row) for row in rows]

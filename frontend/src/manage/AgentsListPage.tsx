@@ -25,6 +25,7 @@ import {
   StatusPill,
   NameCell,
   type ConsoleColumn,
+  type ConsoleSort,
 } from './console';
 import {
   agentDisplayName,
@@ -56,11 +57,17 @@ export default function AgentsListPage() {
   const { mutate } = useSWRConfig();
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusFilter>('all');
+  const [sort, setSort] = useState<ConsoleSort>({ key: 'name', descending: false });
   const query = useSettled(search);
 
   const fetchPage = useCallback(
-    (cursor: string | null) => listAgentsPage({ cursor, q: query, status }),
-    [query, status],
+    (cursor: string | null) => listAgentsPage({
+      cursor,
+      q: query,
+      status,
+      sort: `${sort.descending ? '-' : ''}${sort.key}`,
+    }),
+    [query, status, sort],
   );
   const publishCount = useCallback(
     (counts: AgentCounts | null) => {
@@ -90,6 +97,7 @@ export default function AgentsListPage() {
       key: 'name',
       intent: 'name',
       header: t('common:name'),
+      sortKey: 'name',
       // Use the description as the sub-line. `name` usually duplicates
       // `display_name`, while the description helps distinguish two Agents
       // (docs/frontend-design.md §2).
@@ -122,6 +130,7 @@ export default function AgentsListPage() {
       key: 'model',
       intent: 'identifier',
       header: t('common:model'),
+      sortKey: 'model',
       cell: (row) => <span className="text-muted-foreground">{agentModel(row) || '—'}</span>,
     },
     {
@@ -131,6 +140,7 @@ export default function AgentsListPage() {
       key: 'environment',
       intent: 'identifier',
       header: t('manage:agents.col_runtime_profile'),
+      sortKey: 'runtime_profile_name',
       cell: (row) => (
         <span className="text-muted-foreground">{row.runtime_profile_name || '—'}</span>
       ),
@@ -139,6 +149,7 @@ export default function AgentsListPage() {
       key: 'updated',
       intent: 'timestamp',
       header: t('common:updated_at'),
+      sortKey: 'updated_at',
       cell: (row) => <span className="text-muted-foreground">{formatDateTime(agentUpdatedAt(row))}</span>,
     },
   ];
@@ -195,6 +206,8 @@ export default function AgentsListPage() {
           rows={loading || error ? [] : rows}
           rowKey={(a) => a.agent_id}
           onRowClick={(a) => openRecord(a.agent_id)}
+          sort={sort}
+          onSortChange={setSort}
           empty={
             loading ? (
               <ConsoleTableSkeleton columns={columns} />
