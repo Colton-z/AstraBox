@@ -8867,8 +8867,12 @@ export interface components {
          *
          *     ``kind`` is the engine's own name for the task's type, such as Claude
          *     Code's ``local_bash``; ``description`` is the engine's own label for it.
+         *     ``child_run_id`` names the child run this task carries out when it is one,
+         *     so a sub-agent working apart from the response is one item, not two.
          */
         BackgroundTaskView: {
+            /** Child Run Id */
+            child_run_id?: string | null;
             /** Description */
             description: string;
             /** Kind */

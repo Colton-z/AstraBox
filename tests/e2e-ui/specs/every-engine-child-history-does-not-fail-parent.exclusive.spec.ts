@@ -127,12 +127,12 @@ for (const declared of engineCases().filter((profile) => profile.contracts.backg
     const catalogRead = page.waitForResponse((response) => response.request().method() === 'GET'
       && new URL(response.url()).pathname.endsWith(`/sessions/${sessionId}/child-runs`));
     await openSessionView(page, sessionId);
-    await page.getByRole('tab', { name: /^Agents/ }).click();
+    await page.getByRole('tab', { name: /^Tasks/ }).click();
     const emptyCatalog = await catalogRead;
     expect(emptyCatalog.status()).toBe(200);
     expect(await emptyCatalog.finished()).toBeNull();
     expect((await emptyCatalog.json()).data.child_runs).toEqual([]);
-    const panel = page.getByTestId('subagent-agents-panel');
+    const panel = page.getByTestId('session-tasks-panel');
     await expect(panel.getByTestId('subagent-agent-row')).toHaveCount(0);
     const prompt = [
       childPrompt(profile, 'foreground', gate),
@@ -202,7 +202,7 @@ for (const declared of engineCases().filter((profile) => profile.contracts.backg
     expect((await api.getSession(sessionId)).last_response).toMatchObject({ response_id: secondResponse, outcome: 'completed' });
     await page.reload({ waitUntil: 'domcontentloaded' });
     await expect(page.getByTestId('run-view')).toBeVisible();
-    await page.getByRole('tab', { name: /^Agents/ }).click();
+    await page.getByRole('tab', { name: /^Tasks/ }).click();
     await row.click();
     await expectChildToolCard(page, native, gate, receipt);
     const coldTranscript = await api.getChildRunMessages(sessionId, child.child_run_id);

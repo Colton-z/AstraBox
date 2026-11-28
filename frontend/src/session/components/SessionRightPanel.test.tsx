@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 
+import { sessionTasksOf } from '../hooks/useSessionTasks';
 import type { SubagentRegistry } from '../hooks/useSubagentRegistry';
 import { SessionRightPanel } from './SessionRightPanel';
 
@@ -25,9 +26,10 @@ describe('SessionRightPanel', () => {
       <SessionRightPanel
         rightTab="files"
         setRightTab={() => {}}
-        rightPanelCaps={{ tabs: ['files', 'agents'], defaultTab: 'files' }}
+        rightPanelCaps={{ tabs: ['files', 'tasks'], defaultTab: 'files' }}
         uniqueChangedFiles={0}
-        subagentRegistry={emptyRegistry}
+        tasks={sessionTasksOf([], emptyRegistry)}
+        onStopCommand={async () => {}}
         childRunProjectionError={null}
         sessionId="session-1"
         filesPanelEnabled={false}
@@ -74,7 +76,8 @@ describe('Diff read status', () => {
     return render(<SessionRightPanel
       rightTab="diff" setRightTab={() => {}}
       rightPanelCaps={{ tabs: ['diff'], defaultTab: 'diff' }}
-      uniqueChangedFiles={0} subagentRegistry={emptyRegistry} childRunProjectionError={null}
+      uniqueChangedFiles={0} tasks={sessionTasksOf([], emptyRegistry)} onStopCommand={async () => {}}
+      childRunProjectionError={null}
       sessionId="session-1" filesPanelEnabled={false} runtimeUnavailableMessage="Unavailable"
       filesRefreshNonce={0} runtimeAccessReady={false} lifecycleState="terminated"
       terminalCwd={null} setTerminalCwd={() => {}}

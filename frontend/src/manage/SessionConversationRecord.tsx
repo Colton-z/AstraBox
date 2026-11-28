@@ -13,7 +13,7 @@ import { ArtifactNavigationProvider } from '@/artifacts/navigation';
 import { ErrorNote } from '@/components/shell';
 import { Button } from '@/components/ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { AgentRow } from '@/session/components/AgentsListPanel';
+import { AgentRow } from '@/session/components/TasksPanel';
 import { MessageList } from '@/session/components/MessageList';
 import { MarkdownContent } from '@/session/components/MessageParts';
 import { SubagentTranscriptDrawer } from '@/session/components/SubagentTranscriptDrawer';

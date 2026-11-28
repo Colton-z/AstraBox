@@ -224,8 +224,8 @@ function heartbeatProgram(heartbeatPath: string, releasePath: string, doneMarker
 }
 
 async function showAgentsTab(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(page.getByTestId('subagent-agents-panel')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  await expect(page.getByTestId('session-tasks-panel')).toBeVisible({ timeout: 15_000 });
 }
 
 function headerStatusPill(page: Page) {
@@ -412,15 +412,15 @@ test('a background Agent still working keeps its box off the idle sweep while no
     }),
   });
   // What the user sees before walking away: the tab strip counts the child
-  // still working, and the Agents panel lists it.
+  // still working, and the Tasks panel lists it.
   await expect(
-    page.getByRole('tab', { name: 'Agents (1)', exact: true }),
-    'the Agents tab must count the child the user is leaving running',
+    page.getByRole('tab', { name: 'Tasks (1)', exact: true }),
+    'the Tasks tab must count the child the user is leaving running',
   ).toBeVisible({ timeout: 45_000 });
   await showAgentsTab(page);
   await expect(
-    page.getByTestId('subagent-agents-panel').locator(`[data-child-run-id="${childRunId}"]`),
-    'the Agents panel must show the child the user is leaving running',
+    page.getByTestId('session-tasks-panel').locator(`[data-child-run-id="${childRunId}"]`),
+    'the Tasks panel must show the child the user is leaving running',
   ).toBeVisible({ timeout: 45_000 });
   await page.goto(appPath('/sessions'), { waitUntil: 'domcontentloaded' });
 
@@ -548,7 +548,7 @@ test('a background Agent still working keeps its box off the idle sweep while no
 
   await openSessionView(page, subject);
   await expect(
-    page.getByRole('tab', { name: 'Agents (1)', exact: true }),
+    page.getByRole('tab', { name: 'Tasks (1)', exact: true }),
     'coming back must find the background Agent still counted as working',
   ).toBeVisible({ timeout: 45_000 });
   const firstBeat = await heartbeats();
@@ -626,8 +626,8 @@ test('a background Agent still working keeps its box off the idle sweep while no
     )
     .toBe(true);
   await expect(
-    page.getByRole('tab', { name: 'Agents', exact: true }),
-    'the Agents tab must stop counting the child once it has closed',
+    page.getByRole('tab', { name: 'Tasks', exact: true }),
+    'the Tasks tab must stop counting the child once it has closed',
   ).toBeVisible({ timeout: 45_000 });
   await expect(
     headerStatusPill(page),

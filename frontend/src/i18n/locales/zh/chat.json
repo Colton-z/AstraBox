@@ -165,12 +165,11 @@
     "tab": {
       "files": "文件",
       "terminal": "终端",
-      "browser": "Browser"
+      "browser": "Browser",
+      "tasks": "任务"
     }
   },
   "subagent": {
-    "empty_title": "本次 Session 还没有子 Agent。",
-    "empty_hint": "Agent 或 Task 工具启动子任务后，其消息和工具活动会显示在这里。",
     "transcript_aria": "子 Agent 活动",
     "stop": "停止",
     "stopping": "停止中…",
@@ -281,10 +280,12 @@
     "delete_title": "删除助手",
     "delete_confirm": "删除 {{name}}?它的工作区会被移除,之后无法再打开。"
   },
-  "background_tasks": {
-    "summary": "{{count}} 个后台任务运行中",
-    "title": "后台运行中",
-    "hint": "回复已经结束，可以直接发送下一条消息。这些任务会在对话的沙箱里继续运行，直到结束或被停止。",
+  "tasks": {
+    "summary": "{{count}} 个任务运行中",
+    "running": "运行中",
+    "finished": "已结束",
+    "empty_title": "本次对话还没有任务。",
+    "empty_hint": "Agent 启动的子 Agent，以及它留在后台运行的命令，会显示在这里。",
     "stop": "停止",
     "stopping": "正在停止…"
   },

@@ -402,7 +402,7 @@ GET /api/v1/sessions/{session_id}/child-runs/{child_run_id}/messages
 POST /api/v1/sessions/{session_id}/child-runs/{child_run_id}/stop
 ```
 
-**Agents** 标签展示同样的 child run 信息。委派方式、共享工作区和 child run 控制操作见
+**任务** 标签展示同样的 child run 信息。委派方式、共享工作区和 child run 控制操作见
 [Multiagent 编排](multi-agents.md)。
 
 ## 生命周期

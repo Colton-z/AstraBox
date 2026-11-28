@@ -55,7 +55,8 @@ Two additional lifecycle markers are surfaced alongside `state`:
    usual, and each task can be stopped with
    `POST /api/v1/sessions/{session_id}/background-tasks/{task_id}/stop`. A task
    leaves the list when the program reports it ended, and the sandbox is kept
-   while any runs. The Session cannot be archived, ended or deleted while one
+   while any runs. In the console, a line above the composer counts the tasks
+   and opens the **Tasks** tab. The Session cannot be archived, ended or deleted while one
    runs; stop it first.
 6. <b>TERMINATED</b> The conversation remains stored, but its runtime must be
    recovered (`POST /api/v1/sessions/{session_id}/recover`) before more work can
@@ -200,7 +201,7 @@ commonly used fields are:
 | `last_response` | object/null | The most recent response that ended, with its `outcome` (`completed`, `failed` or `cancelled`) and the program's own `native_reason`. |
 | `pending_interaction` | object/null | The approval or question the Session is waiting on. |
 | `held_inputs` | array | Messages accepted but not yet taken by the Agent program. |
-| `background_tasks` | array | Work the Agent program keeps running in the sandbox: each `task_id`, the program's own `kind` (Claude Code: `local_bash`) and `description`. |
+| `background_tasks` | array | Work the Agent program keeps running in the sandbox: each `task_id`, the program's own `kind` (Claude Code: `local_bash`) and `description`, and `child_run_id` when the task is a child run, such as a Claude Code background subagent. |
 | `output_seq` | integer | The output position to follow the Session's stream from. |
 | `runtime_unavailable` | boolean | Whether the Session's sandbox is gone or released. |
 | `last_error` | string/null | Why the Session last failed, such as a runtime that could not start. |
@@ -521,7 +522,7 @@ GET /api/v1/sessions/{session_id}/child-runs/{child_run_id}/messages
 POST /api/v1/sessions/{session_id}/child-runs/{child_run_id}/stop
 ```
 
-The **Agents** tab presents the same child-run information. See [Multiagent
+The **Tasks** tab presents the same child-run information. See [Multiagent
 orchestration](multi-agents.md) for delegation, shared workspace behavior, and
 child-run controls.
 

@@ -185,23 +185,23 @@ async function closePageAfterAssertions(page: Page): Promise<void> {
 }
 
 async function showAgentsTab(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(page.getByTestId('subagent-agents-panel')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  await expect(page.getByTestId('session-tasks-panel')).toBeVisible({ timeout: 15_000 });
 }
 
 function subagentRows(page: Page) {
-  return page.getByTestId('subagent-agents-panel').getByTestId('subagent-agent-row');
+  return page.getByTestId('session-tasks-panel').getByTestId('subagent-agent-row');
 }
 
 async function expectAgentsPanelRows(page: Page, minCount: number, label: string): Promise<void> {
   await expect
     .poll(async () => subagentRows(page).count(), {
       timeout: 45_000,
-      message: `${label} should render subagent rows in the Agents panel`,
+      message: `${label} should render subagent rows in the Tasks panel`,
     })
     .toBeGreaterThanOrEqual(minCount);
   await expect(
-    page.getByTestId('subagent-agents-panel').getByTestId('empty-state'),
+    page.getByTestId('session-tasks-panel').getByTestId('empty-state'),
   ).toHaveCount(0);
 }
 
@@ -259,7 +259,7 @@ const DRAWER_SETTLED =
   /Bash|python3|Background task|Agent .* completed|BG_|This subagent has no activity to show yet\./;
 
 /**
- * The Agents panel reads the Session child-run index; the drawer fetches the
+ * The Tasks panel reads the Session child-run index; the drawer fetches the
  * selected child's transcript on demand from
  * /sessions/{id}/child-runs/{childRunId}/messages. Its content arrives
  * one round trip AFTER the drawer becomes visible, and until then the drawer
@@ -502,7 +502,7 @@ test('foreground turn during a background Agent lifecycle preserves both assista
       probeMs: PROBE_TIMEOUT_MS,
     });
 
-    // ── The background lifecycle is VISIBLE and LIVE in the Agents panel. ─────
+    // ── The background lifecycle is VISIBLE and LIVE in the Tasks panel. ─────
     const liveChild = await waitForOpenChildRun(api, sessionId);
     let liveToolId = '';
     await expect.poll(async () => {

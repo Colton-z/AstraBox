@@ -95,13 +95,13 @@ test('Pi retains a failed direct child transcript and continues its parent after
   page.on('requestfailed', (candidate) => pendingCatalog.delete(candidate));
   const firstCatalog = page.waitForResponse((response) => catalogRead(response.request()));
   await openSessionView(page, sessionId);
-  await page.getByRole('tab', { name: /^Agents/ }).click();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
   const empty = await firstCatalog;
   expect(empty.status()).toBe(200);
   expect(await empty.finished()).toBeNull();
   expect((await empty.json()).data).toMatchObject({ session_id: sessionId, child_runs: [] });
   await expect.poll(() => pendingCatalog.size).toBe(0);
-  const panel = page.getByTestId('subagent-agents-panel');
+  const panel = page.getByTestId('session-tasks-panel');
   await expect(panel.getByTestId('subagent-agent-row')).toHaveCount(0);
   await sendPrompt(page, sessionId, prompt);
   await expect.poll(() => directLaunch(sessionId, marker), {
@@ -110,7 +110,7 @@ test('Pi retains a failed direct child transcript and continues its parent after
   const launch = directLaunch(sessionId, marker)!;
   observations.push({ launch });
   const rows = panel.getByTestId('subagent-agent-row');
-  await expect(rows, 'the already-open Agents panel discovers the direct child').toHaveCount(1, { timeout: 15_000 });
+  await expect(rows, 'the already-open Tasks panel discovers the direct child').toHaveCount(1, { timeout: 15_000 });
   const childId = await rows.getAttribute('data-child-run-id');
   expect(childId).toBeTruthy();
   await rows.click();
@@ -216,7 +216,7 @@ test('Pi retains a failed direct child transcript and continues its parent after
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
   await expect(parentRow).toHaveText(parentVisible, { useInnerText: true });
   await expect(nextRow).toHaveText(nextVisible, { useInnerText: true });
-  await page.getByRole('tab', { name: /^Agents/ }).click();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
   const coldRow = panel.locator(`[data-child-run-id="${childId}"]`);
   await expect(coldRow.getByText('failed', { exact: true })).toBeVisible();
   await expect(coldRow.locator('svg.animate-spin')).toHaveCount(0);
@@ -270,7 +270,7 @@ test('Pi survives a real child inspection artifact error and retains subsequent 
   page.on('requestfailed', (candidate) => pending.delete(candidate));
   const firstRead = page.waitForResponse((response) => catalogRead(response.request()));
   await openSessionView(page, sessionId);
-  await page.getByRole('tab', { name: /^Agents/ }).click();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
   const empty = await firstRead;
   expect(empty.status()).toBe(200);
   expect(await empty.finished()).toBeNull();
@@ -284,7 +284,7 @@ test('Pi survives a real child inspection artifact error and retains subsequent 
   await expect.poll(() => directLaunch(sessionId, gates[0].marker, 'delegate'), { timeout: 30_000 }).not.toBeNull();
   const launch = directLaunch(sessionId, gates[0].marker, 'delegate')!;
   await expect.poll(() => readGate(0), { timeout: 30_000 }).toEqual([gates[0].marker, null, null]);
-  const panel = page.getByTestId('subagent-agents-panel');
+  const panel = page.getByTestId('session-tasks-panel');
   const row = panel.getByTestId('subagent-agent-row');
   await expect(row).toHaveCount(1, { timeout: 15_000 });
   const childId = await row.getAttribute('data-child-run-id');
@@ -390,7 +390,7 @@ test('Pi survives a real child inspection artifact error and retains subsequent 
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('run-view')).toBeVisible();
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
-  await page.getByRole('tab', { name: /^Agents/ }).click();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
   const coldRow = panel.locator(`[data-child-run-id="${childId}"]`);
   await expect(coldRow.locator('svg.animate-spin')).toHaveCount(0);
   await coldRow.click();

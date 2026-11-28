@@ -17,17 +17,17 @@ import { trackSessions } from '../fixtures/sessionCleanup';
 const sessions = trackSessions();
 
 async function openAgents(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(page.getByTestId('subagent-agents-panel')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  await expect(page.getByTestId('session-tasks-panel')).toBeVisible({ timeout: 15_000 });
 }
 
 function childRows(page: Page) {
-  return page.getByTestId('subagent-agents-panel').getByTestId('subagent-agent-row');
+  return page.getByTestId('session-tasks-panel').getByTestId('subagent-agent-row');
 }
 
 function childRowsAtDepth(page: Page, depth: number) {
   return page
-    .getByTestId('subagent-agents-panel')
+    .getByTestId('session-tasks-panel')
     .locator(`[data-testid="subagent-agent-row"][data-subagent-depth="${depth}"]`);
 }
 

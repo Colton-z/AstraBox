@@ -227,8 +227,8 @@ test('native HTTP MCP timeout settles one background Agent and preserves its too
   const retained = await api.getChildRunMessages(sessionId, childId);
   expect(JSON.stringify(retained)).toContain(TIMEOUT_TEXT);
   expect(JSON.stringify(retained)).toContain(timeoutToolId);
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(page.getByTestId('subagent-agents-panel').getByTestId('subagent-agent-row')).toHaveCount(1);
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  await expect(page.getByTestId('session-tasks-panel').getByTestId('subagent-agent-row')).toHaveCount(1);
   await expect(page.locator(`[data-testid="subagent-agent-row"][data-child-run-id="${childId}"]`))
     .toContainText('completed');
   await expect(status).toHaveText(/Ready|就绪/);

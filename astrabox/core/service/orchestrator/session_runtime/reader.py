@@ -172,9 +172,17 @@ INPUT_CANCELLED = {
 }
 
 
-def background_task_records(tasks: Any) -> list[dict[str, str]]:
+def background_task_records(tasks: Any) -> list[dict[str, str | None]]:
     """The runtime's background tasks as the session row keeps them."""
-    return [{"task_id": task.task_id, "kind": task.kind, "description": task.description} for task in tasks]
+    return [
+        {
+            "task_id": task.task_id,
+            "kind": task.kind,
+            "description": task.description,
+            "child_engine_ref": task.child_engine_ref,
+        }
+        for task in tasks
+    ]
 
 
 class ControlRefused(Exception):

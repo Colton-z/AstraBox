@@ -18,6 +18,7 @@ from typing import Any
 from astrabox.common.utils.errors import APIError
 from astrabox.common.utils.user_context import UserContext
 from astrabox.core.model import AgentState, SessionState
+from astrabox.core.service.orchestrator.engine.child_runs import public_child_run_id
 from astrabox.core.service.orchestrator.engine.runtime import RUNTIME_PROTOCOL_INCOMPATIBLE, RuntimeProtocolError
 from astrabox.core.service.orchestrator.engine.interaction_contract import (
     public_interaction_view,
@@ -85,6 +86,21 @@ def interaction_view(row: dict[str, Any], *, include_tool_input: bool) -> dict[s
 
 #: Page states in which the runtime's last report describes a box it still runs in.
 _REACHABLE = frozenset({SessionState.READY.value, "PROCESSING", "WAITING_INPUT"})
+
+
+def _background_task_view(task: dict[str, Any], *, session_id: str, engine_kind: str) -> dict[str, Any]:
+    """A background task as the API shows it: a child run by its public id, its engine reference private."""
+    ref = task.get("child_engine_ref")
+    return {
+        "task_id": task["task_id"],
+        "kind": task["kind"],
+        "description": task["description"],
+        "child_run_id": (
+            public_child_run_id(session_id=session_id, engine_kind=engine_kind, engine_ref=str(ref))
+            if ref
+            else None
+        ),
+    }
 
 
 def runtime_view_state(session: dict[str, Any], activity: dict[str, Any]) -> str:
@@ -531,7 +547,12 @@ class SessionRuntimeService:
                 for row in activity["held_inputs"]
             ],
             # What the runtime last reported, while its box is reachable; a lost box ended its work.
-            "background_tasks": list(session.get("runtime_background_tasks") or []) if state in _REACHABLE else [],
+            "background_tasks": [
+                _background_task_view(task, session_id=session_id, engine_kind=str(session.get("engine_kind") or ""))
+                for task in session.get("runtime_background_tasks") or []
+            ]
+            if state in _REACHABLE
+            else [],
             "output_seq": output_seq,
         }
 

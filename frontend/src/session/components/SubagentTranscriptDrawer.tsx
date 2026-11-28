@@ -17,7 +17,7 @@ import {
   subagentDisplayStatus,
   type SubagentEntry,
 } from '../hooks/useSubagentRegistry';
-import { AgentRow, shortSubagentId } from './AgentsListPanel';
+import { AgentRow, shortSubagentId } from './TasksPanel';
 import { useSubagentNavigation } from './subagentNavigation';
 import { keepsLastRead } from '@/hooks/useKeepCurrent';
 

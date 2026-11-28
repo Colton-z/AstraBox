@@ -105,8 +105,8 @@ test('mirrored Workflow Agents have stable history and navigation alongside ordi
     return { child: child.name, ...history };
   }));
   await openSessionView(page, sessionId);
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  const panel = page.getByTestId('subagent-agents-panel');
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  const panel = page.getByTestId('session-tasks-panel');
   await expect(panel.getByTestId('subagent-agent-row')).toHaveCount(11);
   const drawer = page.getByTestId('subagent-transcript-drawer');
   for (const workflow of workflows) {
@@ -130,7 +130,7 @@ test('mirrored Workflow Agents have stable history and navigation alongside ordi
     }
   }
   await page.reload();
-  await page.getByRole('tab', { name: /^Agents/ }).click();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
   await expect(panel.getByTestId('subagent-agent-row')).toHaveCount(11);
   expect(await api.listChildRuns(sessionId)).toEqual(listed);
   const reloadedChild = children[8]!;

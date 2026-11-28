@@ -1,4 +1,4 @@
-/** An already-open Agents panel follows real native children, not only final results. */
+/** An already-open Tasks panel follows real native children, not only final results. */
 import { randomUUID } from 'node:crypto';
 import { expect, test, type Page, type Request, type Response } from '@playwright/test';
 
@@ -43,8 +43,8 @@ function childText(transcript: ChildRunMessagePage, role: string): string {
 
 
 async function openAgents(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(page.getByTestId('subagent-agents-panel')).toBeVisible();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  await expect(page.getByTestId('session-tasks-panel')).toBeVisible();
 }
 
 /** The input id `POST /inputs` answered the page with. */
@@ -119,7 +119,7 @@ for (const declared of profiles) {
       await expect.poll(() => pendingCatalogReads.size, {
         message: 'no initial browser catalog request may remain in flight when the child launches',
       }).toBe(0);
-      const panel = page.getByTestId('subagent-agents-panel');
+      const panel = page.getByTestId('session-tasks-panel');
       const rows = panel.getByTestId('subagent-agent-row');
       await expect(rows).toHaveCount(0);
       const launchInput = await inputIdOf(await sendPrompt(page, sessionId, childPrompt(profile, mode, gate)));
@@ -137,7 +137,7 @@ for (const declared of profiles) {
       observations.push({ launched });
       expectNativeMode(launched, profile, mode);
       await expect.poll(() => rows.count(), {
-        timeout: 15_000, message: 'the already-open Agents panel must discover the running child before release',
+        timeout: 15_000, message: 'the already-open Tasks panel must discover the running child before release',
       }).toBeGreaterThan(0);
       await expect(panel.getByTestId('empty-state')).toHaveCount(0);
 

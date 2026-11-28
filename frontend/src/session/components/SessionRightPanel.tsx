@@ -7,7 +7,7 @@ import DiffPanel from '../../components/DiffPanel';
 import { ErrorNote } from '@/components/shell';
 import { Button } from '@/components/ui/button';
 import type { FileChange } from '../../types';
-import type { SubagentRegistry } from '../hooks/useSubagentRegistry';
+import type { SessionTasks } from '../hooks/useSessionTasks';
 import {
   getRightPanelTabLabel,
   type SessionRightPanelCapabilities,
@@ -15,9 +15,9 @@ import {
 } from '../sessionCapabilities';
 import SessionFilesPanel from './SessionFilesPanel';
 import SessionBrowserPanel from './SessionBrowserPanel';
-import { AgentsListPanel } from './AgentsListPanel';
+import { TasksPanel } from './TasksPanel';
 
-// Right-side tabbed panel for files, browser, terminal, agents, diffs, and artifacts. It owns its
+// Right-side tabbed panel for files, browser, terminal, tasks, diffs, and artifacts. It owns its
 // ResizablePanel so the parent only assembles it beside the left pane and the
 // handle between them.
 export function SessionRightPanel({
@@ -30,7 +30,8 @@ export function SessionRightPanel({
   setRightTab,
   rightPanelCaps,
   uniqueChangedFiles,
-  subagentRegistry,
+  tasks,
+  onStopCommand,
   childRunProjectionError,
   sessionId,
   filesPanelEnabled,
@@ -58,7 +59,8 @@ export function SessionRightPanel({
   setRightTab: (tab: SessionRightPanelTab) => void;
   rightPanelCaps: SessionRightPanelCapabilities;
   uniqueChangedFiles: number;
-  subagentRegistry: SubagentRegistry;
+  tasks: SessionTasks;
+  onStopCommand: (taskId: string) => Promise<void>;
   childRunProjectionError: string | null;
   sessionId: string;
   filesPanelEnabled: boolean;
@@ -105,7 +107,7 @@ export function SessionRightPanel({
             >
               {getRightPanelTabLabel(tab, t, {
                 changedFileCount: uniqueChangedFiles,
-                liveSubagentCount: subagentRegistry.liveCount,
+                runningTaskCount: tasks.runningCount,
               })}
             </TabsTrigger>
           ))}
@@ -160,12 +162,13 @@ export function SessionRightPanel({
             />
           </TabsContent>
         )}
-        {enabledTabs.has('agents') && (
-          <TabsContent value="agents" className="flex-1 min-h-0 overflow-hidden">
-            <AgentsListPanel
-              registry={subagentRegistry}
+        {enabledTabs.has('tasks') && (
+          <TabsContent value="tasks" className="flex-1 min-h-0 overflow-hidden">
+            <TasksPanel
+              tasks={tasks}
               selectedChildRunId={selectedChildRunId}
               onSelect={setSelectedChildRunId}
+              onStopCommand={onStopCommand}
               projectionError={childRunProjectionError}
             />
           </TabsContent>

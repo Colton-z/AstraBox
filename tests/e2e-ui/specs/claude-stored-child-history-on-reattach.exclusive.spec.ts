@@ -186,8 +186,8 @@ test('a resumed Workflow Agent split across its Workflow and plain transcripts k
 
   await openSessionView(page, sid);
   await expect(page.locator(`[data-message-id="${secondReply.id}"]`)).toContainText(`SECOND_${marker}`);
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  const panel = page.getByTestId('subagent-agents-panel');
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  const panel = page.getByTestId('session-tasks-panel');
   const drawer = page.getByTestId('subagent-transcript-drawer');
   await panel.getByTestId('subagent-agent-row').filter({ hasText: workflowName }).click();
   await drawer.getByTestId('subagent-child-navigation').getByTestId('subagent-agent-row')

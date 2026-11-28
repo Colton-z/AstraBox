@@ -167,7 +167,7 @@ export interface SessionRecord {
   /** Detail only: inputs the platform still holds. */
   held_inputs?: HeldInput[] | null;
   /** Work the runtime keeps running in its box, each stoppable on its own. */
-  background_tasks?: Array<{ task_id: string; kind: string; description: string }> | null;
+  background_tasks?: Array<{ task_id: string; kind: string; description: string; child_run_id?: string | null }> | null;
   /** Detail only: the output position to follow the session's stream from. */
   output_seq?: number | null;
 }

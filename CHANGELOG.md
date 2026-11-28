@@ -15,8 +15,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Fixed and improved
 
-- Work a reply leaves running in the background shows as one line above the composer with how many tasks run; select it to see them and stop one.
-- A conversation read to its end stays at its end when something above the composer takes room from it, such as the background-task line or a long draft.
+- The session's **Agents** tab is now **Tasks**: running subagents and background shells come first, each stoppable, and finished subagents follow. While anything runs, one line above the composer says how many tasks run and opens the tab. A Session's `background_tasks` carry `child_run_id` when the task is a child run. [Multiagent orchestration](https://www.astrabox.ai/docs/multi-agents#observe-child-runs-and-events)
+- A conversation read to its end stays at its end when something above the composer takes room from it, such as the tasks line or a long draft.
 - The ingress gateway image is also published as `v<version>`, the tag the OpenSandbox chart pulls for the documented `gateway.image.tag=<version>`; 0.1.17 and 0.1.18 carry it too. [Kubernetes Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
 
 ## 中文
@@ -27,8 +27,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### 修复与改进
 
-- 回复结束后仍在后台运行的任务，在输入框上方只显示一行任务数量；点开才列出各任务并可单独停止。
-- 停在对话末尾时，输入框上方出现的内容（如后台任务行或较长的草稿）不再遮住最后的消息。
+- 对话右侧的 **Agents** 标签改为 **任务**：运行中的子 Agent 和后台 shell 排在最前，均可停止，已结束的子 Agent 排在后面。有工作在运行时，输入框上方只显示一行任务数量，点击打开该标签。Session 的 `background_tasks` 在任务本身是 child run 时带 `child_run_id`。[Multiagent 编排](https://www.astrabox.ai/docs/multi-agents#observe-child-runs-and-events)
+- 停在对话末尾时，输入框上方出现的内容（如任务行或较长的草稿）不再遮住最后的消息。
 - ingress gateway 镜像同时发布 `v<version>` tag，即 OpenSandbox chart 在文档中的 `gateway.image.tag=<version>` 下实际拉取的 tag；0.1.17 和 0.1.18 也已补上。[Kubernetes Gateway](https://www.astrabox.ai/docs/providers/opensandbox#configure-a-browser-facing-kubernetes-gateway)
 
 ## [0.1.18] - 2026-11-27

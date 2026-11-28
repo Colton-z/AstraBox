@@ -83,8 +83,8 @@ async function fileExists(api: AstraApi, sessionId: string, path: string): Promi
 }
 
 async function assertChildPanel(page: Page, child: ChildRunRecord) {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  const panel = page.getByTestId('subagent-agents-panel');
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  const panel = page.getByTestId('session-tasks-panel');
   await expect(panel.getByTestId('subagent-agent-row'), 'one Agent, not its internal Bash task').toHaveCount(1);
   const row = panel.locator(`[data-child-run-id="${child.child_run_id}"]`);
   await expect(row).toBeVisible();

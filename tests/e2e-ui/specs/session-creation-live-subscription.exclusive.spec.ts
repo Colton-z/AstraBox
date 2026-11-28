@@ -228,8 +228,8 @@ test('agent_chat creation follows the session stream from the start, without a r
     const childPayload = await childList.response.json();
     expect(childPayload.data.session_id).toBe(sessionId);
     expect(childPayload.data.child_runs, 'fresh conversation has no durable children after sync').toEqual([]);
-    await page.getByRole('tab', { name: /^Agents/ }).click();
-    const agentsPanel = page.getByTestId('subagent-agents-panel');
+    await page.getByRole('tab', { name: /^Tasks/ }).click();
+    const agentsPanel = page.getByTestId('session-tasks-panel');
     await expect(agentsPanel).toBeVisible();
     await expect(agentsPanel.getByTestId('empty-state')).toBeVisible();
     await expect(agentsPanel.getByTestId('subagent-agent-row')).toHaveCount(0);

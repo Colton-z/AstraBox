@@ -83,6 +83,8 @@ class BackgroundTaskView(BaseModel):
 
     ``kind`` is the engine's own name for the task's type, such as Claude
     Code's ``local_bash``; ``description`` is the engine's own label for it.
+    ``child_run_id`` names the child run this task carries out when it is one,
+    so a sub-agent working apart from the response is one item, not two.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -90,6 +92,7 @@ class BackgroundTaskView(BaseModel):
     task_id: str
     kind: str
     description: str
+    child_run_id: str | None = None
 
 
 class HeldInputView(BaseModel):

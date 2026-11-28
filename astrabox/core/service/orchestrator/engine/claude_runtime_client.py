@@ -33,7 +33,10 @@ from claude_agent_sdk import PermissionMode
 
 from astrabox.common.logger.logger_factory import get_logger
 from astrabox.core.service.orchestrator.engine.base import EngineCapabilityManifest
-from astrabox.core.service.orchestrator.engine.claude_child_runs import ClaudeChildIdentities
+from astrabox.core.service.orchestrator.engine.claude_child_runs import (
+    ClaudeChildIdentities,
+    claude_task_child_ref,
+)
 from astrabox.core.service.orchestrator.engine.claude_code_background import stored_child_identities
 from astrabox.core.service.orchestrator.engine.claude_interaction_codec import (
     build_claude_interaction_contract,
@@ -85,7 +88,10 @@ logger = get_logger(__name__)
 
 
 def _background_tasks(tasks: Any) -> tuple[BackgroundTask, ...]:
-    """The runner's open background tasks: Claude Code's task id, ``task_type`` and description of each."""
+    """The runner's open background tasks: Claude Code's task id, ``task_type`` and description of each.
+
+    A task that is a child run carries the reference its child-run facts carry.
+    """
     if tasks is None:
         return ()
     if not isinstance(tasks, list):
@@ -95,7 +101,15 @@ def _background_tasks(tasks: Any) -> tuple[BackgroundTask, ...]:
         task_id = str((task or {}).get("task_id") or "").strip() if isinstance(task, dict) else ""
         if not task_id:
             raise ValueError(f"runner background task has no task_id: {task!r}")
-        out.append(BackgroundTask(task_id, str(task.get("task_type") or ""), str(task.get("description") or "")))
+        task_type = str(task.get("task_type") or "")
+        out.append(
+            BackgroundTask(
+                task_id,
+                task_type,
+                str(task.get("description") or ""),
+                claude_task_child_ref(task_id, task_type),
+            )
+        )
     return tuple(out)
 
 _ABORTED_TERMINAL_REASONS = frozenset({"aborted_streaming", "aborted_tools"})

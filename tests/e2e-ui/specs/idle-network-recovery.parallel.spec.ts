@@ -159,7 +159,7 @@ test('background child reads retain their transcript and catch up after reconnec
   const children = await api.waitForChildRuns(sessionId, (runs) => runs.some((run) => run.active), 30_000);
   expect(children, 'one background child is running').toHaveLength(1);
   const childId = children[0]!.child_run_id;
-  await page.getByRole('tab', { name: /^Agents/ }).click();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
   const row = page.locator(`[data-child-run-id="${childId}"]`);
   await row.click();
   const column = page.getByTestId('subagent-transcript-column');

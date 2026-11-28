@@ -185,8 +185,8 @@ function backgroundAgentPrompt(
 }
 
 async function showAgentsTab(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(page.getByTestId('subagent-agents-panel')).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  await expect(page.getByTestId('session-tasks-panel')).toBeVisible({ timeout: 15_000 });
 }
 
 let sessionId = '';
@@ -371,7 +371,7 @@ test('background Agent recovery replays its durable transcript drawer', async ({
   ).toHaveCount(1, { timeout: 45_000 });
   await showAgentsTab(page);
 
-  const panel = page.getByTestId('subagent-agents-panel');
+  const panel = page.getByTestId('session-tasks-panel');
   const row = panel.locator(`[data-child-run-id="${childRunId}"]`);
   await expect(
     row,

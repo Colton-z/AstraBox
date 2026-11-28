@@ -21,8 +21,8 @@ onPassOnly(async ({ request }) => {
 });
 
 async function openAgents(page: Page): Promise<void> {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  await expect(page.getByTestId('subagent-agents-panel')).toBeVisible();
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  await expect(page.getByTestId('session-tasks-panel')).toBeVisible();
 }
 
 /** The receipt of a message the page sent, checked against the id the page minted for it. */
@@ -93,7 +93,7 @@ test('SendMessage reopens the same completed child Agent until its new task fini
   const previousMessageIds = new Set(firstTranscript.messages.map((message) => message.message_id));
   await api.waitForSessionReady(sessionId);
   await openAgents(page);
-  const rows = page.getByTestId('subagent-agents-panel').getByTestId('subagent-agent-row');
+  const rows = page.getByTestId('session-tasks-panel').getByTestId('subagent-agent-row');
   await expect(rows).toHaveCount(1);
   const sameChildRow = page.locator(`[data-testid="subagent-agent-row"][data-child-run-id="${childId}"]`);
   await expect(sameChildRow.locator('svg.animate-spin')).toHaveCount(0);
@@ -150,7 +150,7 @@ test('SendMessage reopens the same completed child Agent until its new task fini
   })), 'the resumed child is still working after the foreground ends').toEqual([{ id: childId, closed: false, active: true }]);
   await expect(
     sameChildRow.locator('svg.animate-spin'),
-    'the Agents panel must show the resumed child working after the foreground finishes',
+    'the Tasks panel must show the resumed child working after the foreground finishes',
   ).toHaveCount(1);
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
   const rootHistory = await api.getMessages(sessionId);

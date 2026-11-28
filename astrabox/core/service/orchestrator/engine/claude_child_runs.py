@@ -80,6 +80,16 @@ def claude_lifecycle_child_run_id(raw: dict[str, Any]) -> str:
     return str(claude_envelope_value(raw, "task_id") or "").strip()
 
 
+def claude_task_child_ref(task_id: str, task_type: str) -> str | None:
+    """The child run a Claude Code task carries out: the task's own id.
+
+    The SDK's ``task_type`` is optional and its catalog is not limited to
+    local Agents. Bash/Monitor work (``local_bash``) is the measured non-Agent
+    case; other task lifecycles retain their native identity and vocabulary.
+    """
+    return None if task_type == "local_bash" else task_id
+
+
 def claude_tool_receipt(raw: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
     """Read the native result and its invocation from either SDK serialization."""
     if claude_message_role(raw) != "user":
@@ -173,12 +183,7 @@ class ClaudeChildIdentities:
 
     def lifecycle_ref(self, raw: dict[str, Any]) -> str:
         task_id = claude_lifecycle_child_run_id(raw)
-        # The SDK's task_type is optional and its catalog is not limited to
-        # local Agents. Bash/Monitor work is the measured non-Agent case;
-        # other task lifecycles retain their native identity and vocabulary.
-        if self.task_types.get(task_id) == "local_bash":
-            return ""
-        return task_id
+        return claude_task_child_ref(task_id, self.task_types.get(task_id, "")) or ""
 
     def observe(self, raw: dict[str, Any], *, include_messages: bool = True) -> str | None:
         """Index native facts; return an Agent receipt that starts detached work."""

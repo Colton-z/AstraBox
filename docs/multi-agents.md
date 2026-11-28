@@ -71,9 +71,9 @@ work that the parent Agent must handle itself.
 4. Save the Agent and start a Session.
 
 AstraBox does not define a `multiagent.agents` roster. Delegation tools and
-child-run semantics belong to the selected Agent program. The **Agents** tab
+child-run semantics belong to the selected Agent program. The **Tasks** tab
 stays visible in a Session and shows an empty state until the program starts a
-child run.
+child run or leaves work running.
 
 ### Configure with the API
 
@@ -137,9 +137,13 @@ See [Agent tools and extensions](adding-tools.md),
 
 ## Observe child runs and events
 
-Open a Session and select the **Agents** tab. It shows the child-run tree,
-current status, description, summary, and usage values reported by the Agent
-program. Select a child to open its messages and tool activity.
+Open a Session and select the **Tasks** tab. Running work comes first: child
+runs, and background work that is not a child run, such as a Claude Code
+background shell, which stops from its row. Child runs that have ended follow.
+Each child shows its place in the tree and the status, description, summary,
+and usage values reported by the Agent program. Select a child to open its
+messages and tool activity, and to stop it. While anything runs, a line above
+the composer says how many tasks run and opens the tab.
 
 List all child runs in tree order:
 
@@ -219,7 +223,7 @@ shapes.
 
 Confirm that the installed Agent program supports child runs and that the
 system prompt defines work that can be divided. A Session with no child runs is
-valid and shows an empty **Agents** tab.
+valid and shows an empty **Tasks** tab.
 
 ### A Session does not use an updated Agent configuration
 

@@ -35,7 +35,8 @@ import { SessionHeader } from './components/SessionHeader';
 import { SessionRetryBanner } from './components/SessionRetryBanner';
 import { SessionConversationView } from './components/SessionConversationView';
 import { SessionPendingInteractionFooter } from './components/SessionPendingInteractionFooter';
-import { SessionBackgroundTasks } from './components/SessionBackgroundTasks';
+import { SessionTasksLine } from './components/SessionTasksLine';
+import { useSessionTasks } from './hooks/useSessionTasks';
 import { SessionComposerBox } from './components/SessionComposerBox';
 import { SessionRightPanel } from './components/SessionRightPanel';
 import { SessionSendContext, type SessionSendState } from './components/UserMessageStatus';
@@ -334,6 +335,12 @@ function SessionPageReady({
     hasPendingInteraction,
   });
 
+  const sessionTasks = useSessionTasks(session.background_tasks ?? [], subagentRegistry);
+  const stopCommand = async (taskId: string) => {
+    await stopSessionBackgroundTask(session.session_id, taskId);
+    void refresh().catch(() => {});
+  };
+
   // ── Banners ──────────────────────────────────────────────────
   const {
     showRuntimeUnavailableBanner, showSessionLastError, showRecoverButton,
@@ -444,12 +451,9 @@ function SessionPageReady({
           <SessionComposerBox
             userAction={<>
               <SessionUserAction gate={prerequisite} />
-              <SessionBackgroundTasks
-                tasks={session.background_tasks ?? []}
-                onStop={async (taskId) => {
-                  await stopSessionBackgroundTask(session.session_id, taskId);
-                  void refresh().catch(() => {});
-                }}
+              <SessionTasksLine
+                count={sessionTasks.runningCount}
+                onOpen={() => setRightTab('tasks')}
               />
             </>}
             sessionId={sessionId}
@@ -495,7 +499,8 @@ function SessionPageReady({
         setRightTab={setRightTab}
         rightPanelCaps={rightPanelCaps}
         uniqueChangedFiles={uniqueChangedFiles}
-        subagentRegistry={subagentRegistry}
+        tasks={sessionTasks}
+        onStopCommand={stopCommand}
         childRunProjectionError={childRunProjectionError}
         sessionId={sessionId}
         filesPanelEnabled={filesPanelEnabled}

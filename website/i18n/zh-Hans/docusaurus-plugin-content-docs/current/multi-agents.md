@@ -58,8 +58,8 @@ child run 同时修改同一文件。
 4. 保存 Agent，然后启动 Session。
 
 AstraBox 不定义 `multiagent.agents` 名单。委派工具和 child-run 语义属于所选 Agent
-程序。Session 中的 **Agents** 标签始终可见；程序启动 child run 之前，其中会显示
-空状态。
+程序。Session 中的 **任务** 标签始终可见；程序启动 child run 或留下运行中的工作之前，
+其中会显示空状态。
 
 ### 通过 API 配置
 
@@ -117,8 +117,11 @@ MCP 服务器、Skill、Plugin、仓库访问和 Vault 配置在父 Agent 或其
 
 ## 观察 child run 和 Event
 
-打开 Session 并选择 **Agents** 标签。这里会显示 child-run 树、当前状态、描述、摘要，
-以及 Agent 程序报告的用量。选择一项即可打开它的消息和工具活动。
+打开 Session 并选择 **任务** 标签。运行中的工作排在最前：child run，以及不是 child run
+的后台工作（例如 Claude Code 的后台 shell，可在它那一行停止）。已结束的 child run 排在
+后面。每个 child run 显示它在树中的位置，以及 Agent 程序报告的状态、描述、摘要和用量。
+选择一项即可打开它的消息和工具活动，并可停止它。有工作在运行时，输入框上方会有一行
+显示运行中的任务数，点击即可打开这个标签。
 
 按树形顺序列出所有 child run：
 
@@ -192,7 +195,7 @@ Agent 程序执行父任务和子任务时，都使用 Session 的引擎原生�
 ### Agent 没有委派任务
 
 确认已安装的 Agent 程序支持 child run，并且系统提示词定义了可以拆分的工作。没有
-child run 的 Session 也是有效状态，**Agents** 标签会显示空状态。
+child run 的 Session 也是有效状态，**任务** 标签会显示空状态。
 
 ### 更新 Agent 后 Session 未使用新配置
 

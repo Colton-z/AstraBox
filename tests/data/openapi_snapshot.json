@@ -11226,8 +11226,19 @@
       },
       "BackgroundTaskView": {
         "additionalProperties": false,
-        "description": "Work the runtime keeps running in its box after its response ended.\n\n``kind`` is the engine's own name for the task's type, such as Claude\nCode's ``local_bash``; ``description`` is the engine's own label for it.",
+        "description": "Work the runtime keeps running in its box after its response ended.\n\n``kind`` is the engine's own name for the task's type, such as Claude\nCode's ``local_bash``; ``description`` is the engine's own label for it.\n``child_run_id`` names the child run this task carries out when it is one,\nso a sub-agent working apart from the response is one item, not two.",
         "properties": {
+          "child_run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Child Run Id"
+          },
           "description": {
             "title": "Description",
             "type": "string"

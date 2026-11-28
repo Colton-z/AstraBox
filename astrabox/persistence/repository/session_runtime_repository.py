@@ -222,7 +222,7 @@ class FactBatch:
     cursor: dict[str, Any] | None = None
     status: str | None = None
     #: The runtime's background tasks after the batch, recorded with ``status``.
-    background_tasks: list[dict[str, str]] | None = None
+    background_tasks: list[dict[str, str | None]] | None = None
     protocol_error: str | None = None
 
     def __bool__(self) -> bool:

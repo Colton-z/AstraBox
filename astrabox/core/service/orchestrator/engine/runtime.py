@@ -59,12 +59,17 @@ class BackgroundTask:
 
     ``kind`` is the engine's own name for the task's type (Claude Code's
     ``task_type``, such as ``local_bash``), carried verbatim; ``description``
-    is the engine's own label for it.
+    is the engine's own label for it. ``child_engine_ref`` is the adapter's
+    reference of the child run this task carries out when it is one (a
+    sub-agent the engine runs apart from its response), the same reference
+    its child-run facts carry, so the same work is not shown twice; a shell
+    or other task that is not a child run has none.
     """
 
     task_id: str
     kind: str
     description: str
+    child_engine_ref: str | None
 
 ResponseOrigin = Literal["input", "engine"]
 """``input``: the response answers one or more submitted inputs.

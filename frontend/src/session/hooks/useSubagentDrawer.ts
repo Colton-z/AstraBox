@@ -86,8 +86,8 @@ export function useSubagentDrawer({
   const openSubagent = useCallback(
     (childRunId: string) => {
       setSelectedChildRunId(childRunId);
-      if (rightPanelCaps.tabs.includes('agents')) {
-        setRightTab('agents');
+      if (rightPanelCaps.tabs.includes('tasks')) {
+        setRightTab('tasks');
       }
     },
     [rightPanelCaps, setRightTab],

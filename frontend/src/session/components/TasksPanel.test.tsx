@@ -3,8 +3,9 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 
 import i18n from '../../i18n';
+import { sessionTasksOf, type BackgroundTask } from '../hooks/useSessionTasks';
 import type { SubagentEntry, SubagentRegistry } from '../hooks/useSubagentRegistry';
-import { AgentsListPanel } from './AgentsListPanel';
+import { TasksPanel } from './TasksPanel';
 
 // Rendering smoke test for a split-out shell component: mounts and checks the
 // key landmarks for both states it owns (empty vs. populated registry).
@@ -41,22 +42,28 @@ function makeAgent(overrides: Partial<SubagentEntry> = {}): SubagentEntry {
   };
 }
 
-describe('AgentsListPanel', () => {
+function tasksOf(agents: SubagentEntry[], background: BackgroundTask[] = []) {
+  return sessionTasksOf(background, makeRegistry(agents));
+}
+
+const noStop = async () => {};
+
+describe('TasksPanel', () => {
   it('renders the empty-state landmark when the registry has no agents', () => {
     render(
-      <AgentsListPanel registry={makeRegistry([])} selectedChildRunId={null} onSelect={() => {}} />,
+      <TasksPanel tasks={tasksOf([])} selectedChildRunId={null} onSelect={() => {}} onStopCommand={noStop} />,
     );
 
-    expect(screen.getByTestId('subagent-agents-panel')).toBeTruthy();
+    expect(screen.getByTestId('session-tasks-panel')).toBeTruthy();
     // The positive control for the e2e specs' "the empty state is gone once
     // rows render". That is an assertion of absence, so it passes whether the
     // empty state is absent or the handle is misspelled; this is where the
     // handle is proved to fire in the state it names.
     expect(screen.getByTestId('empty-state')).toBeTruthy();
-    expect(screen.getByText('No subagents in this Session yet.')).toBeTruthy();
+    expect(screen.getByText('No tasks in this conversation yet.')).toBeTruthy();
     expect(
       screen.getByText(
-        'When the Agent or Task tool starts a subtask, its messages and tool activity appear here.',
+        'Subagents the Agent starts, and commands it leaves running in the background, appear here.',
       ),
     ).toBeTruthy();
   });
@@ -64,12 +71,12 @@ describe('AgentsListPanel', () => {
   it('uses readable Chinese for the empty state', async () => {
     await i18n.changeLanguage('zh');
     render(
-      <AgentsListPanel registry={makeRegistry([])} selectedChildRunId={null} onSelect={() => {}} />,
+      <TasksPanel tasks={tasksOf([])} selectedChildRunId={null} onSelect={() => {}} onStopCommand={noStop} />,
     );
 
-    expect(screen.getByText('本次 Session 还没有子 Agent。')).toBeTruthy();
+    expect(screen.getByText('本次对话还没有任务。')).toBeTruthy();
     expect(
-      screen.getByText('Agent 或 Task 工具启动子任务后，其消息和工具活动会显示在这里。'),
+      screen.getByText('Agent 启动的子 Agent，以及它留在后台运行的命令，会显示在这里。'),
     ).toBeTruthy();
   });
 
@@ -81,7 +88,7 @@ describe('AgentsListPanel', () => {
       engineStatus: 'failed',
     });
     render(
-      <AgentsListPanel registry={makeRegistry([agent])} selectedChildRunId="abcdef123456" onSelect={onSelect} />,
+      <TasksPanel tasks={tasksOf([agent])} selectedChildRunId="abcdef123456" onSelect={onSelect} onStopCommand={noStop} />,
     );
 
     const row = screen.getByTestId('subagent-agent-row');
@@ -108,10 +115,10 @@ describe('AgentsListPanel', () => {
       description: 'Nested child',
     });
     render(
-      <AgentsListPanel
-        registry={makeRegistry([root, nested])}
+      <TasksPanel
+        tasks={tasksOf([root, nested])}
         selectedChildRunId={null}
-        onSelect={() => {}}
+        onSelect={() => {}} onStopCommand={noStop}
       />,
     );
 
@@ -127,14 +134,14 @@ describe('AgentsListPanel', () => {
 
   it('renders each engine status verbatim without translating vendor vocabulary', () => {
     render(
-      <AgentsListPanel
-        registry={makeRegistry([
+      <TasksPanel
+        tasks={tasksOf([
           makeAgent({ childRunId: 'paused-child', engineStatus: 'paused', closed: false }),
           makeAgent({ childRunId: 'killed-child', engineStatus: 'killed' }),
           makeAgent({ childRunId: 'stopped-child', engineStatus: 'stopped' }),
         ])}
         selectedChildRunId={null}
-        onSelect={() => {}}
+        onSelect={() => {}} onStopCommand={noStop}
       />,
     );
 
@@ -148,8 +155,8 @@ describe('AgentsListPanel', () => {
 
   it('falls back from engine status to reason and then event', () => {
     render(
-      <AgentsListPanel
-        registry={makeRegistry([
+      <TasksPanel
+        tasks={tasksOf([
           makeAgent({
             childRunId: 'reason-child',
             engineStatus: undefined,
@@ -162,7 +169,7 @@ describe('AgentsListPanel', () => {
           }),
         ])}
         selectedChildRunId={null}
-        onSelect={() => {}}
+        onSelect={() => {}} onStopCommand={noStop}
       />,
     );
 

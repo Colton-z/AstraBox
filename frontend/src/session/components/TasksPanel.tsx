@@ -1,9 +1,12 @@
+import { useId, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { EmptyState, ErrorNote } from '@/components/shell';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Item,
+  ItemActions,
   ItemContent,
   ItemDescription,
   ItemFooter,
@@ -13,17 +16,15 @@ import {
 } from '@/components/ui/item';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
-import { BotIcon, CircleIcon, LoaderIcon } from 'lucide-react';
-import {
-  subagentDisplayStatus,
-  type SubagentEntry,
-  type SubagentRegistry,
-} from '../hooks/useSubagentRegistry';
+import { BotIcon, CircleIcon, ListChecksIcon, LoaderIcon, SquareTerminalIcon } from 'lucide-react';
+import type { BackgroundTask, SessionTasks } from '../hooks/useSessionTasks';
+import { subagentDisplayStatus, type SubagentEntry } from '../hooks/useSubagentRegistry';
 
-interface AgentsListPanelProps {
-  registry: SubagentRegistry;
+interface TasksPanelProps {
+  tasks: SessionTasks;
   selectedChildRunId: string | null;
   onSelect: (childRunId: string | null) => void;
+  onStopCommand: (taskId: string) => Promise<void>;
   projectionError?: string | null;
 }
 
@@ -168,19 +169,104 @@ export function AgentRow({
   );
 }
 
-export function AgentsListPanel({
-  registry,
+/** Background work with no child run: what it is, and a Stop of its own. */
+function CommandRow({
+  task,
+  stopping,
+  onStop,
+}: {
+  task: BackgroundTask;
+  stopping: boolean;
+  onStop: (taskId: string) => void;
+}) {
+  const { t } = useTranslation();
+  const title = task.description || task.task_id;
+  return (
+    <Item
+      variant="outline"
+      size="xs"
+      data-testid="session-task-command"
+      data-task-id={task.task_id}
+      className="min-w-0 flex-nowrap overflow-hidden bg-card"
+    >
+      <ItemMedia variant="icon" className="text-muted-foreground">
+        <SquareTerminalIcon />
+      </ItemMedia>
+      <ItemContent className="min-w-0">
+        <ItemTitle className="w-full min-w-0 line-clamp-none">
+          <span className="min-w-0 truncate" title={title}>{title}</span>
+        </ItemTitle>
+        {task.kind && (
+          <ItemDescription className="line-clamp-1 font-mono text-10">{task.kind}</ItemDescription>
+        )}
+      </ItemContent>
+      <ItemActions>
+        <Button size="xs" variant="outline" disabled={stopping} onClick={() => onStop(task.task_id)}>
+          {stopping ? t('chat:tasks.stopping') : t('chat:tasks.stop')}
+        </Button>
+      </ItemActions>
+    </Item>
+  );
+}
+
+function TaskSection({
+  title,
+  testId,
+  children,
+}: {
+  title: string;
+  testId: string;
+  children: ReactNode;
+}) {
+  const id = useId();
+  return (
+    <section aria-labelledby={id} data-testid={testId} className="flex min-w-0 flex-col gap-2">
+      <h3 id={id} className="px-1 text-xs font-medium text-muted-foreground">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * The Session's work in one place: what runs now, shells and subagents
+ * together, above the subagents that have finished. A subagent row opens its
+ * transcript, where it stops; a command stops from its row.
+ */
+export function TasksPanel({
+  tasks,
   selectedChildRunId,
   onSelect,
+  onStopCommand,
   projectionError,
-}: AgentsListPanelProps) {
+}: TasksPanelProps) {
   const { t } = useTranslation();
-  const { agents } = registry;
+  const [stopping, setStopping] = useState<ReadonlySet<string>>(new Set());
+  const [stopError, setStopError] = useState('');
+  const { commands, runningAgents, finishedAgents } = tasks;
 
-  if (agents.length === 0) {
+  const stop = async (taskId: string) => {
+    setStopError('');
+    setStopping((current) => new Set(current).add(taskId));
+    try {
+      await onStopCommand(taskId);
+    } catch (cause) {
+      setStopping((current) => new Set([...current].filter((id) => id !== taskId)));
+      setStopError(cause instanceof Error ? cause.message : String(cause));
+    }
+  };
+  const agentRow = (entry: SubagentEntry) => (
+    <AgentRow
+      key={entry.childRunId}
+      entry={entry}
+      selected={selectedChildRunId === entry.childRunId}
+      onSelect={(id) => onSelect(selectedChildRunId === id ? null : id)}
+    />
+  );
+
+  if (commands.length + runningAgents.length + finishedAgents.length === 0) {
     return (
       <div
-        data-testid="subagent-agents-panel"
+        data-testid="session-tasks-panel"
         className="flex h-full items-center justify-center"
       >
         {projectionError ? (
@@ -189,9 +275,9 @@ export function AgentsListPanel({
           </ErrorNote>
         ) : (
           <EmptyState
-            icon={<BotIcon className="size-5" />}
-            title={t('chat:subagent.empty_title')}
-            hint={t('chat:subagent.empty_hint')}
+            icon={<ListChecksIcon className="size-5" />}
+            title={t('chat:tasks.empty_title')}
+            hint={t('chat:tasks.empty_hint')}
           />
         )}
       </div>
@@ -206,25 +292,30 @@ export function AgentsListPanel({
        overflow would scroll with nothing to grab. `w-full min-w-0 max-w-full`
        keeps the rows inside the panel's 30% instead, so that axis never
        engages. (Precedent: `SessionFilesPanel`.) */
-    <ScrollArea data-testid="subagent-agents-panel" className="h-full min-w-0">
-      {/* A plain column, not `ItemGroup`: that container declares `role="list"`,
-          and a list's children have to be list items. These rows are buttons —
-          which is what makes them pressable at all — so the group would be
-          announcing a list with no list-item descendants. Using it for spacing
-          alone would expose accessibility semantics the rows do not satisfy
-          (§10). */}
-      <div className="flex w-full min-w-0 max-w-full flex-col gap-2 p-2">
+    <ScrollArea data-testid="session-tasks-panel" className="h-full min-w-0">
+      <div className="flex w-full min-w-0 max-w-full flex-col gap-4 p-2">
         {projectionError && (
           <ErrorNote>{t('chat:subagent.load_failed')}: {projectionError}</ErrorNote>
         )}
-        {agents.map((entry) => (
-          <AgentRow
-            key={entry.childRunId}
-            entry={entry}
-            selected={selectedChildRunId === entry.childRunId}
-            onSelect={(id) => onSelect(selectedChildRunId === id ? null : id)}
-          />
-        ))}
+        {stopError && <ErrorNote>{stopError}</ErrorNote>}
+        {(commands.length > 0 || runningAgents.length > 0) && (
+          <TaskSection title={t('chat:tasks.running')} testId="session-tasks-running">
+            {commands.map((task) => (
+              <CommandRow
+                key={task.task_id}
+                task={task}
+                stopping={stopping.has(task.task_id)}
+                onStop={(taskId) => void stop(taskId)}
+              />
+            ))}
+            {runningAgents.map(agentRow)}
+          </TaskSection>
+        )}
+        {finishedAgents.length > 0 && (
+          <TaskSection title={t('chat:tasks.finished')} testId="session-tasks-finished">
+            {finishedAgents.map(agentRow)}
+          </TaskSection>
+        )}
       </div>
     </ScrollArea>
   );

@@ -13,8 +13,8 @@
  *   - switching tabs: `TabsContent` is a Base UI `Tabs.Panel`, whose
  *     `keepMounted` defaults to false, so leaving and returning REMOUNTS
  *     `SessionFilesPanel` and its mount load refetches the root. That includes
- *     the Agents tab, which is why the child is watched through the API and
- *     through the Agents tab's label, never by opening it;
+ *     the Tasks tab, which is why the child is watched through the API and
+ *     through the Tasks tab's label, never by opening it;
  *   - the panel's own refresh button and `page.reload()`: both refetch by hand,
  *     which is exactly what the user in this journey did not do;
  *   - expanding a directory: `refresh({force:true})` in `useSessionFiles` only
@@ -46,8 +46,8 @@
  * timeline saying when each ask happened.
  *
  * The user sees the child running from the tab strip: `getRightPanelTabLabel`
- * labels the tab `Agents (N)` while N children read as active by the engine's
- * own status, and plain `Agents` once none is.
+ * labels the tab `Tasks (N)` while N children read as active by the engine's
+ * own status, and plain `Tasks` once none is.
  *
  * ENGINE: Claude Code. `run_in_background` on the Agent tool, the
  * `async_launched` receipt and the `<task-notification>` queueing are Claude
@@ -72,7 +72,7 @@ import { openSessionView, sendPrompt } from '../fixtures/sessionPage';
 // and "Upload" (chat:files.upload). The console detects language as
 // ['localStorage','navigator'], so an unpinned runner locale decides which
 // spelling it gets, and a spec that accepted two spellings would also accept a
-// third nobody wrote it against. The Agents tab label is built in code and is
+// third nobody wrote it against. The Tasks tab label is built in code and is
 // the same in both locales.
 test.use({ locale: 'en-US' });
 
@@ -347,10 +347,10 @@ test("a background Agent's new file reaches the open Files panel without the use
     'the gated Bash call must still be running — nothing has released it',
   ).toEqual([]);
   // What the user is shown while the child works: the tab strip counts it.
-  const agentsTabWhileRunning = page.getByRole('tab', { name: 'Agents (1)', exact: true });
+  const agentsTabWhileRunning = page.getByRole('tab', { name: 'Tasks (1)', exact: true });
   await expect(
     agentsTabWhileRunning,
-    'the Agents tab must count the child the user left running',
+    'the Tasks tab must count the child the user left running',
   ).toBeVisible({ timeout: BACKGROUND_WINDOW_TIMEOUT_MS });
   expect(
     (await api.getSession(sessionId)).current_responses ?? [],
@@ -409,7 +409,7 @@ test("a background Agent's new file reaches the open Files panel without the use
   ).toContain(markerContent);
 
   // ── Wait out the completion through the API only ──────────────────────────
-  // Never the Agents tab: opening it unmounts the Files panel and its remount
+  // Never the Tasks tab: opening it unmounts the Files panel and its remount
   // would heal exactly the staleness under test.
   let closedChildren: ChildRunRecord[] = [];
   let childClosedAt = 0;
@@ -461,8 +461,8 @@ test("a background Agent's new file reaches the open Files panel without the use
       )
       .toBe(true);
     await expect(
-      page.getByRole('tab', { name: 'Agents', exact: true }),
-      'the Agents tab must stop counting the child once it has closed',
+      page.getByRole('tab', { name: 'Tasks', exact: true }),
+      'the Tasks tab must stop counting the child once it has closed',
     ).toBeVisible({ timeout: BACKGROUND_WINDOW_TIMEOUT_MS });
 
     // ── THE CLAIM ────────────────────────────────────────────────────────────

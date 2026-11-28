@@ -88,8 +88,8 @@ test.afterEach(async ({ request }, info) => {
 });
 
 async function showChild(page: Page, child: ChildRunRecord) {
-  await page.getByRole('tab', { name: /^Agents/ }).click();
-  const rows = page.getByTestId('subagent-agents-panel').getByTestId('subagent-agent-row');
+  await page.getByRole('tab', { name: /^Tasks/ }).click();
+  const rows = page.getByTestId('session-tasks-panel').getByTestId('subagent-agent-row');
   await expect(rows, 'one actual Agent survives the answer continuation').toHaveCount(1);
   const owned = page.locator(`[data-testid="subagent-agent-row"][data-child-run-id="${child.child_run_id}"]`);
   await expect(owned).toBeVisible();
@@ -206,7 +206,7 @@ test('answering a question launches one background Agent which survives live and
   const stillOpen = await api.waitForChildRuns(sessionId, (rows) => rows.length === 1 && !rows[0].closed);
   expect(stillOpen[0].child_run_id).toBe(childId);
   const openRow = await showChild(page, stillOpen[0]);
-  await expect(openRow.locator('svg.animate-spin'), 'the Agents panel shows the background Agent still working')
+  await expect(openRow.locator('svg.animate-spin'), 'the Tasks panel shows the background Agent still working')
     .toHaveCount(1);
   await expect(page.getByTestId('composer-prompt')).toBeEnabled();
   await openRow.click();

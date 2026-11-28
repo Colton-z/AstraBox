@@ -13,7 +13,7 @@
  * work in the live box and closes with Claude's own completed status; Claude's
  * own answer to the finished child reaches the conversation as one response of
  * origin `engine` that no input started; and a cold open shows that answer, the
- * child in the Agents panel at its exact status, and a settled header.
+ * child in the Tasks panel at its exact status, and a settled header.
  *
  * Claude's run_in_background and async_launched vocabulary arrange the scene.
  * A per-session reader hold proves the connection was lost before the launch
@@ -510,18 +510,18 @@ test('a background launcher lost before its terminal still tracks and materializ
       })
       .toBe(normalizeRendered(nativeAnswer));
 
-    await page.getByRole('tab', { name: /^Agents/ }).click();
-    const agentsPanel = page.getByTestId('subagent-agents-panel');
+    await page.getByRole('tab', { name: /^Tasks/ }).click();
+    const agentsPanel = page.getByTestId('session-tasks-panel');
     await expect(agentsPanel).toBeVisible({ timeout: 15_000 });
     const row = agentsPanel.locator(`[data-child-run-id="${closed[0]!.child_run_id}"]`);
-    await expect(row, 'the launched child must render a row in the Agents panel').toHaveCount(1, {
+    await expect(row, 'the launched child must render a row in the Tasks panel').toHaveCount(1, {
       timeout: 30_000,
     });
     // Exact match on the badge, not `hasText` on the row: a row's subtitle can
     // itself contain the word completed.
     await expect(
       row.getByText(/^completed$/),
-      'the Agents panel must close the child out at the engine\'s exact status',
+      'the Tasks panel must close the child out at the engine\'s exact status',
     ).toBeVisible({ timeout: 30_000 });
 
     // And the header settles. A conversation that kept its child but is left
