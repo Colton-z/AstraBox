@@ -38,7 +38,7 @@ type SessionCapabilityInput =
 // Always present, for every product shape. Files is the sandbox's own, and the
 // Tasks tab stays visible when nothing runs so its empty state explains the
 // capability instead of changing the panel shape per session.
-const ALWAYS_TABS: readonly SessionRightPanelTab[] = ['files', 'browser', 'tasks', 'artifacts'];
+const ALWAYS_TABS: readonly SessionRightPanelTab[] = ['files', 'tasks', 'browser', 'artifacts'];
 
 // The surfaces the product shape can offer at all. An Agent may decline one it
 // is offered; it cannot claim one this shape does not have.
@@ -60,8 +60,9 @@ export function getSessionRightPanelCapabilities(
     : AGENT_CHAT_OFFERS;
   const declared = session?.workspace_panels ?? null;
   const optional = offered.filter((tab) => declared?.[tab as 'terminal' | 'diff'] === true);
-  // Order is the reader's, not the filter's: files, browser, terminal, diff, tasks, artifacts.
-  const order: readonly SessionRightPanelTab[] = ['files', 'browser', 'terminal', 'diff', 'tasks', 'artifacts'];
+  // Order is the reader's, not the filter's: Tasks follows Files because it is
+  // the tab that counts running work and the one the composer's tasks line opens.
+  const order: readonly SessionRightPanelTab[] = ['files', 'tasks', 'browser', 'terminal', 'diff', 'artifacts'];
   const enabled = new Set<SessionRightPanelTab>([...ALWAYS_TABS, ...optional]);
   return { tabs: order.filter((tab) => enabled.has(tab)), defaultTab: 'files' };
 }

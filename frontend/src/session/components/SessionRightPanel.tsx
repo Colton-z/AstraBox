@@ -17,7 +17,7 @@ import SessionFilesPanel from './SessionFilesPanel';
 import SessionBrowserPanel from './SessionBrowserPanel';
 import { TasksPanel } from './TasksPanel';
 
-// Right-side tabbed panel for files, browser, terminal, tasks, diffs, and artifacts. It owns its
+// Right-side tabbed panel for files, tasks, browser, terminal, diffs, and artifacts. It owns its
 // ResizablePanel so the parent only assembles it beside the left pane and the
 // handle between them.
 export function SessionRightPanel({
